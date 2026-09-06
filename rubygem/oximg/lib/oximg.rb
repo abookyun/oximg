@@ -45,10 +45,14 @@ module Oximg
     "image/jpeg" => :jpeg,
     "image/png" => :png,
     "image/webp" => :webp,
-    "image/avif" => :avif
+    "image/avif" => :avif,
+    "image/gif" => :gif
   }.freeze
 
-  PROBE_LINE = /:\s+(\S+)\s+(\d+)x(\d+)\s+\(\d+\s+stored\s+pixels\)\s*\z/
+  # The optional tail is the CLI's animation suffix. The match still
+  # ends at the end of the line, so the gem rejects output it does not
+  # understand instead of half-reading it.
+  PROBE_LINE = /:\s+(\S+)\s+(\d+)x(\d+)\s+\(\d+\s+stored\s+pixels\)(?:,[^\n]*)?\s*\z/
 
   class << self
     # Absolute path to the executable in use; raises
