@@ -68,36 +68,22 @@ class Oximg::ProcessingTest < Oximg::Test
   end
 
   # The CLI appends ", 3 frames, 1500ms, looping forever" for an
-  # animated source; the probe parser has to read past it rather than
-  # give up on the line.
+  # animated source. This is the line as the binary really prints it;
+  # the other loop spellings, which no fixture reaches, are in
+  # ProbeTest.
   def test_probe_reads_an_animated_source
     probed = Oximg.probe(fixture("anim.gif"))
-    assert_equal "image/gif", probed[:content_type]
-    assert_equal [120, 90], [probed[:width], probed[:height]]
+    assert_equal({content_type: "image/gif", format: :gif, width: 120, height: 90}, probed)
 
     probed = Oximg.probe(fixture("animated.webp"))
-    assert_equal "image/webp", probed[:content_type]
-    assert_equal [64, 48], [probed[:width], probed[:height]]
+    assert_equal({content_type: "image/webp", format: :webp, width: 64, height: 48}, probed)
   end
 
   # GIF is decode-only, but it is still a content type the CLI emits,
   # so probe has to name it.
   def test_probe_names_gif_as_a_format
     probed = Oximg.probe(fixture("still.gif"))
-    assert_equal "image/gif", probed[:content_type]
-    assert_equal :gif, probed[:format]
-    assert_equal [240, 180], [probed[:width], probed[:height]]
-  end
-
-  # The guard on the parser itself. The run succeeds, but the gem does
-  # not understand the output, so it must raise instead of returning a
-  # half-read hash. Stubbed, because a working binary never prints
-  # such a line.
-  def test_probe_rejects_output_it_cannot_parse
-    stub_run(["oximg 0.11.0\n", ""]) do
-      error = assert_raises(Oximg::ProcessingError) { Oximg.probe(fixture("photo.jpg")) }
-      assert_match(/unparsable probe output/, error.message)
-    end
+    assert_equal({content_type: "image/gif", format: :gif, width: 240, height: 180}, probed)
   end
 
   # The binary already names what it refused; the gem must surface that
@@ -110,21 +96,5 @@ class Oximg::ProcessingTest < Oximg::Test
       assert_match(/missing\.jpg/, error.message)
       refute_nil error.status
     end
-  end
-
-  private
-
-  # A one-off singleton override rather than Minitest::Mock#stub:
-  # minitest 6 dropped minitest/mock, and the gemspec allows ~> 5.0, so
-  # a suite that reached for it would pass here and fail on 6.
-  def stub_run(result)
-    singleton = Oximg::Binary.singleton_class
-    original = Oximg::Binary.method(:run)
-    singleton.send(:remove_method, :run)
-    Oximg::Binary.define_singleton_method(:run) { |*| result }
-    yield
-  ensure
-    singleton.send(:remove_method, :run)
-    singleton.send(:define_method, :run, original)
   end
 end

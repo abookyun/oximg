@@ -49,9 +49,18 @@ module Oximg
     "image/gif" => :gif
   }.freeze
 
-  # The optional tail is the CLI's animation suffix. The match still
-  # ends at the end of the line, so the gem rejects output it does not
-  # understand instead of half-reading it.
+  # The line `oximg probe` prints (src/cli.rs):
+  #
+  #   in.gif: image/gif 120x90 (10800 stored pixels), 3 frames, 1500ms, looping forever
+  #
+  # The three fields the gem reports are pinned exactly. Everything after
+  # the comma — the animation summary, printed for an animated source
+  # only — is information the gem does not expose, and is deliberately
+  # left unparsed rather than matched: a pattern that stopped at
+  # `pixels)` is what broke probe when the CLI added that summary, and a
+  # pattern that spelled the summary out would break again on the next
+  # field. What is refused is a line missing any of the three fields, or
+  # one that continues past them without the comma.
   PROBE_LINE = /:\s+(\S+)\s+(\d+)x(\d+)\s+\(\d+\s+stored\s+pixels\)(?:,[^\n]*)?\s*\z/
 
   class << self
@@ -100,15 +109,7 @@ module Oximg
     # dimensions are the stored ones (an EXIF rotation is not applied).
     def probe(source)
       out, = Binary.run("probe", expand(source, "source"))
-      match = out.match(PROBE_LINE)
-      raise ProcessingError, "unparsable probe output: #{out.inspect}" unless match
-
-      {
-        content_type: match[1],
-        format: CONTENT_TYPE_FORMATS[match[1]],
-        width: Integer(match[2]),
-        height: Integer(match[3])
-      }
+      parse_probe(out)
     end
 
     # The argv `resize` would run, minus the executable. Public because
@@ -126,6 +127,22 @@ module Oximg
       argv.push("-f", token(format, FORMATS, "format")) unless format.nil?
       argv.push("--preset", token(preset, PRESETS, "preset")) unless preset.nil?
       argv
+    end
+
+    # The hash `probe` builds from the line the CLI printed. Public for
+    # the same reason as `resize_argv`: it is the way to test the parser
+    # against every line the CLI can print — the still form, each loop
+    # spelling — without a binary present.
+    def parse_probe(output)
+      match = output.match(PROBE_LINE)
+      raise ProcessingError, "unparsable probe output: #{output.inspect}" unless match
+
+      {
+        content_type: match[1],
+        format: CONTENT_TYPE_FORMATS[match[1]],
+        width: Integer(match[2]),
+        height: Integer(match[3])
+      }
     end
 
     private

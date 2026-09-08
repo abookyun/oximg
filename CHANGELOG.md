@@ -110,17 +110,17 @@ be a 422 now serves bytes, and one CLI edge changes its exit code.
 
 ### Fixed
 
-- **`Oximg.probe` reads animated and GIF sources** in the `oximg` gem.
-  The gem parses the line that `oximg probe` prints, and its pattern
-  ended right after `stored pixels)`. For an animated source the CLI
-  now adds `, N frames, Nms, looping forever` to that line, so the
-  pattern did not match and `probe` raised an error instead of
-  returning. This affected every animated source, not only the new GIF
-  support: animated WebP worked since 0.2.0 and stopped working. A GIF
-  also returned a `nil` format, because the gem's content-type table
-  had four of the five types that the CLI emits. The animation part is
-  now optional, and the match still ends at the end of the line, so the
-  gem still rejects output it does not understand.
+- **The `oximg` gem reads what `oximg probe` now prints.** Its parser
+  stopped at `stored pixels)`, so the animation summary this release
+  adds to that line — for animated WebP as much as animated GIF — made
+  `Oximg.probe` raise `unparsable probe output`, and `image/gif` was
+  missing from its content-type table, so a GIF probed with a `nil`
+  format. The gem now pins the three fields it reports and skips the
+  rest of the line, so the next field the CLI adds does not break it the
+  same way; the summary itself is not exposed yet. GIF stays
+  decode-only: `format: :gif` is still refused by `resize`. A 0.11.0
+  gem driving this release's binary from PATH hits the raise on every
+  animated source, so upgrade the two together.
 
 ## [0.11.0] - 2026-08-07
 
