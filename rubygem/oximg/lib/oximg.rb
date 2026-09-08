@@ -59,9 +59,11 @@ module Oximg
   # left unparsed rather than matched: a pattern that stopped at
   # `pixels)` is what broke probe when the CLI added that summary, and a
   # pattern that spelled the summary out would break again on the next
-  # field. What is refused is a line missing any of the three fields, or
-  # one that continues past them without the comma.
-  PROBE_LINE = /:\s+(\S+)\s+(\d+)x(\d+)\s+\(\d+\s+stored\s+pixels\)(?:,[^\n]*)?\s*\z/
+  # field. What is refused is output that is not exactly that one line:
+  # a field missing, a continuation without the comma, or anything
+  # printed before or after it. stderr is captured separately, so a
+  # warning never lands here.
+  PROBE_LINE = /\A[^\n]*: (\S+) (\d+)x(\d+) \(\d+ stored pixels\)(?:,[^\n]*)?\n?\z/
 
   class << self
     # Absolute path to the executable in use; raises

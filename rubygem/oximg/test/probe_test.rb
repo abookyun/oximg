@@ -57,16 +57,18 @@ class Oximg::ProbeTest < Oximg::Test
     assert_nil probed[:format]
   end
 
-  # The guard on the parser itself: a line the gem does not understand
-  # raises rather than returning a half-read hash.
-  def test_rejects_a_line_missing_any_of_the_fields
+  # The guard on the parser itself: output that is not exactly the one
+  # line raises rather than returning a half-read hash.
+  def test_rejects_output_that_is_not_exactly_the_line
     [
       "oximg 0.11.0\n", # some other command's output
       "",
       "/src/a.jpg: image/jpeg 200x150\n", # no pixel count
       "/src/a.jpg: image/jpeg (30000 stored pixels)\n", # no dimensions
       "/src/a.jpg: image/jpeg 200x150 (30000 stored pixels) 3 frames\n", # continues without the comma
-      "/src/a.jpg: image/jpeg 200x150 (30000 stored pixels)\nsecond line\n"
+      "/src/a.jpg: image/jpeg 200x150 (30000 stored pixels)\nsecond line\n",
+      "oximg listening on :8081\n/src/a.jpg: image/jpeg 200x150 (30000 stored pixels)\n", # a line before it
+      "/src/a.jpg: image/jpeg\n200x150 (30000 stored pixels)\n" # the fields split across lines
     ].each do |output|
       error = assert_raises(Oximg::ProcessingError, output.inspect) { parse(output) }
       assert_match(/unparsable probe output/, error.message)
