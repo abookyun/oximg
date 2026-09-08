@@ -7,8 +7,10 @@ require "test_helper"
 # fixtures reach only one of the CLI's loop spellings, so the grammar
 # from src/cli.rs is pinned here in full.
 class Oximg::ProbeTest < Oximg::Test
+  # The parser is private: nothing outside the gem needs it, and a
+  # method kept public for tests would be API the gem has to preserve.
   def parse(line)
-    Oximg.parse_probe(line)
+    Oximg.send(:parse_probe, line)
   end
 
   def test_reads_a_still_line

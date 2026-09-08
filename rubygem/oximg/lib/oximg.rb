@@ -129,10 +129,12 @@ module Oximg
       argv
     end
 
-    # The hash `probe` builds from the line the CLI printed. Public for
-    # the same reason as `resize_argv`: it is the way to test the parser
-    # against every line the CLI can print — the still form, each loop
-    # spelling — without a binary present.
+    private
+
+    # The hash `probe` builds from the line the CLI printed. Separate
+    # from `probe` so the parser can be tested against every line the
+    # CLI can print — the still form, each loop spelling — without a
+    # binary present; private because nothing outside needs it.
     def parse_probe(output)
       match = output.match(PROBE_LINE)
       raise ProcessingError, "unparsable probe output: #{output.inspect}" unless match
@@ -144,8 +146,6 @@ module Oximg
         height: Integer(match[3])
       }
     end
-
-    private
 
     # Absolute paths throughout: a relative name beginning with "-"
     # would otherwise reach the CLI's argument parser as a flag, and
