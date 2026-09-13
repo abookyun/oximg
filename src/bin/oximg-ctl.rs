@@ -921,7 +921,11 @@ fn spawn_server(
     let Some(port) = port_found else {
         #[cfg(unix)]
         unix_child::clear();
-        let status = child.wait().ok();
+        // stderr closed (or the reader errored) without a listening
+        // line. The child may still be alive — a wrong --bin that
+        // inherits and idles. Do not unbounded-wait past SPAWN_TIMEOUT.
+        let leftover = deadline.saturating_duration_since(Instant::now());
+        let status = wait_child_until(&mut child, leftover);
         let hint = if boot.is_empty() {
             "check --bin points at oximg, and that cmake/nasm are installed"
         } else {
@@ -1024,6 +1028,24 @@ fn cmd_serve(opts: &Opts, port: Option<u16>) -> Result<(), CtlError> {
             spawned.kill_on_drop = false;
             eprintln!("oximg-ctl: wait on server: {e}");
             std::process::exit(1);
+        }
+    }
+}
+
+fn wait_child_until(child: &mut Child, budget: Duration) -> Option<ExitStatus> {
+    let deadline = Instant::now() + budget;
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return Some(st),
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                return child.wait().ok();
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(_) => {
+                let _ = child.kill();
+                return child.wait().ok();
+            }
         }
     }
 }
