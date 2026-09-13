@@ -360,6 +360,32 @@ fn matrix_negatives_omit_present_missing_jpg() {
 }
 
 #[test]
+fn matrix_env_source_base_skips_local_oracle_negatives() {
+    let (code, v) = run(&[
+        "--dry-run",
+        "--env",
+        "OXIMG_SOURCE_BASE_URL=https://example.invalid/",
+        "matrix",
+        "--source",
+        "photo.jpg",
+        "--box",
+        "100x100",
+        "--format",
+        "source",
+        "--format",
+        "webp",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    let cells = v["cells"].as_array().unwrap();
+    assert!(
+        cells
+            .iter()
+            .all(|c| c["path"] != "/resize/100/100/missing.jpg"),
+        "remote origin is not the fixture tree: {cells:?}"
+    );
+}
+
+#[test]
 fn matrix_base_skips_the_local_missing_file_negative() {
     let (code, v) = run(&[
         "--dry-run",

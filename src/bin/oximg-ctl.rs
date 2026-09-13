@@ -761,12 +761,26 @@ fn canonical_env_key(k: &str) -> String {
         "OXIMG_KEY",
         "OXIMG_SALT",
         "OXIMG_SOURCE_BASE_URL",
+        "OXIMG_AUTO_ROTATE",
     ] {
         if k.eq_ignore_ascii_case(name) {
             return name.to_string();
         }
     }
     k.to_string()
+}
+
+fn child_auto_rotate(opts: &Opts) -> bool {
+    if let Some(v) = env_value(opts, "OXIMG_AUTO_ROTATE") {
+        return v.trim() != "0";
+    }
+    std::env::var("OXIMG_AUTO_ROTATE").as_deref() != Ok("0")
+}
+
+fn remote_source_base(opts: &Opts) -> bool {
+    env_value(opts, "OXIMG_SOURCE_BASE_URL")
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
 }
 
 fn inherited_unset(name: &str) -> bool {
@@ -1841,7 +1855,7 @@ fn source_output_token(src: &str, images_dir: &Path) -> Option<String> {
     }
 }
 
-fn source_display_size(src: &str, images_dir: &Path) -> Option<(u32, u32)> {
+fn source_display_size(src: &str, images_dir: &Path, rotate: bool) -> Option<(u32, u32)> {
     let path = Path::new(src);
     let path = if path.is_absolute() {
         path.to_path_buf()
@@ -1849,7 +1863,7 @@ fn source_display_size(src: &str, images_dir: &Path) -> Option<(u32, u32)> {
         images_dir.join(src)
     };
     let bytes = std::fs::read(path).ok()?;
-    let (_, w, h) = pipeline::probe_display(&bytes).ok()?;
+    let (_, w, h) = pipeline::probe_display_with(&bytes, rotate).ok()?;
     Some((w as u32, h as u32))
 }
 
@@ -1880,7 +1894,8 @@ fn cmd_matrix(
     // Local fixtures are only an oracle when we spawned the server.
     // --base talks to someone else's tree; sniffing our images_dir
     // would fail a correct remote PNG served as photo.jpg.
-    let sniff_local = base.is_none();
+    let sniff_local = base.is_none() && !remote_source_base(opts);
+    let rotate = child_auto_rotate(opts);
 
     struct Cell {
         path: String,
@@ -1896,7 +1911,7 @@ fn cmd_matrix(
     for src in &sources {
         let src_enc = percent_encode_path(src);
         let src_wh = sniff_local
-            .then(|| source_display_size(src, &images))
+            .then(|| source_display_size(src, &images, rotate))
             .flatten();
         for (w, h) in &boxes {
             let expected_wh = src_wh.map(|(sw, sh)| fit_box(sw, sh, *w, *h));
