@@ -91,6 +91,19 @@ fn auto_rotate_override_controls_orientation() {
 }
 
 #[test]
+fn probe_display_swaps_orientation_6() {
+    let px = vec![128u8; 48 * 64 * 3];
+    let src = jpeg_with_orientation(&px, 48, 64, Some(6));
+    let (fmt, w, h) = pipeline::probe(&src).expect("probe");
+    assert_eq!(fmt, ImageFormat::Jpeg);
+    assert_eq!((w, h), (48, 64), "stored");
+    let (_, dw, dh) = pipeline::probe_display_with(&src, true).expect("display");
+    assert_eq!((dw, dh), (64, 48), "orientation 6 swaps axes");
+    let (_, sw, sh) = pipeline::probe_display_with(&src, false).expect("stored");
+    assert_eq!((sw, sh), (48, 64));
+}
+
+#[test]
 fn icc_override_strips_or_keeps_the_profile() {
     let px = corner_base(64, 48, 8);
     let profile = common::fake_icc(400);

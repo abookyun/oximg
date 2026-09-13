@@ -413,12 +413,22 @@ pub fn probe(bytes: &[u8]) -> Result<(ImageFormat, usize, usize), Error> {
 /// swap the axes relative to [`probe`]. When `OXIMG_AUTO_ROTATE=0`,
 /// this is identical to [`probe`].
 pub fn probe_display(bytes: &[u8]) -> Result<(ImageFormat, usize, usize), Error> {
-    probe_display_inner(bytes).map_err(|e| Error::classify(e, false))
+    probe_display_with(bytes, crate::config::config().auto_rotate)
 }
 
-fn probe_display_inner(bytes: &[u8]) -> Result<(ImageFormat, usize, usize)> {
+/// Like [`probe_display`], with an explicit auto-rotate flag instead of
+/// the process `OXIMG_AUTO_ROTATE` snapshot. Control-plane oracles use
+/// this so a spawned child's `--env OXIMG_AUTO_ROTATE` is honored.
+pub fn probe_display_with(
+    bytes: &[u8],
+    auto_rotate: bool,
+) -> Result<(ImageFormat, usize, usize), Error> {
+    probe_display_inner(bytes, auto_rotate).map_err(|e| Error::classify(e, false))
+}
+
+fn probe_display_inner(bytes: &[u8], auto_rotate: bool) -> Result<(ImageFormat, usize, usize)> {
     let (fmt, w, h) = probe_inner(bytes)?;
-    if !crate::config::config().auto_rotate {
+    if !auto_rotate {
         return Ok((fmt, w, h));
     }
     let (dw, dh) = peek_orientation(fmt, bytes).display_dims(w, h);

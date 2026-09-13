@@ -16,8 +16,10 @@ be a 422 now serves bytes, and one CLI edge changes its exit code.
 
 ### Added
 
-- **`pipeline::probe_display`** — like `probe`, but reports displayed
-  dimensions after auto-rotate (orientations 5–8 swap axes).
+- **`pipeline::probe_display`** / **`probe_display_with`** — like
+  `probe`, but reports displayed dimensions after auto-rotate
+  (orientations 5–8 swap axes). `probe_display_with` takes the rotate
+  flag explicitly so a spawned child's env can differ from the caller.
 
 - **`OXIMG_BIND`** — listen address, default `0.0.0.0`. Invalid values
   refuse to boot. `oximg-ctl` auto-spawn sets `127.0.0.1`.
