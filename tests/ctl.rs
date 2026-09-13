@@ -44,6 +44,7 @@ fn help_is_plain_text_not_json() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("oximg-ctl"), "{stdout}");
     assert!(stdout.contains("matrix"), "{stdout}");
+    assert!(stdout.contains("--port"), "{stdout}");
     assert!(
         serde_json::from_str::<Value>(stdout.trim()).is_err(),
         "help must stay human text so --help is greppable"
@@ -458,6 +459,30 @@ fn auto_spawn_ignores_inherited_signing_keys() {
         .unwrap_or_else(|e| panic!("stdout not JSON ({e}): {stdout:?}"));
     assert_eq!(output.status.code(), Some(0), "{v}");
     assert_eq!(v["status"], 200, "{v}");
+}
+
+#[test]
+fn auto_spawn_does_not_complete_signing_from_the_parent() {
+    let mut c = ctl();
+    c.env("OXIMG_SALT", "cafebabe".repeat(8));
+    let output = c
+        .args([
+            "--env",
+            &format!("OXIMG_KEY={}", "deadbeef".repeat(8)),
+            "get",
+            "/resize/100/100/photo.jpg",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout not JSON ({e}): {stdout:?}"));
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "half-signing must not silently 403 unsigned URLs: {v}"
+    );
+    assert_eq!(v["ok"], false, "{v}");
 }
 
 #[test]

@@ -121,6 +121,9 @@ Global:
   --dry-run                 Print the plan; do not spawn or write
   --help, --version
 
+serve:
+  --port N                  Listen port (default: OS-assigned 0)
+
 get:
   --base URL                Use an already-running server (no spawn)
   --accept VALUE            Accept request header
@@ -863,9 +866,13 @@ fn spawn_server(
     }
     // Fixture get/matrix send unsigned paths. A shell with signing
     // enabled would otherwise 403 every cell. serve still inherits.
-    if loopback && !env_named(opts, "OXIMG_KEY") && !env_named(opts, "OXIMG_SALT") {
-        cmd.env_remove("OXIMG_KEY");
-        cmd.env_remove("OXIMG_SALT");
+    if loopback {
+        if !env_named(opts, "OXIMG_KEY") {
+            cmd.env_remove("OXIMG_KEY");
+        }
+        if !env_named(opts, "OXIMG_SALT") {
+            cmd.env_remove("OXIMG_SALT");
+        }
     }
     // IMAGES_DIR is ignored when a source URL is set. Fixture get/matrix
     // must stay on the committed tree unless the caller opts in.
