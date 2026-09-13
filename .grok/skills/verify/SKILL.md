@@ -29,8 +29,9 @@ cargo build --release                 # both oximg and oximg-ctl
 Then `./target/release/oximg-ctl …`. stdout is one JSON object
 (`--help` / `--version` are plain text). Auto-spawn isolates inherited
 signing and `OXIMG_SOURCE_BASE_URL` so unsigned fixture `get`/`matrix`
-do not 403; `--env OXIMG_KEY=` / `OXIMG_SALT=` opts into a signed
-spawn. `--base` is a foreign tree (no local fixture oracle).
+do not 403; `--env OXIMG_KEY=<hex>` / `--env OXIMG_SALT=<hex>` (both
+non-empty; empty is unset) opts into a signed spawn. `--base` is a
+foreign tree (no local fixture oracle).
 
 ## Pick a layer (do not run every layer every time)
 
@@ -38,7 +39,7 @@ spawn. `--base` is a foreign tree (no local fixture oracle).
 |---|---|
 | Any PR | `cargo test --release` (add `--features avif` if AVIF toolchain is present) |
 | Routes, `@{fmt}`, box, errors | `oximg-ctl get` and/or `matrix` covering the change |
-| Signing | `oximg-ctl sign` vs the vectors in [routes.md](../../../docs/features/routes.md) / `tests/ctl.rs`. When the route or HMAC scheme changes, also `get` a signed path on a spawn with `--env OXIMG_KEY` / `--env OXIMG_SALT` (unsigned → 403). Inherited keys are stripped. |
+| Signing | `oximg-ctl sign` vs the vectors in [routes.md](../../../docs/features/routes.md) / `tests/ctl.rs`. When the route or HMAC scheme changes, also `get` a signed path on a spawn with `--env OXIMG_KEY=<hex>` `--env OXIMG_SALT=<hex>` (unsigned → 403). Inherited keys are stripped. |
 | CLI / one-shot | `oximg-ctl resize` (shells out to `oximg resize`); `oximg probe` or `tests/cli.rs` for probe/argv (`oximg-ctl probe` is in-process library) |
 | Decode / resize / encoder / default knobs | ctl JSON matching [docs/features/](../../../docs/features/) — QUALITY ([bench/quality/QUALITY.md](../../../bench/quality/QUALITY.md)) is an extra fidelity check, not a substitute |
 | Hot path latency/throughput | [bench/METHODOLOGY.md](../../../bench/METHODOLOGY.md) — interleaved A/B, never sequential |
