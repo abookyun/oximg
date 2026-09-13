@@ -16,6 +16,20 @@ be a 422 now serves bytes, and one CLI edge changes its exit code.
 
 ### Added
 
+- **`pipeline::probe_display`** / **`probe_display_with`** — like
+  `probe`, but reports displayed dimensions after auto-rotate
+  (orientations 5–8 swap axes). `probe_display_with` takes the rotate
+  flag explicitly so a spawned child's env can differ from the caller.
+
+- **`OXIMG_BIND`** — listen address, default `0.0.0.0`. Invalid values
+  refuse to boot. `oximg-ctl` auto-spawn sets `127.0.0.1`.
+
+- **`oximg-ctl`** — a JSON control plane over the real `oximg` binary:
+  spawn the server, `get` a path (auto-spawn unless `--base`), `probe`,
+  `resize`, `sign` (the same HMAC scheme `tests/server.rs` pins), and
+  `matrix` a fixture × box × format grid. stdout is one JSON object;
+  usage errors exit 2. Not copied into the Docker image.
+
 - **GIF is a source format** — the fifth, and the first decode-only
   one. Sniffed by GIF87a/89a, probed for its logical screen, and
   rendered by compositing a frame onto that screen with the frame
