@@ -16,7 +16,7 @@
 
 use hmac::Mac;
 use hmac::digest::KeyInit;
-use oximg::pipeline::{self, Animation};
+use oximg::pipeline::{self, Animation, ImageFormat};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -742,7 +742,13 @@ fn env_value<'a>(opts: &'a Opts, name: &str) -> Option<&'a str> {
 /// Unix env keys are case-sensitive. Fold the knobs we ourselves set
 /// so `--env oximg_bind=::1` actually reaches the child.
 fn canonical_env_key(k: &str) -> String {
-    for name in ["OXIMG_BIND", "OXIMG_WORKERS", "OXIMG_KEY", "OXIMG_SALT"] {
+    for name in [
+        "OXIMG_BIND",
+        "OXIMG_WORKERS",
+        "OXIMG_KEY",
+        "OXIMG_SALT",
+        "OXIMG_SOURCE_BASE_URL",
+    ] {
         if k.eq_ignore_ascii_case(name) {
             return name.to_string();
         }
@@ -845,6 +851,11 @@ fn spawn_server(
     if loopback && !env_named(opts, "OXIMG_KEY") && !env_named(opts, "OXIMG_SALT") {
         cmd.env_remove("OXIMG_KEY");
         cmd.env_remove("OXIMG_SALT");
+    }
+    // IMAGES_DIR is ignored when a source URL is set. Fixture get/matrix
+    // must stay on the committed tree unless the caller opts in.
+    if loopback && !env_named(opts, "OXIMG_SOURCE_BASE_URL") {
+        cmd.env_remove("OXIMG_SOURCE_BASE_URL");
     }
     for (k, v) in &opts.env {
         cmd.env(k, v);
@@ -1346,8 +1357,12 @@ fn cmd_resize(opts: &Opts) -> Result<(), CtlError> {
         Some(p) => p,
         None => {
             tmp = std::env::temp_dir().join(format!(
-                "oximg-ctl-{}-{}x{}.out",
+                "oximg-ctl-{}-{}-{}x{}.out",
                 std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0),
                 w,
                 h
             ));
@@ -1677,9 +1692,30 @@ fn default_formats() -> Vec<String> {
     vec!["".into(), "webp".into()]
 }
 
-/// Bare (no `@{fmt}`) output codec: GIF transcodes to WebP, everything
-/// else keeps the source format.
-fn source_output_token(src: &str) -> Option<String> {
+/// Bare (no `@{fmt}`) output codec. Prefer sniffing bytes — extensions
+/// are never trusted. GIF sources become WebP. Fallback to the
+/// extension only when the file cannot be read.
+fn source_output_token(src: &str, images_dir: &Path) -> Option<String> {
+    let path = Path::new(src);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        images_dir.join(src)
+    };
+    if let Ok(bytes) = std::fs::read(&path)
+        && let Ok((fmt, _, _)) = pipeline::probe(&bytes)
+    {
+        return Some(
+            match fmt {
+                ImageFormat::Gif => "webp",
+                ImageFormat::Jpeg => "jpeg",
+                ImageFormat::Png => "png",
+                ImageFormat::Webp => "webp",
+                ImageFormat::Avif => "avif",
+            }
+            .into(),
+        );
+    }
     let name = src.rsplit('/').next().unwrap_or(src);
     let ext = name.rsplit('.').next()?.to_ascii_lowercase();
     match ext.as_str() {
@@ -1731,7 +1767,7 @@ fn cmd_matrix(
                 let (path, format) = match fmt.as_str() {
                     "" | "source" => (
                         format!("/resize/{w}/{h}/{src_enc}"),
-                        source_output_token(src),
+                        source_output_token(src, &images_dir(opts)),
                     ),
                     token => (
                         format!("/resize/{w}/{h}/{src_enc}@{token}"),

@@ -415,6 +415,21 @@ fn env_last_bind_wins() {
 }
 
 #[test]
+fn auto_spawn_ignores_inherited_source_base_url() {
+    let mut c = ctl();
+    c.env("OXIMG_SOURCE_BASE_URL", "https://example.invalid/");
+    let output = c
+        .args(["get", "/resize/100/100/photo.jpg", "--expect", "200"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout not JSON ({e}): {stdout:?}"));
+    assert_eq!(output.status.code(), Some(0), "{v}");
+    assert_eq!(v["status"], 200, "{v}");
+}
+
+#[test]
 fn auto_spawn_ignores_inherited_signing_keys() {
     let mut c = ctl();
     c.env("OXIMG_KEY", "deadbeef".repeat(8));
@@ -475,6 +490,34 @@ fn matrix_rejects_unknown_format_tokens() {
 }
 
 #[test]
+fn matrix_sniffs_source_bytes_not_the_extension() {
+    let dir = std::env::temp_dir().join(format!("oximg-ctl-sniff-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(fixture("photo.jpg"), dir.join("mismatch.png")).unwrap();
+    let output = ctl()
+        .args([
+            "--images-dir",
+            dir.to_str().unwrap(),
+            "matrix",
+            "--source",
+            "mismatch.png",
+            "--format",
+            "source",
+            "--no-negatives",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout not JSON ({e}): {stdout:?}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(output.status.code(), Some(0), "{v}");
+    assert_eq!(v["cells"][0]["pass"], true, "{v}");
+    assert_eq!(v["cells"][0]["content_type"], "image/jpeg", "{v}");
+}
+
+#[test]
 fn matrix_encodes_percent_in_source_names() {
     let (code, v) = run(&[
         "--dry-run",
@@ -504,13 +547,22 @@ fn sign_rejects_non_ascii_hex_without_panicking() {
 }
 
 #[test]
-fn resize_dry_run_does_not_delete_an_existing_temp() {
-    let tmp = std::env::temp_dir().join(format!("oximg-ctl-{}-80x80.out", std::process::id()));
-    std::fs::write(&tmp, b"keep").unwrap();
-    let (code, v) = run(&["--dry-run", "resize", &fixture("photo.jpg"), "80", "80"]);
+fn resize_dry_run_does_not_delete_an_existing_out() {
+    let out =
+        std::env::temp_dir().join(format!("oximg-ctl-dryrun-keep-{}.out", std::process::id()));
+    std::fs::write(&out, b"keep").unwrap();
+    let (code, v) = run(&[
+        "--dry-run",
+        "resize",
+        &fixture("photo.jpg"),
+        "80",
+        "80",
+        "--out",
+        out.to_str().unwrap(),
+    ]);
     assert_eq!(code, 0, "{v}");
-    assert_eq!(std::fs::read(&tmp).unwrap(), b"keep");
-    let _ = std::fs::remove_file(&tmp);
+    assert_eq!(std::fs::read(&out).unwrap(), b"keep");
+    let _ = std::fs::remove_file(&out);
 }
 
 #[test]
