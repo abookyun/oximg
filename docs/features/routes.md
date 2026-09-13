@@ -63,7 +63,10 @@ Negotiation off (default): no `Vary`. Negotiation on: `Vary: Accept` on every 20
 ## Signing
 
 imgproxy-style: `base64url(HMAC-SHA256(key, salt || path))` over the
-percent-decoded path, unpadded. One signature covers every encoding of
-the same source. Vectors in `tests/server.rs` (`signing_gate`) and
+percent-decoded path, unpadded. One signature covers every
+percent-encoding of that same decoded path (`%2F` vs `/`). It does
+**not** cover a different `@{fmt}` — `/photo.jpg` and
+`/photo.jpg@webp` are different signed material. Vectors in
+`tests/server.rs` (`signing_gate`) and
 `rubygem/oximg-rails/test/server_signer_test.rb` — `oximg-ctl sign`
 must match them.
