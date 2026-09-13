@@ -56,7 +56,7 @@ Pass extras to a spawned server with `oximg-ctl --env KEY=VAL …`.
 | `OXIMG_AVIF_ALPHA_QUALITY` | color quality | |
 | `OXIMG_AVIF_SPEED` | `8` | SVT preset |
 | `OXIMG_AVIF_DECODE_THREADS` | arch-dependent | 2 on x86-64, 1 elsewhere |
-| `OXIMG_MAX_SOURCE_BYTES` | 64 MiB | Compressed cap → 413 |
+| `OXIMG_MAX_SOURCE_BYTES` | 64 MiB | HTTP/GCS download buffer cap → 413 (local `process_path` is not buffered) |
 | `OXIMG_MAX_SRC_PIXELS` | 64e6 | Header-parsed `w*h` cap → 413 |
 | `OXIMG_MAX_DECODED_BYTES` | unset | Estimated decode allocation → 413 |
 | `OXIMG_LOG_DECODED_BYTES_ABOVE` | unset | Name expensive decodes; still serve |
