@@ -7,6 +7,8 @@ Lenient exceptions (the process still boots):
 - `OXIMG_AUTO_FORMAT` skips unknown or build-unavailable tokens with a warning
 - `PRESET` maps anything other than `fast`/`small` to jpegli
 - `OXIMG_TIMING` is presence-based (any set value enables), not `0`/`1`
+- `OXIMG_GCS_ENDPOINT` is read when a `gs://` request is built, not at
+  boot; a bad URL fails that request, not startup
 
 Validated booleans are `0`/`1` only. Long form: [README Configuration](../../README.md#configuration).
 Pipeline knobs are pinned to that README by `src/config.rs`
@@ -28,7 +30,7 @@ Pass extras to a spawned server with `oximg-ctl --env KEY=VAL …`.
 | `OXIMG_LOG` | `error` | `request` also logs 200s |
 | `OXIMG_METRICS` | `0` | `1` serves `/metrics` |
 | `OXIMG_SOURCE_BASE_URL` | unset | `https://…` or `gs://bucket[/prefix]` |
-| `OXIMG_GCS_ENDPOINT` | GCS default | Emulator / PSC |
+| `OXIMG_GCS_ENDPOINT` | GCS default | Emulator / PSC; read per `gs://` request, not fail-closed at boot |
 | `OXIMG_AUTO_FORMAT` | unset | `avif,webp` preference list |
 | `QUALITY` | `80` | JPEG quality (process-wide) |
 | `PRESET` | `jpegli` | `fast` / `small` select mozjpeg |
