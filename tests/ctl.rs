@@ -330,6 +330,37 @@ fn matrix_dry_run_is_the_plan() {
 }
 
 #[test]
+fn matrix_base_skips_the_local_missing_file_negative() {
+    let (code, v) = run(&[
+        "--dry-run",
+        "matrix",
+        "--base",
+        "http://127.0.0.1:9",
+        "--source",
+        "photo.jpg",
+        "--box",
+        "100x100",
+        "--format",
+        "source",
+        "--format",
+        "webp",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    let cells = v["cells"].as_array().unwrap();
+    assert_eq!(
+        cells.len(),
+        4,
+        "no missing.jpg against a foreign tree: {cells:?}"
+    );
+    assert!(
+        cells
+            .iter()
+            .all(|c| c["path"] != "/resize/100/100/missing.jpg"),
+        "{cells:?}"
+    );
+}
+
+#[test]
 fn matrix_runs_against_a_spawned_server() {
     let (code, v) = run(&[
         "matrix",

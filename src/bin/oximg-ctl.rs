@@ -1099,6 +1099,7 @@ impl Http {
                 .build()
                 .map_err(|e| format!("tokio runtime: {e}"))?,
             client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .map_err(|e| format!("http client: {e}"))?,
         })
@@ -1392,7 +1393,10 @@ fn probe_value(bytes: &[u8]) -> Value {
                     });
                 }
                 Ok(None) => {}
-                Err(e) => v["animation_error"] = json!(e.to_string()),
+                Err(e) => {
+                    v["error"] = json!(e.to_string());
+                    v["animation_error"] = json!(e.to_string());
+                }
             }
             v
         }
@@ -1935,15 +1939,19 @@ fn cmd_matrix(
             box_h: 0,
             expected_wh: None,
         });
-        plan.push(Cell {
-            path: "/resize/100/100/missing.jpg".into(),
-            expect: 404,
-            kind: "negative",
-            format: None,
-            box_w: 100,
-            box_h: 100,
-            expected_wh: None,
-        });
+        // missing.jpg is a local-tree assumption. --base is someone
+        // else's files; they may actually have that name.
+        if sniff_local {
+            plan.push(Cell {
+                path: "/resize/100/100/missing.jpg".into(),
+                expect: 404,
+                kind: "negative",
+                format: None,
+                box_w: 100,
+                box_h: 100,
+                expected_wh: None,
+            });
+        }
         plan.push(Cell {
             path: "/resize/100/100/photo.jpg@gif".into(),
             expect: 400,
