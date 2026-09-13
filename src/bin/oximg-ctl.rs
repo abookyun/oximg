@@ -641,6 +641,16 @@ fn parse_box(v: &str) -> Result<(u32, u32), CtlError> {
     let h: u32 = h
         .parse()
         .map_err(|_| CtlError::usage(format!("invalid --box {v:?}")))?;
+    if w == 0 && h == 0 {
+        return Err(CtlError::usage(
+            "--box 0x0 is invalid (HTTP 400); leave one axis 0 to unconstrained",
+        ));
+    }
+    if w > 8192 || h > 8192 {
+        return Err(CtlError::usage(
+            "--box axes are 1–8192 (0 allowed on one axis only)",
+        ));
+    }
     Ok((w, h))
 }
 
@@ -1247,7 +1257,7 @@ fn matrix_geometry_ok(
     report: &Value,
     box_w: u32,
     box_h: u32,
-    expected: Option<(u32, u32)>,
+    expected: Option<((u32, u32), (u32, u32))>,
 ) -> bool {
     let Some(w) = report
         .pointer("/probe/width")
@@ -1270,7 +1280,9 @@ fn matrix_geometry_ok(
         return false;
     }
     match expected {
-        Some((ew, eh)) => w == ew && h == eh,
+        // Stored vs displayed: orientations 5–8 swap axes. Accept either
+        // fit rather than parsing EXIF in the control plane.
+        Some((stored, swapped)) => (w, h) == stored || (w, h) == swapped,
         None => true,
     }
 }
@@ -1868,7 +1880,7 @@ fn cmd_matrix(
         format: Option<String>,
         box_w: u32,
         box_h: u32,
-        expected_wh: Option<(u32, u32)>,
+        expected_wh: Option<((u32, u32), (u32, u32))>,
     }
     let mut plan: Vec<Cell> = Vec::new();
     for src in &sources {
@@ -1877,7 +1889,8 @@ fn cmd_matrix(
             .then(|| source_stored_size(src, &images_dir(opts)))
             .flatten();
         for (w, h) in &boxes {
-            let expected_wh = src_wh.map(|(sw, sh)| fit_box(sw, sh, *w, *h));
+            let expected_wh =
+                src_wh.map(|(sw, sh)| (fit_box(sw, sh, *w, *h), fit_box(sh, sw, *w, *h)));
             for fmt in &formats {
                 let (path, format) = match fmt.as_str() {
                     "" | "source" => (

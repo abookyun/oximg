@@ -505,6 +505,17 @@ fn matrix_rejects_unknown_format_tokens() {
 }
 
 #[test]
+fn matrix_rejects_invalid_boxes_as_usage() {
+    let (code, v) = run(&["--dry-run", "matrix", "--box", "0x0"]);
+    assert_eq!(code, 2, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("0x0"), "{v}");
+
+    let (code, v) = run(&["--dry-run", "matrix", "--box", "8193x100"]);
+    assert_eq!(code, 2, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("8192"), "{v}");
+}
+
+#[test]
 fn matrix_sniffs_source_bytes_not_the_extension() {
     let dir = std::env::temp_dir().join(format!("oximg-ctl-sniff-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
