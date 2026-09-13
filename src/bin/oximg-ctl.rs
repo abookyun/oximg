@@ -768,8 +768,13 @@ fn parse_bind(v: &str) -> Option<IpAddr> {
 }
 
 fn effective_bind(opts: &Opts, loopback: bool) -> IpAddr {
-    if let Some(ip) = env_value(opts, "OXIMG_BIND").and_then(parse_bind) {
-        return ip;
+    // An explicit --env OXIMG_BIND= (even empty) is the caller's value.
+    // Empty matches the server: unset/blank → 0.0.0.0. Do not fall
+    // through to a parent OXIMG_BIND that the child will not use.
+    if env_named(opts, "OXIMG_BIND") {
+        return env_value(opts, "OXIMG_BIND")
+            .and_then(parse_bind)
+            .unwrap_or(IpAddr::from([0, 0, 0, 0]));
     }
     if loopback {
         return IpAddr::from([127, 0, 0, 1]);
@@ -1158,6 +1163,10 @@ fn image_200_proved(res: &HttpResult, report: &Value) -> bool {
     }
 }
 
+fn media_type_essence(ct: &str) -> &str {
+    ct.split(';').next().unwrap_or(ct).trim()
+}
+
 fn content_type_matches_token(ct: &str, token: &str) -> bool {
     let want = match token {
         "webp" => "image/webp",
@@ -1166,11 +1175,11 @@ fn content_type_matches_token(ct: &str, token: &str) -> bool {
         "avif" => "image/avif",
         _ => return false,
     };
-    ct == want || ct.starts_with(&format!("{want};"))
+    media_type_essence(ct).eq_ignore_ascii_case(want)
 }
 
-/// Matrix 200 cells must be images that probe. Unlike `image_200_proved`,
-/// a text 200 (e.g. `/health`) is not a pass.
+/// Matrix 200 cells must be images that probe as the labeled type.
+/// Unlike `image_200_proved`, a text 200 (e.g. `/health`) is not a pass.
 fn matrix_200_proved(res: &HttpResult, report: &Value) -> bool {
     if res.status != 200 {
         return false;
@@ -1180,11 +1189,18 @@ fn matrix_200_proved(res: &HttpResult, report: &Value) -> bool {
         .get("content-type")
         .map(String::as_str)
         .unwrap_or("");
-    if !ct.starts_with("image/") {
+    let header = media_type_essence(ct);
+    if !header.starts_with("image/") {
         return false;
     }
     match report.get("probe") {
-        Some(p) => p.get("error").is_none() && p.get("width").is_some(),
+        Some(p) => {
+            p.get("error").is_none()
+                && p.get("width").is_some()
+                && p.get("content_type")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|pct| media_type_essence(pct).eq_ignore_ascii_case(header))
+        }
         None => false,
     }
 }
@@ -1416,16 +1432,22 @@ fn cmd_resize(opts: &Opts) -> Result<(), CtlError> {
     }
     let bytes = std::fs::read(out_path)
         .map_err(|e| CtlError::fail(format!("read {}: {e}", out_path.display()), None))?;
+    let probe = probe_value(&bytes);
     let mut report = json!({
         "ok": true,
         "bytes": bytes.len(),
         "sha256": sha256_hex(&bytes),
         "ms": (ms * 10.0).round() / 10.0,
-        "probe": probe_value(&bytes),
+        "probe": probe,
         "stderr": stderr,
     });
     if !ephemeral {
         report["out"] = json!(out_path.display().to_string());
+    }
+    if report["probe"].get("error").is_some() {
+        report["ok"] = json!(false);
+        report["error"] = json!("output did not probe as an image");
+        return Err(CtlError::from_value(1, report));
     }
     emit(&report, opts.pretty);
     Ok(())
@@ -1752,6 +1774,10 @@ fn cmd_matrix(
     } else {
         formats
     };
+    // Local fixtures are only an oracle when we spawned the server.
+    // --base talks to someone else's tree; sniffing our images_dir
+    // would fail a correct remote PNG served as photo.jpg.
+    let sniff_local = base.is_none();
 
     struct Cell {
         path: String,
@@ -1767,7 +1793,11 @@ fn cmd_matrix(
                 let (path, format) = match fmt.as_str() {
                     "" | "source" => (
                         format!("/resize/{w}/{h}/{src_enc}"),
-                        source_output_token(src, &images_dir(opts)),
+                        if sniff_local {
+                            source_output_token(src, &images_dir(opts))
+                        } else {
+                            None
+                        },
                     ),
                     token => (
                         format!("/resize/{w}/{h}/{src_enc}@{token}"),

@@ -396,6 +396,20 @@ fn serve_dry_run_redacts_signing_secrets() {
 }
 
 #[test]
+fn empty_bind_env_does_not_inherit_parent() {
+    let (code, v) = run(&[
+        "--env",
+        "OXIMG_BIND=",
+        "get",
+        "/resize/100/100/photo.jpg",
+        "--expect",
+        "200",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["status"], 200, "{v}");
+}
+
+#[test]
 fn env_last_bind_wins() {
     let (code, v) = run(&[
         "--env",
