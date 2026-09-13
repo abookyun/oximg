@@ -408,6 +408,59 @@ pub fn probe(bytes: &[u8]) -> Result<(ImageFormat, usize, usize), Error> {
     probe_inner(bytes).map_err(|e| Error::classify(e, false))
 }
 
+/// Like [`probe`], but width/height are the **displayed** frame after
+/// auto-rotate (EXIF/PNG eXIf/WebP EXIF/AVIF irot). Orientations 5–8
+/// swap the axes relative to [`probe`]. When `OXIMG_AUTO_ROTATE=0`,
+/// this is identical to [`probe`].
+pub fn probe_display(bytes: &[u8]) -> Result<(ImageFormat, usize, usize), Error> {
+    probe_display_inner(bytes).map_err(|e| Error::classify(e, false))
+}
+
+fn probe_display_inner(bytes: &[u8]) -> Result<(ImageFormat, usize, usize)> {
+    let (fmt, w, h) = probe_inner(bytes)?;
+    if !crate::config::config().auto_rotate {
+        return Ok((fmt, w, h));
+    }
+    let (dw, dh) = peek_orientation(fmt, bytes).display_dims(w, h);
+    Ok((fmt, dw, dh))
+}
+
+fn peek_orientation(fmt: ImageFormat, bytes: &[u8]) -> crate::meta::Orientation {
+    use crate::meta::Orientation;
+    match fmt {
+        ImageFormat::Jpeg => {
+            let mut prefix = Vec::new();
+            crate::meta::scan_jpeg_meta(&mut std::io::Cursor::new(bytes), &mut prefix, false)
+                .orientation
+        }
+        ImageFormat::Png => png::Decoder::new(std::io::Cursor::new(bytes))
+            .read_info()
+            .ok()
+            .and_then(|r| {
+                r.info()
+                    .exif_metadata
+                    .as_ref()
+                    .and_then(|d| Orientation::from_exif_payload(d))
+            })
+            .unwrap_or(Orientation::UPRIGHT),
+        ImageFormat::Webp => webp_metadata(bytes, false, true)
+            .1
+            .and_then(|d| Orientation::from_exif_payload(&d))
+            .unwrap_or(Orientation::UPRIGHT),
+        ImageFormat::Avif => {
+            #[cfg(feature = "avif")]
+            {
+                crate::avif::extract_orientation(bytes)
+            }
+            #[cfg(not(feature = "avif"))]
+            {
+                Orientation::UPRIGHT
+            }
+        }
+        ImageFormat::Gif => Orientation::UPRIGHT,
+    }
+}
+
 fn probe_inner(bytes: &[u8]) -> Result<(ImageFormat, usize, usize)> {
     let mut header = [0u8; 12];
     anyhow::ensure!(bytes.len() >= 12, "source too short");

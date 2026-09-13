@@ -442,6 +442,18 @@ fn fit_dims_never_enlarges() {
 }
 
 #[test]
+fn probe_display_matches_probe_on_unrotated_jpeg() {
+    let bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/photo.jpg"
+    ))
+    .unwrap();
+    let a = probe(&bytes).unwrap();
+    let b = probe_display(&bytes).unwrap();
+    assert_eq!(a, b);
+}
+
+#[test]
 fn band_resize_matches_single_thread() {
     // Synthetic gradient image; verify 2/3-band parallel resize is
     // byte-identical to the single-threaded output.
