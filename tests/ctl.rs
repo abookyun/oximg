@@ -589,3 +589,72 @@ fn resize_without_out_does_not_leave_a_temp_file() {
     );
     assert_eq!(v["probe"]["width"], 80);
 }
+
+/// Live `serve`: one ready JSON object, `/health` answers, SIGTERM on
+/// the wrapper reaps the oximg child. SIGKILL would skip handlers.
+#[test]
+#[cfg(unix)]
+fn serve_prints_ready_json_and_reaps_the_child() {
+    use std::io::{BufRead, BufReader};
+    use std::time::{Duration, Instant};
+
+    let mut child = ctl()
+        .arg("serve")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn oximg-ctl serve");
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+    std::thread::spawn(move || {
+        let mut sink = std::io::sink();
+        let _ = std::io::copy(&mut { stderr }, &mut sink);
+    });
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    let line = rx
+        .recv_timeout(Duration::from_secs(20))
+        .expect("serve ready JSON");
+    let v: Value = serde_json::from_str(line.trim())
+        .unwrap_or_else(|e| panic!("serve stdout was not JSON ({e}): {line:?}"));
+    assert_eq!(v["ok"], true, "{v}");
+    let port = v["port"].as_u64().expect("port") as u16;
+    let oximg_pid = v["pid"].as_u64().expect("pid");
+    let resp = ureq::get(format!("http://127.0.0.1:{port}/health"))
+        .call()
+        .expect("GET /health");
+    assert_eq!(resp.status().as_u16(), 200);
+    drop(resp);
+
+    assert!(
+        Command::new("kill")
+            .args(["-TERM", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Ok(Some(_)) = child.try_wait() {
+            break;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("oximg-ctl serve did not exit after SIGTERM");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let still = Command::new("kill")
+        .args(["-0", &oximg_pid.to_string()])
+        .status()
+        .unwrap();
+    assert!(
+        !still.success(),
+        "oximg child {oximg_pid} still running after wrapper exit"
+    );
+}
