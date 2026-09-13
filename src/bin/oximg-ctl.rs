@@ -1265,7 +1265,7 @@ fn matrix_geometry_ok(
     report: &Value,
     box_w: u32,
     box_h: u32,
-    expected: Option<((u32, u32), (u32, u32))>,
+    expected: Option<(u32, u32)>,
 ) -> bool {
     let Some(w) = report
         .pointer("/probe/width")
@@ -1288,9 +1288,7 @@ fn matrix_geometry_ok(
         return false;
     }
     match expected {
-        // Stored vs displayed: orientations 5–8 swap axes. Accept either
-        // fit rather than parsing EXIF in the control plane.
-        Some((stored, swapped)) => (w, h) == stored || (w, h) == swapped,
+        Some((ew, eh)) => (w, h) == (ew, eh),
         None => true,
     }
 }
@@ -1843,7 +1841,7 @@ fn source_output_token(src: &str, images_dir: &Path) -> Option<String> {
     }
 }
 
-fn source_stored_size(src: &str, images_dir: &Path) -> Option<(u32, u32)> {
+fn source_display_size(src: &str, images_dir: &Path) -> Option<(u32, u32)> {
     let path = Path::new(src);
     let path = if path.is_absolute() {
         path.to_path_buf()
@@ -1851,7 +1849,7 @@ fn source_stored_size(src: &str, images_dir: &Path) -> Option<(u32, u32)> {
         images_dir.join(src)
     };
     let bytes = std::fs::read(path).ok()?;
-    let (_, w, h) = pipeline::probe(&bytes).ok()?;
+    let (_, w, h) = pipeline::probe_display(&bytes).ok()?;
     Some((w as u32, h as u32))
 }
 
@@ -1891,23 +1889,23 @@ fn cmd_matrix(
         format: Option<String>,
         box_w: u32,
         box_h: u32,
-        expected_wh: Option<((u32, u32), (u32, u32))>,
+        expected_wh: Option<(u32, u32)>,
     }
+    let images = images_dir(opts);
     let mut plan: Vec<Cell> = Vec::new();
     for src in &sources {
         let src_enc = percent_encode_path(src);
         let src_wh = sniff_local
-            .then(|| source_stored_size(src, &images_dir(opts)))
+            .then(|| source_display_size(src, &images))
             .flatten();
         for (w, h) in &boxes {
-            let expected_wh =
-                src_wh.map(|(sw, sh)| (fit_box(sw, sh, *w, *h), fit_box(sh, sw, *w, *h)));
+            let expected_wh = src_wh.map(|(sw, sh)| fit_box(sw, sh, *w, *h));
             for fmt in &formats {
                 let (path, format) = match fmt.as_str() {
                     "" | "source" => (
                         format!("/resize/{w}/{h}/{src_enc}"),
                         if sniff_local {
-                            source_output_token(src, &images_dir(opts))
+                            source_output_token(src, &images)
                         } else {
                             None
                         },
@@ -1939,9 +1937,10 @@ fn cmd_matrix(
             box_h: 0,
             expected_wh: None,
         });
-        // missing.jpg is a local-tree assumption. --base is someone
-        // else's files; they may actually have that name.
-        if sniff_local {
+        // Only when that key is actually absent from this images dir.
+        // --images-dir may contain a real missing.jpg; --base is a
+        // foreign tree.
+        if sniff_local && !images.join("missing.jpg").is_file() {
             plan.push(Cell {
                 path: "/resize/100/100/missing.jpg".into(),
                 expect: 404,

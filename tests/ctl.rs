@@ -330,6 +330,36 @@ fn matrix_dry_run_is_the_plan() {
 }
 
 #[test]
+fn matrix_negatives_omit_present_missing_jpg() {
+    let dir = std::env::temp_dir().join(format!("oximg-ctl-has-missing-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(fixture("photo.jpg"), dir.join("photo.jpg")).unwrap();
+    std::fs::copy(fixture("photo.jpg"), dir.join("missing.jpg")).unwrap();
+    let (code, v) = run(&[
+        "--dry-run",
+        "--images-dir",
+        dir.to_str().unwrap(),
+        "matrix",
+        "--source",
+        "photo.jpg",
+        "--box",
+        "100x100",
+        "--format",
+        "source",
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(code, 0, "{v}");
+    let cells = v["cells"].as_array().unwrap();
+    assert!(
+        cells
+            .iter()
+            .all(|c| c["path"] != "/resize/100/100/missing.jpg"),
+        "must not 404 a file that exists: {cells:?}"
+    );
+}
+
+#[test]
 fn matrix_base_skips_the_local_missing_file_negative() {
     let (code, v) = run(&[
         "--dry-run",
