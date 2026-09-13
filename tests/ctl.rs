@@ -360,6 +360,36 @@ fn matrix_negatives_omit_present_missing_jpg() {
 }
 
 #[test]
+fn matrix_negatives_omit_missing_jpg_directory() {
+    let dir = std::env::temp_dir().join(format!("oximg-ctl-missdir-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(fixture("photo.jpg"), dir.join("photo.jpg")).unwrap();
+    std::fs::create_dir_all(dir.join("missing.jpg")).unwrap();
+    let (code, v) = run(&[
+        "--dry-run",
+        "--images-dir",
+        dir.to_str().unwrap(),
+        "matrix",
+        "--source",
+        "photo.jpg",
+        "--box",
+        "100x100",
+        "--format",
+        "source",
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(code, 0, "{v}");
+    let cells = v["cells"].as_array().unwrap();
+    assert!(
+        cells
+            .iter()
+            .all(|c| c["path"] != "/resize/100/100/missing.jpg"),
+        "a directory named missing.jpg is not a 404: {cells:?}"
+    );
+}
+
+#[test]
 fn matrix_env_source_base_skips_local_oracle_negatives() {
     let (code, v) = run(&[
         "--dry-run",

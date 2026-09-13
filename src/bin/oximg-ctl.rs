@@ -33,9 +33,10 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 mod unix_child {
     use std::sync::Once;
-    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
     static CHILD: AtomicI32 = AtomicI32::new(0);
+    static SIGNALED: AtomicBool = AtomicBool::new(false);
 
     unsafe extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
@@ -48,6 +49,7 @@ mod unix_child {
     extern "C" fn forward(sig: i32) {
         let pid = CHILD.load(Ordering::SeqCst);
         if pid > 0 {
+            SIGNALED.store(true, Ordering::SeqCst);
             unsafe {
                 kill(pid, sig);
             }
@@ -63,11 +65,17 @@ mod unix_child {
     }
 
     pub fn set_pid(pid: u32) {
+        SIGNALED.store(false, Ordering::SeqCst);
         CHILD.store(pid as i32, Ordering::SeqCst);
     }
 
     pub fn clear() {
         CHILD.store(0, Ordering::SeqCst);
+        SIGNALED.store(false, Ordering::SeqCst);
+    }
+
+    pub fn signaled() -> bool {
+        SIGNALED.load(Ordering::SeqCst)
     }
 }
 
@@ -772,7 +780,7 @@ fn canonical_env_key(k: &str) -> String {
 
 fn child_auto_rotate(opts: &Opts) -> bool {
     if let Some(v) = env_value(opts, "OXIMG_AUTO_ROTATE") {
-        return v.trim() != "0";
+        return v != "0";
     }
     std::env::var("OXIMG_AUTO_ROTATE").as_deref() != Ok("0")
 }
@@ -1082,10 +1090,31 @@ fn wait_child_until(child: &mut Child, budget: Duration) -> Option<ExitStatus> {
 }
 
 fn wait_served_child(spawned: &mut Spawned) -> std::io::Result<ExitStatus> {
-    // Unix: SIGINT/SIGTERM are forwarded to the child by unix_child::forward
-    // so oximg can drain. wait() returns when that finishes. Drop still
-    // SIGKILLs if we unwind before then.
-    spawned.child.wait()
+    #[cfg(unix)]
+    {
+        // Drain after SIGINT/SIGTERM, then SIGKILL so a stuck request
+        // cannot hang the wrapper (and SIGKILL of the wrapper cannot
+        // leave the child orphaned because we reaped it first).
+        const GRACE: Duration = Duration::from_secs(10);
+        let mut grace_from = None;
+        loop {
+            if let Some(st) = spawned.child.try_wait()? {
+                return Ok(st);
+            }
+            if unix_child::signaled() {
+                let start = grace_from.get_or_insert_with(Instant::now);
+                if start.elapsed() >= GRACE {
+                    let _ = spawned.child.kill();
+                    return spawned.child.wait();
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        spawned.child.wait()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1955,7 +1984,7 @@ fn cmd_matrix(
         // Only when that key is actually absent from this images dir.
         // --images-dir may contain a real missing.jpg; --base is a
         // foreign tree.
-        if sniff_local && !images.join("missing.jpg").is_file() {
+        if sniff_local && matches!(images.join("missing.jpg").try_exists(), Ok(false)) {
             plan.push(Cell {
                 path: "/resize/100/100/missing.jpg".into(),
                 expect: 404,
