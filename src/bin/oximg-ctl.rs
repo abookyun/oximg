@@ -1227,6 +1227,54 @@ fn matrix_200_proved(res: &HttpResult, report: &Value) -> bool {
     }
 }
 
+/// Keep in lockstep with `pipeline::fit_dims`: proportional shrink,
+/// never enlarge, round, at least 1px. `0` on an axis is unconstrained
+/// (the HTTP grammar).
+fn fit_box(src_w: u32, src_h: u32, box_w: u32, box_h: u32) -> (u32, u32) {
+    let max_w = if box_w == 0 { u32::MAX } else { box_w };
+    let max_h = if box_h == 0 { u32::MAX } else { box_h };
+    let scale = f64::min(
+        max_w as f64 / src_w as f64,
+        f64::min(max_h as f64 / src_h as f64, 1.0),
+    );
+    (
+        ((src_w as f64 * scale).round() as u32).max(1),
+        ((src_h as f64 * scale).round() as u32).max(1),
+    )
+}
+
+fn matrix_geometry_ok(
+    report: &Value,
+    box_w: u32,
+    box_h: u32,
+    expected: Option<(u32, u32)>,
+) -> bool {
+    let Some(w) = report
+        .pointer("/probe/width")
+        .and_then(Value::as_u64)
+        .map(|n| n as u32)
+    else {
+        return false;
+    };
+    let Some(h) = report
+        .pointer("/probe/height")
+        .and_then(Value::as_u64)
+        .map(|n| n as u32)
+    else {
+        return false;
+    };
+    if box_w > 0 && w > box_w {
+        return false;
+    }
+    if box_h > 0 && h > box_h {
+        return false;
+    }
+    match expected {
+        Some((ew, eh)) => w == ew && h == eh,
+        None => true,
+    }
+}
+
 fn redact_env_value<'a>(key: &str, value: &'a str) -> &'a str {
     let u = key.to_ascii_uppercase();
     if ["KEY", "SALT", "SECRET", "TOKEN", "PASSWORD"]
@@ -1772,6 +1820,18 @@ fn source_output_token(src: &str, images_dir: &Path) -> Option<String> {
     }
 }
 
+fn source_stored_size(src: &str, images_dir: &Path) -> Option<(u32, u32)> {
+    let path = Path::new(src);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        images_dir.join(src)
+    };
+    let bytes = std::fs::read(path).ok()?;
+    let (_, w, h) = pipeline::probe(&bytes).ok()?;
+    Some((w as u32, h as u32))
+}
+
 fn cmd_matrix(
     opts: &Opts,
     sources: Vec<String>,
@@ -1806,11 +1866,18 @@ fn cmd_matrix(
         expect: u16,
         kind: &'static str,
         format: Option<String>,
+        box_w: u32,
+        box_h: u32,
+        expected_wh: Option<(u32, u32)>,
     }
     let mut plan: Vec<Cell> = Vec::new();
     for src in &sources {
         let src_enc = percent_encode_path(src);
+        let src_wh = sniff_local
+            .then(|| source_stored_size(src, &images_dir(opts)))
+            .flatten();
         for (w, h) in &boxes {
+            let expected_wh = src_wh.map(|(sw, sh)| fit_box(sw, sh, *w, *h));
             for fmt in &formats {
                 let (path, format) = match fmt.as_str() {
                     "" | "source" => (
@@ -1831,6 +1898,9 @@ fn cmd_matrix(
                     expect: 200,
                     kind: "cell",
                     format,
+                    box_w: *w,
+                    box_h: *h,
+                    expected_wh,
                 });
             }
         }
@@ -1841,18 +1911,27 @@ fn cmd_matrix(
             expect: 400,
             kind: "negative",
             format: None,
+            box_w: 0,
+            box_h: 0,
+            expected_wh: None,
         });
         plan.push(Cell {
             path: "/resize/100/100/missing.jpg".into(),
             expect: 404,
             kind: "negative",
             format: None,
+            box_w: 100,
+            box_h: 100,
+            expected_wh: None,
         });
         plan.push(Cell {
             path: "/resize/100/100/photo.jpg@gif".into(),
             expect: 400,
             kind: "negative",
             format: None,
+            box_w: 100,
+            box_h: 100,
+            expected_wh: None,
         });
     }
 
@@ -1894,7 +1973,8 @@ fn cmd_matrix(
                 let mut row = get_report(&res, None)?;
                 let mut pass = res.status == c.expect;
                 if pass && c.expect == 200 {
-                    pass = matrix_200_proved(&res, &row);
+                    pass = matrix_200_proved(&res, &row)
+                        && matrix_geometry_ok(&row, c.box_w, c.box_h, c.expected_wh);
                     if pass && let Some(token) = c.format.as_deref() {
                         let ct = res
                             .headers

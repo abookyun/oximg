@@ -347,6 +347,7 @@ fn matrix_runs_against_a_spawned_server() {
     assert_eq!(v["cells"][0]["pass"], true);
     assert_eq!(v["cells"][0]["status"], 200);
     assert_eq!(v["cells"][0]["probe"]["width"], 100);
+    assert_eq!(v["cells"][0]["probe"]["height"], 75);
 }
 
 #[test]
