@@ -103,7 +103,9 @@ spawn the server, GET a path, probe, resize, sign, or walk a fixture
 matrix. stdout is one JSON object (except `--help` and `--version`).
 Docker images still copy only `oximg`. The compressed feature map (how
 to reach a behavior and what proof looks like) is
-[`docs/features/`](docs/features/).
+[`docs/features/`](docs/features/). Agents must follow
+[`.grok/skills/verify/SKILL.md`](.grok/skills/verify/SKILL.md):
+`cargo test` green is not done until ctl JSON matches the map.
 
 ```sh
 cargo build --release                 # both oximg and oximg-ctl
