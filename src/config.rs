@@ -408,10 +408,18 @@ mod tests {
                 );
             }
         }
+        // Do not scan config.rs: PROCESS names appear in the inventory
+        // itself. Always include gcs.rs so --no-default-features still
+        // sees GCE_METADATA_HOST.
+        let process_sources = [
+            include_str!("main.rs"),
+            include_str!("cli.rs"),
+            include_str!("pipeline/gcs.rs"),
+        ];
         for name in PROCESS {
             let lit = format!("\"{name}\"");
             assert!(
-                sources.iter().any(|s| s.contains(&lit)),
+                process_sources.iter().any(|s| s.contains(&lit)),
                 "{name} is in PROCESS but not read as a string literal"
             );
         }
@@ -434,6 +442,10 @@ mod tests {
             from_map.difference(&from_code).collect::<Vec<_>>(),
             from_code.difference(&from_map).collect::<Vec<_>>(),
         );
+        let http = map
+            .split("## Library")
+            .next()
+            .expect("## Library heading in docs/features/errors.md");
         let main = include_str!("main.rs");
         for (i, _) in main.match_indices("StatusCode::") {
             let rest = &main[i + "StatusCode::".len()..];
@@ -447,8 +459,8 @@ mod tests {
             let status = status_from_ident(ident);
             let row = format!("| {status} |");
             assert!(
-                map.contains(&row),
-                "HTTP {status} has no table row in docs/features/errors.md"
+                http.contains(&row),
+                "HTTP {status} has no table row in the HTTP section of docs/features/errors.md"
             );
         }
         // 200 (success) and 405 (axum method-router) are not spelled
@@ -456,8 +468,8 @@ mod tests {
         for status in [200, 405] {
             let row = format!("| {status} |");
             assert!(
-                map.contains(&row),
-                "HTTP {status} has no table row in docs/features/errors.md"
+                http.contains(&row),
+                "HTTP {status} has no table row in the HTTP section of docs/features/errors.md"
             );
         }
     }
