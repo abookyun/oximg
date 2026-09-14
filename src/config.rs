@@ -342,7 +342,7 @@ pub(crate) fn config() -> &'static Config {
 mod tests {
     use super::{KNOBS, PROCESS, STARTUP};
     use crate::pipeline::ImageFormat;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     /// Every knob in the inventory must appear in the README, and
     /// every OXIMG_* the crate reads must be in the inventory — the
@@ -434,7 +434,8 @@ mod tests {
         let from_code: HashSet<&str> = error_kind_variants(include_str!("pipeline/error.rs"))
             .into_iter()
             .collect();
-        let from_map: HashSet<&str> = kind_column(map).into_iter().collect();
+        let kind_http_doc = kind_http_pairs(map);
+        let from_map: HashSet<&str> = kind_http_doc.keys().copied().collect();
         assert_eq!(
             from_map,
             from_code,
@@ -442,11 +443,26 @@ mod tests {
             from_map.difference(&from_code).collect::<Vec<_>>(),
             from_code.difference(&from_map).collect::<Vec<_>>(),
         );
+        let main = include_str!("main.rs");
+        let kind_http_code = error_kind_http_from_main(main);
+        for (kind, status) in &kind_http_doc {
+            assert_eq!(
+                kind_http_code.get(kind),
+                Some(status),
+                "{kind} documented as {status}, error_response maps {:?}",
+                kind_http_code.get(kind)
+            );
+        }
+        assert_eq!(
+            unknown_http_row(map),
+            Some(500),
+            "unknown (non_exhaustive) Kind row must be HTTP 500"
+        );
         let http = map
             .split("## Library")
             .next()
             .expect("## Library heading in docs/features/errors.md");
-        let main = include_str!("main.rs");
+        let mut from_code_status: HashSet<u16> = HashSet::new();
         for (i, _) in main.match_indices("StatusCode::") {
             let rest = &main[i + "StatusCode::".len()..];
             let end = rest
@@ -456,22 +472,20 @@ mod tests {
             if ident.is_empty() {
                 continue;
             }
-            let status = status_from_ident(ident);
-            let row = format!("| {status} |");
-            assert!(
-                http.contains(&row),
-                "HTTP {status} has no table row in the HTTP section of docs/features/errors.md"
-            );
+            from_code_status.insert(status_from_ident(ident));
         }
         // 200 (success) and 405 (axum method-router) are not spelled
         // StatusCode::OK / METHOD_NOT_ALLOWED in main.rs.
-        for status in [200, 405] {
-            let row = format!("| {status} |");
-            assert!(
-                http.contains(&row),
-                "HTTP {status} has no table row in the HTTP section of docs/features/errors.md"
-            );
-        }
+        from_code_status.insert(200);
+        from_code_status.insert(405);
+        let from_http = http_status_column(http);
+        assert_eq!(
+            from_http,
+            from_code_status,
+            "HTTP section statuses != StatusCode uses in main.rs\nextra in map: {:?}\nmissing from map: {:?}",
+            from_http.difference(&from_code_status).collect::<Vec<_>>(),
+            from_code_status.difference(&from_http).collect::<Vec<_>>(),
+        );
     }
 
     // Variant identifiers of `pub enum ErrorKind` (docs/attributes skipped).
@@ -551,7 +565,11 @@ mod tests {
         for &(tok, fmt) in ImageFormat::OUTPUT_TOKENS {
             assert_eq!(ImageFormat::from_token(tok), Some(fmt), "{tok}");
         }
-        let refused_doc: HashSet<&str> = at_tokens(map).into_iter().collect();
+        let refused_line = map
+            .lines()
+            .find(|l| l.contains("are refused"))
+            .expect("refused-token sentence in docs/features/formats.md");
+        let refused_doc: HashSet<&str> = at_tokens(refused_line).into_iter().collect();
         let refused_code: HashSet<&str> =
             ImageFormat::REFUSED_OUTPUT_TOKENS.iter().copied().collect();
         assert_eq!(
@@ -616,22 +634,86 @@ mod tests {
             .collect()
     }
 
-    fn kind_column(map: &str) -> Vec<&str> {
-        let mut kinds = Vec::new();
-        for line in map.lines() {
+    fn kind_http_pairs(map: &str) -> HashMap<&str, u16> {
+        let lib = map
+            .split("## Library")
+            .nth(1)
+            .expect("## Library heading in docs/features/errors.md");
+        let mut pairs = HashMap::new();
+        for line in lib.lines() {
             let Some(rest) = line.trim().strip_prefix("| `") else {
                 continue;
             };
             let Some(end) = rest.find('`') else { continue };
             let name = &rest[..end];
-            if name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            if !(name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
                 && name.chars().all(|c| c.is_ascii_alphanumeric())
-                && name.chars().any(|c| c.is_ascii_lowercase())
+                && name.chars().any(|c| c.is_ascii_lowercase()))
             {
-                kinds.push(name);
+                continue;
             }
+            let after = rest[end + 1..].trim_start_matches(|c: char| c == ' ' || c == '|');
+            let status_cell = after.split('|').next().unwrap_or("").trim();
+            let status: u16 = status_cell.parse().unwrap_or_else(|_| {
+                panic!("{name} Kind row has no HTTP status, got {status_cell:?}")
+            });
+            pairs.insert(name, status);
         }
-        kinds
+        pairs
+    }
+
+    fn unknown_http_row(map: &str) -> Option<u16> {
+        map.lines().find_map(|line| {
+            let t = line.trim();
+            if !t.contains("non_exhaustive") {
+                return None;
+            }
+            t.split('|').nth(2).and_then(|c| c.trim().parse().ok())
+        })
+    }
+
+    fn http_status_column(http: &str) -> HashSet<u16> {
+        http.lines()
+            .filter_map(|line| {
+                let t = line.trim();
+                let rest = t.strip_prefix('|')?;
+                let cell = rest.split('|').next()?.trim();
+                cell.parse().ok()
+            })
+            .collect()
+    }
+
+    fn error_kind_http_from_main(src: &str) -> HashMap<&str, u16> {
+        let start = src
+            .find("fn error_response")
+            .expect("fn error_response in main.rs");
+        let slice = &src[start..];
+        let end = slice[1..]
+            .find("\nfn ")
+            .map(|i| i + 1)
+            .unwrap_or(slice.len());
+        let body = &slice[..end];
+        let mut map = HashMap::new();
+        let mut i = 0;
+        while let Some(p) = body[i..].find("ErrorKind::") {
+            let rest = &body[i + p + "ErrorKind::".len()..];
+            let name_end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            let name = &rest[..name_end];
+            if let Some(s) = rest.find("StatusCode::") {
+                let ident_rest = &rest[s + "StatusCode::".len()..];
+                let ident_end = ident_rest
+                    .find(|c: char| !(c.is_ascii_alphabetic() || c == '_'))
+                    .unwrap_or(ident_rest.len());
+                let ident = &ident_rest[..ident_end];
+                if !name.is_empty() && !ident.is_empty() {
+                    map.insert(name, status_from_ident(ident));
+                }
+            }
+            i += p + "ErrorKind::".len();
+        }
+        map
     }
 
     fn backtick_token_idents(s: &str) -> Vec<&str> {
