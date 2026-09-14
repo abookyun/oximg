@@ -173,7 +173,13 @@ const STARTUP: &[&str] = &[
 
 /// Process env without the `OXIMG_` prefix; still in the feature map.
 #[cfg(test)]
-const PROCESS: &[&str] = &["PORT", "IMAGES_DIR", "QUALITY", "PRESET"];
+const PROCESS: &[&str] = &[
+    "PORT",
+    "IMAGES_DIR",
+    "QUALITY",
+    "PRESET",
+    "GCE_METADATA_HOST",
+];
 
 fn parsed<T: std::str::FromStr>(name: &str) -> Option<T> {
     std::env::var(name).ok().and_then(|v| v.parse().ok())
@@ -336,6 +342,7 @@ pub(crate) fn config() -> &'static Config {
 mod tests {
     use super::{KNOBS, PROCESS, STARTUP};
     use crate::pipeline::ImageFormat;
+    use std::collections::HashSet;
 
     /// Every knob in the inventory must appear in the README, and
     /// every OXIMG_* the crate reads must be in the inventory — the
@@ -348,11 +355,21 @@ mod tests {
         let map = include_str!("../docs/features/knobs.md");
         for k in KNOBS {
             assert!(readme.contains(k), "{k} is not documented in README.md");
-            assert!(map.contains(k), "{k} is not in docs/features/knobs.md");
         }
-        for k in STARTUP.iter().chain(PROCESS) {
-            assert!(map.contains(k), "{k} is not in docs/features/knobs.md");
-        }
+        let inventory: HashSet<&str> = KNOBS
+            .iter()
+            .chain(STARTUP)
+            .chain(PROCESS)
+            .copied()
+            .collect();
+        let documented = knob_table_names(map);
+        assert_eq!(
+            documented,
+            inventory,
+            "docs/features/knobs.md table cells != KNOBS+STARTUP+PROCESS\nextra in map: {:?}\nmissing from map: {:?}",
+            documented.difference(&inventory).collect::<Vec<_>>(),
+            inventory.difference(&documented).collect::<Vec<_>>(),
+        );
         // Inventory completeness: scan our own sources for env reads.
         let sources = [
             include_str!("config.rs"),
@@ -391,6 +408,13 @@ mod tests {
                 );
             }
         }
+        for name in PROCESS {
+            let lit = format!("\"{name}\"");
+            assert!(
+                sources.iter().any(|s| s.contains(&lit)),
+                "{name} is in PROCESS but not read as a string literal"
+            );
+        }
     }
 
     /// HTTP statuses and ErrorKind names in docs/features/errors.md
@@ -399,13 +423,17 @@ mod tests {
     #[test]
     fn feature_map_errors() {
         let map = include_str!("../docs/features/errors.md");
-        for kind in error_kind_variants(include_str!("pipeline/error.rs")) {
-            let cell = format!("| `{kind}` |");
-            assert!(
-                map.contains(&cell),
-                "{kind} has no Kind-column cell in docs/features/errors.md"
-            );
-        }
+        let from_code: HashSet<&str> = error_kind_variants(include_str!("pipeline/error.rs"))
+            .into_iter()
+            .collect();
+        let from_map: HashSet<&str> = kind_column(map).into_iter().collect();
+        assert_eq!(
+            from_map,
+            from_code,
+            "docs/features/errors.md Kind column != ErrorKind\nextra in map: {:?}\nmissing from map: {:?}",
+            from_map.difference(&from_code).collect::<Vec<_>>(),
+            from_code.difference(&from_map).collect::<Vec<_>>(),
+        );
         let main = include_str!("main.rs");
         for (i, _) in main.match_indices("StatusCode::") {
             let rest = &main[i + "StatusCode::".len()..];
@@ -491,25 +519,42 @@ mod tests {
     #[test]
     fn feature_map_format_tokens() {
         let map = include_str!("../docs/features/formats.md");
-        let accepted = map
+        let accepted_line = map
             .lines()
             .find(|l| l.starts_with("Accepted `@{fmt}` tokens:"))
             .expect("Accepted @{fmt} tokens line in docs/features/formats.md");
+        let accepted_doc: HashSet<&str> =
+            backtick_token_idents(accepted_line).into_iter().collect();
+        let accepted_code: HashSet<&str> = ImageFormat::OUTPUT_TOKENS
+            .iter()
+            .map(|&(tok, _)| tok)
+            .collect();
+        assert_eq!(
+            accepted_doc,
+            accepted_code,
+            "Accepted @{{fmt}} list != OUTPUT_TOKENS\nextra in map: {:?}\nmissing from map: {:?}",
+            accepted_doc.difference(&accepted_code).collect::<Vec<_>>(),
+            accepted_code.difference(&accepted_doc).collect::<Vec<_>>(),
+        );
         for &(tok, fmt) in ImageFormat::OUTPUT_TOKENS {
             assert_eq!(ImageFormat::from_token(tok), Some(fmt), "{tok}");
-            let entry = format!("`{tok}`");
-            assert!(
-                accepted.contains(&entry),
-                "{tok} is not in the Accepted @{{fmt}} tokens list"
-            );
         }
+        let refused_doc: HashSet<&str> = at_tokens(map).into_iter().collect();
+        let refused_code: HashSet<&str> =
+            ImageFormat::REFUSED_OUTPUT_TOKENS.iter().copied().collect();
+        assert_eq!(
+            refused_doc,
+            refused_code,
+            "refused `@{{tok}}` set != REFUSED_OUTPUT_TOKENS\nextra in map: {:?}\nmissing from map: {:?}",
+            refused_doc.difference(&refused_code).collect::<Vec<_>>(),
+            refused_code.difference(&refused_doc).collect::<Vec<_>>(),
+        );
+        assert!(
+            accepted_code.is_disjoint(&refused_code),
+            "OUTPUT_TOKENS and REFUSED_OUTPUT_TOKENS overlap"
+        );
         for tok in ImageFormat::REFUSED_OUTPUT_TOKENS {
             assert_eq!(ImageFormat::from_token(tok), None, "{tok}");
-            let entry = format!("`@{tok}`");
-            assert!(
-                map.contains(&entry),
-                "{tok} has no refused `@{tok}` entry in docs/features/formats.md"
-            );
         }
         // Exhaustive: a new ImageFormat variant fails to compile here.
         let mut jpeg = false;
@@ -529,5 +574,69 @@ mod tests {
             jpeg && png && webp && avif,
             "OUTPUT_TOKENS is missing an encodable ImageFormat"
         );
+    }
+
+    fn backtick_inners(s: &str) -> Vec<&str> {
+        let mut out = Vec::new();
+        let mut rest = s;
+        while let Some(i) = rest.find('`') {
+            rest = &rest[i + 1..];
+            let Some(j) = rest.find('`') else { break };
+            out.push(&rest[..j]);
+            rest = &rest[j + 1..];
+        }
+        out
+    }
+
+    fn is_env_ident(s: &str) -> bool {
+        let mut chars = s.chars();
+        matches!(chars.next(), Some('A'..='Z'))
+            && s.len() > 1
+            && s.chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    }
+
+    fn knob_table_names(map: &str) -> HashSet<&str> {
+        map.lines()
+            .filter(|l| l.starts_with("| `"))
+            .flat_map(|l| backtick_inners(l.split('|').nth(1).unwrap_or("")))
+            .filter(|s| is_env_ident(s))
+            .collect()
+    }
+
+    fn kind_column(map: &str) -> Vec<&str> {
+        let mut kinds = Vec::new();
+        for line in map.lines() {
+            let Some(rest) = line.trim().strip_prefix("| `") else {
+                continue;
+            };
+            let Some(end) = rest.find('`') else { continue };
+            let name = &rest[..end];
+            if name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                && name.chars().all(|c| c.is_ascii_alphanumeric())
+                && name.chars().any(|c| c.is_ascii_lowercase())
+            {
+                kinds.push(name);
+            }
+        }
+        kinds
+    }
+
+    fn backtick_token_idents(s: &str) -> Vec<&str> {
+        backtick_inners(s)
+            .into_iter()
+            .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_lowercase()))
+            .collect()
+    }
+
+    fn at_tokens(map: &str) -> Vec<&str> {
+        backtick_inners(map)
+            .into_iter()
+            .filter_map(|inner| {
+                inner.strip_prefix('@').and_then(|tok| {
+                    (!tok.is_empty() && tok.chars().all(|c| c.is_ascii_lowercase())).then_some(tok)
+                })
+            })
+            .collect()
     }
 }
