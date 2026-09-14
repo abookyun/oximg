@@ -11,8 +11,8 @@ Lenient exceptions (the process still boots):
   boot; a bad URL fails that request, not startup
 
 Validated booleans are `0`/`1` only. Long form: [README Configuration](../../README.md#configuration).
-Pipeline knobs are pinned to that README by `src/config.rs`
-(`knobs_are_documented`).
+Pipeline knobs are pinned to that README **and this file** by
+`src/config.rs` (`knobs_are_documented`).
 
 Pass extras to a spawned server with `oximg-ctl --env KEY=VAL …`.
 

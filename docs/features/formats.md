@@ -10,7 +10,10 @@ Sources are sniffed by magic bytes. Extensions are never trusted.
 | AVIF (`--features avif`) | dav1d 8/10/12-bit, all subsamplings, alpha | SVT-AV1 10-bit 4:2:0, tune=ssim, alpha auxiliary | itself |
 | GIF | GIF87a/89a, frames composited onto the logical screen | **none** | WebP (animated GIF → animated WebP) |
 
-`@gif` / `format=gif` / CLI `.gif` without `-f` are refused (400 / exit 2), never answered with a different codec under that name. See [docs/gif-evaluation.md](../gif-evaluation.md).
+Accepted `@{fmt}` tokens: `jpg` / `jpeg` / `png` / `webp` / `avif`.
+`@gif` / `@jxl` / `format=gif` / CLI `.gif` without `-f` are refused
+(400 / exit 2), never answered with a different codec under that name.
+See [docs/gif-evaluation.md](../gif-evaluation.md).
 
 ## Cross-format
 

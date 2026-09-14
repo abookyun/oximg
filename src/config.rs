@@ -118,7 +118,8 @@ pub(crate) struct Config {
     pub anim_frame_step: usize,
 }
 
-/// The knob inventory, pinned to the README by `knobs_are_documented`.
+/// Pipeline knob inventory, pinned to the README and
+/// `docs/features/knobs.md` by `knobs_are_documented`.
 #[cfg(test)]
 const KNOBS: &[&str] = &[
     "OXIMG_TIMING",
@@ -152,6 +153,27 @@ const KNOBS: &[&str] = &[
     "OXIMG_GCS_ENDPOINT",
     "OXIMG_OVERLAP",
 ];
+
+/// Server-startup env (live in `main.rs`), documented in the README
+/// separately and in `docs/features/knobs.md`.
+#[cfg(test)]
+const STARTUP: &[&str] = &[
+    "OXIMG_LOG",
+    "OXIMG_KEY",
+    "OXIMG_SALT",
+    "OXIMG_SOURCE_BASE_URL",
+    "OXIMG_AUTO_FORMAT",
+    "OXIMG_PAR",
+    "OXIMG_METRICS",
+    "OXIMG_OPTIONS_PREFIX",
+    "OXIMG_WORKERS",
+    "OXIMG_FETCH_CONCURRENCY",
+    "OXIMG_BIND",
+];
+
+/// Process env without the `OXIMG_` prefix; still in the feature map.
+#[cfg(test)]
+const PROCESS: &[&str] = &["PORT", "IMAGES_DIR", "QUALITY", "PRESET"];
 
 fn parsed<T: std::str::FromStr>(name: &str) -> Option<T> {
     std::env::var(name).ok().and_then(|v| v.parse().ok())
@@ -312,16 +334,23 @@ pub(crate) fn config() -> &'static Config {
 
 #[cfg(test)]
 mod tests {
-    use super::KNOBS;
+    use super::{KNOBS, PROCESS, STARTUP};
 
     /// Every knob in the inventory must appear in the README, and
     /// every OXIMG_* the crate reads must be in the inventory — the
-    /// config is the canonical list.
+    /// config is the canonical list. The feature map is the same
+    /// inventory compressed for agents; drift here is how #36's
+    /// review rounds started.
     #[test]
     fn knobs_are_documented() {
         let readme = include_str!("../README.md");
+        let map = include_str!("../docs/features/knobs.md");
         for k in KNOBS {
             assert!(readme.contains(k), "{k} is not documented in README.md");
+            assert!(map.contains(k), "{k} is not in docs/features/knobs.md");
+        }
+        for k in STARTUP.iter().chain(PROCESS) {
+            assert!(map.contains(k), "{k} is not in docs/features/knobs.md");
         }
         // Inventory completeness: scan our own sources for env reads.
         let sources = [
@@ -355,25 +384,54 @@ mod tests {
                     continue;
                 }
                 let name = &rest[..end];
-                // main.rs startup settings are documented separately.
-                let startup = [
-                    "OXIMG_LOG",
-                    "OXIMG_KEY",
-                    "OXIMG_SALT",
-                    "OXIMG_SOURCE_BASE_URL",
-                    "OXIMG_AUTO_FORMAT",
-                    "OXIMG_PAR",
-                    "OXIMG_METRICS",
-                    "OXIMG_OPTIONS_PREFIX",
-                    "OXIMG_WORKERS",
-                    "OXIMG_FETCH_CONCURRENCY",
-                    "OXIMG_BIND",
-                ];
                 assert!(
-                    KNOBS.contains(&name) || startup.contains(&name),
+                    KNOBS.contains(&name) || STARTUP.contains(&name),
                     "{name} is read but missing from the config inventory"
                 );
             }
+        }
+    }
+
+    /// HTTP statuses and ErrorKind names in docs/features/errors.md
+    /// must match the server/library contract. A missing row is how
+    /// `@avif` without the feature drifted to "422" in the map.
+    #[test]
+    fn feature_map_errors() {
+        let map = include_str!("../docs/features/errors.md");
+        for kind in [
+            "SourceNotFound",
+            "SourceRejected",
+            "SourceTooLarge",
+            "SourceUnreadable",
+            "Undecodable",
+            "Upstream",
+            "UpstreamTimeout",
+            "Internal",
+        ] {
+            assert!(
+                map.contains(kind),
+                "{kind} is not in docs/features/errors.md"
+            );
+        }
+        for status in [200, 204, 400, 403, 404, 405, 413, 422, 500, 502, 504] {
+            let row = format!("| {status} |");
+            assert!(
+                map.contains(&row),
+                "HTTP {status} has no table row in docs/features/errors.md"
+            );
+        }
+    }
+
+    /// `@{fmt}` tokens ImageFormat::from_token accepts, plus the
+    /// refused GIF/JXL names, must appear in the formats map.
+    #[test]
+    fn feature_map_format_tokens() {
+        let map = include_str!("../docs/features/formats.md");
+        for tok in ["jpg", "jpeg", "png", "webp", "avif", "gif", "jxl"] {
+            assert!(
+                map.contains(tok),
+                "{tok} is not in docs/features/formats.md"
+            );
         }
     }
 }

@@ -21,5 +21,6 @@ touches HTTP, pixels, or a knob is verified only when `oximg-ctl`
 artifact and the JSON proof matches the invariant.
 
 Maintain this map when a route, knob, format, or status is added or
-removed. `src/config.rs` pins pipeline knobs to the README; this map
-must not drift from either.
+removed. `src/config.rs` (`knobs_are_documented`, `feature_map_errors`,
+`feature_map_format_tokens`) pins knobs, HTTP statuses, ErrorKind
+names, and `@{fmt}` tokens to these files. Drift fails CI.
