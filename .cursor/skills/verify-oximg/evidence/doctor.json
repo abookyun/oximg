@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "root": "/workspace",
+  "oximg": "/workspace/target/release/oximg",
+  "oximg_version": "oximg 0.11.0",
+  "oximg_ctl": "/workspace/target/release/oximg-ctl",
+  "oximg_ctl_version": "oximg-ctl 0.11.0",
+  "cmake": true,
+  "cmake_version": "cmake version 3.28.3",
+  "nasm": true,
+  "nasm_version": "NASM version 2.16.01",
+  "rustc_version": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "fixtures": true,
+  "spawned": "none",
+  "errors": []
+}

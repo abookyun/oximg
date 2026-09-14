@@ -40,7 +40,7 @@ Prerequisites (default features already need these; the checkout will
 not compile without them):
 
 - Rust ≥ 1.90 (MSRV; `rust-version` in `Cargo.toml`)
-- `cmake` (jpegli C++ encoder)
+- `cmake` (jpegli C++ encoder) and a C++ toolchain that can link `libstdc++`
 - `nasm` (mozjpeg SIMD)
 
 ```sh
