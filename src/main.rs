@@ -779,17 +779,17 @@ fn split_format(file: &str) -> Result<(&str, Option<ImageFormat>), (StatusCode, 
             "avif output is not enabled in this build".into(),
         )),
         Some(fmt) => Ok((base, Some(fmt))),
-        None if token == "jxl" => Err((
+        None if ImageFormat::REFUSED_OUTPUT_TOKENS.contains(&token) => Err((
             StatusCode::BAD_REQUEST,
-            "jxl output is not supported in this build".into(),
-        )),
-        // Reserved for the same reason, but permanently: GIF decodes
-        // here and never encodes, so `@gif` is a request that cannot be
-        // honored — better said out loud than answered with WebP bytes
-        // under the name the client picked.
-        None if token == "gif" => Err((
-            StatusCode::BAD_REQUEST,
-            "gif output is not supported (gif sources are decoded to webp)".into(),
+            match token {
+                "jxl" => "jxl output is not supported in this build".into(),
+                // Permanently: GIF decodes here and never encodes, so
+                // `@gif` is a request that cannot be honored — better
+                // said out loud than answered with WebP bytes under the
+                // name the client picked.
+                "gif" => "gif output is not supported (gif sources are decoded to webp)".into(),
+                other => format!("{other} output is not supported"),
+            },
         )),
         None => Ok((file, None)),
     }
@@ -1442,13 +1442,11 @@ mod tests {
             Ok(("photo.jpg@bogus", None))
         );
         assert_eq!(split_format("@webp"), Ok(("@webp", None)));
-        // known tokens strip and resolve
-        for (token, fmt) in [
-            ("jpg", ImageFormat::Jpeg),
-            ("jpeg", ImageFormat::Jpeg),
-            ("png", ImageFormat::Png),
-            ("webp", ImageFormat::Webp),
-        ] {
+        // known tokens strip and resolve (avif is cfg-gated below)
+        for &(token, fmt) in ImageFormat::OUTPUT_TOKENS {
+            if token == "avif" {
+                continue;
+            }
             assert_eq!(
                 split_format(&format!("photo.png@{token}")),
                 Ok(("photo.png", Some(fmt))),
@@ -1457,7 +1455,7 @@ mod tests {
         }
         // reserved: jxl errors clearly instead of 404ing as a filename,
         // and gif does the same permanently (it decodes, never encodes)
-        for token in ["jxl", "gif"] {
+        for token in ImageFormat::REFUSED_OUTPUT_TOKENS {
             assert_eq!(
                 split_format(&format!("photo.jpg@{token}")).unwrap_err().0,
                 StatusCode::BAD_REQUEST,

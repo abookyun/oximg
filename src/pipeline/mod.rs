@@ -327,6 +327,20 @@ impl ImageFormat {
         }
     }
 
+    /// Tokens [`from_token`](Self::from_token) accepts (`@{fmt}`,
+    /// `format=`, `OXIMG_AUTO_FORMAT`, CLI `-f`).
+    pub const OUTPUT_TOKENS: &[(&str, ImageFormat)] = &[
+        ("jpg", ImageFormat::Jpeg),
+        ("jpeg", ImageFormat::Jpeg),
+        ("png", ImageFormat::Png),
+        ("webp", ImageFormat::Webp),
+        ("avif", ImageFormat::Avif),
+    ];
+
+    /// Tokens [`from_token`](Self::from_token) rejects but the URL
+    /// grammar answers with 400 instead of treating as a filename.
+    pub const REFUSED_OUTPUT_TOKENS: &[&str] = &["gif", "jxl"];
+
     /// Parse an output-format token (the URL's `@{fmt}` suffix and the
     /// OXIMG_AUTO_FORMAT list). Unlike source extensions — which are
     /// never trusted — these name the *requested* output format.
@@ -339,13 +353,10 @@ impl ImageFormat {
     /// better served by rejecting it than by silently emitting
     /// something else under a `.gif` name.
     pub fn from_token(token: &str) -> Option<ImageFormat> {
-        match token {
-            "jpg" | "jpeg" => Some(ImageFormat::Jpeg),
-            "png" => Some(ImageFormat::Png),
-            "webp" => Some(ImageFormat::Webp),
-            "avif" => Some(ImageFormat::Avif),
-            _ => None,
-        }
+        Self::OUTPUT_TOKENS
+            .iter()
+            .find(|(t, _)| *t == token)
+            .map(|(_, f)| *f)
     }
 
     /// Detect the format from the first bytes; extensions are not trusted.

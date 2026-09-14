@@ -18,6 +18,7 @@ and turns a crawler into origin load.
 | 422 | undecodable bytes | top-level message, safe to echo |
 | 500 | unreadable local source, encoder/internal fault, worker panic | generic; chain on stderr |
 | 502 | upstream broken (connect/reset/5xx) | generic |
+| 503 | request coalescing exhausted (leader died before publishing) | generic |
 | 504 | upstream slow (`OXIMG_UPSTREAM_*` deadline) | generic |
 
 ```sh

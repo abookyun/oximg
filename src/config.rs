@@ -335,6 +335,7 @@ pub(crate) fn config() -> &'static Config {
 #[cfg(test)]
 mod tests {
     use super::{KNOBS, PROCESS, STARTUP};
+    use crate::pipeline::ImageFormat;
 
     /// Every knob in the inventory must appear in the README, and
     /// every OXIMG_* the crate reads must be in the inventory — the
@@ -398,22 +399,32 @@ mod tests {
     #[test]
     fn feature_map_errors() {
         let map = include_str!("../docs/features/errors.md");
-        for kind in [
-            "SourceNotFound",
-            "SourceRejected",
-            "SourceTooLarge",
-            "SourceUnreadable",
-            "Undecodable",
-            "Upstream",
-            "UpstreamTimeout",
-            "Internal",
-        ] {
+        for kind in error_kind_variants(include_str!("pipeline/error.rs")) {
             assert!(
                 map.contains(kind),
                 "{kind} is not in docs/features/errors.md"
             );
         }
-        for status in [200, 204, 400, 403, 404, 405, 413, 422, 500, 502, 504] {
+        let main = include_str!("main.rs");
+        for (i, _) in main.match_indices("StatusCode::") {
+            let rest = &main[i + "StatusCode::".len()..];
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphabetic() || c == '_'))
+                .unwrap_or(rest.len());
+            let ident = &rest[..end];
+            if ident.is_empty() {
+                continue;
+            }
+            let status = status_from_ident(ident);
+            let row = format!("| {status} |");
+            assert!(
+                map.contains(&row),
+                "HTTP {status} has no table row in docs/features/errors.md"
+            );
+        }
+        // 200 (success) and 405 (axum method-router) are not spelled
+        // StatusCode::OK / METHOD_NOT_ALLOWED in main.rs.
+        for status in [200, 405] {
             let row = format!("| {status} |");
             assert!(
                 map.contains(&row),
@@ -422,16 +433,94 @@ mod tests {
         }
     }
 
-    /// `@{fmt}` tokens ImageFormat::from_token accepts, plus the
-    /// refused GIF/JXL names, must appear in the formats map.
+    // Variant identifiers of `pub enum ErrorKind` (docs/attributes skipped).
+    fn error_kind_variants(src: &str) -> Vec<&str> {
+        let start = src.find("pub enum ErrorKind").expect("pub enum ErrorKind");
+        let body = src[start..]
+            .find('{')
+            .map(|i| &src[start + i + 1..])
+            .expect("ErrorKind body");
+        let mut kinds = Vec::new();
+        let mut depth = 1i32;
+        for line in body.lines() {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with("//") || t.starts_with("#[") {
+                continue;
+            }
+            depth += t.bytes().filter(|&c| c == b'{').count() as i32;
+            depth -= t.bytes().filter(|&c| c == b'}').count() as i32;
+            if depth <= 0 {
+                break;
+            }
+            let end = t
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(t.len());
+            let name = &t[..end];
+            if !name.is_empty() && name.starts_with(|c: char| c.is_ascii_uppercase()) {
+                kinds.push(name);
+            }
+        }
+        assert!(
+            !kinds.is_empty(),
+            "parsed no ErrorKind variants from pipeline/error.rs"
+        );
+        kinds
+    }
+
+    fn status_from_ident(ident: &str) -> u16 {
+        match ident {
+            "NO_CONTENT" => 204,
+            "BAD_REQUEST" => 400,
+            "FORBIDDEN" => 403,
+            "NOT_FOUND" => 404,
+            "PAYLOAD_TOO_LARGE" => 413,
+            "UNPROCESSABLE_ENTITY" => 422,
+            "INTERNAL_SERVER_ERROR" => 500,
+            "BAD_GATEWAY" => 502,
+            "SERVICE_UNAVAILABLE" => 503,
+            "GATEWAY_TIMEOUT" => 504,
+            other => panic!(
+                "StatusCode::{other} has no mapping in feature_map_errors; add the mapping and a docs/features/errors.md row"
+            ),
+        }
+    }
+
+    /// `from_token`'s accepted and refused tables must appear in the
+    /// formats map, and every non-Gif ImageFormat must have a token.
     #[test]
     fn feature_map_format_tokens() {
         let map = include_str!("../docs/features/formats.md");
-        for tok in ["jpg", "jpeg", "png", "webp", "avif", "gif", "jxl"] {
+        for &(tok, fmt) in ImageFormat::OUTPUT_TOKENS {
+            assert_eq!(ImageFormat::from_token(tok), Some(fmt), "{tok}");
             assert!(
                 map.contains(tok),
                 "{tok} is not in docs/features/formats.md"
             );
         }
+        for tok in ImageFormat::REFUSED_OUTPUT_TOKENS {
+            assert_eq!(ImageFormat::from_token(tok), None, "{tok}");
+            assert!(
+                map.contains(tok),
+                "{tok} is not in docs/features/formats.md"
+            );
+        }
+        // Exhaustive: a new ImageFormat variant fails to compile here.
+        let mut jpeg = false;
+        let mut png = false;
+        let mut webp = false;
+        let mut avif = false;
+        for &(_, fmt) in ImageFormat::OUTPUT_TOKENS {
+            match fmt {
+                ImageFormat::Jpeg => jpeg = true,
+                ImageFormat::Png => png = true,
+                ImageFormat::Webp => webp = true,
+                ImageFormat::Avif => avif = true,
+                ImageFormat::Gif => panic!("Gif must not appear in OUTPUT_TOKENS"),
+            }
+        }
+        assert!(
+            jpeg && png && webp && avif,
+            "OUTPUT_TOKENS is missing an encodable ImageFormat"
+        );
     }
 }
