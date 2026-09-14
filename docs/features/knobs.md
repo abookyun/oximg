@@ -9,6 +9,9 @@ Lenient exceptions (the process still boots):
 - `OXIMG_TIMING` is presence-based (any set value enables), not `0`/`1`
 - `OXIMG_GCS_ENDPOINT` is read when a `gs://` request is built, not at
   boot; a bad URL fails that request, not startup
+- `GCE_METADATA_HOST` is read when fetching or refreshing the metadata
+  token (including the startup credential probe), not snapshotted into
+  `Config`
 
 Validated booleans are `0`/`1` only. Long form: [README Configuration](../../README.md#configuration).
 Pipeline knobs are pinned to that README **and this file** by

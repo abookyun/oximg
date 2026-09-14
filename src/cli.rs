@@ -77,7 +77,10 @@ pub fn resize(args: &[String]) -> anyhow::Result<()> {
                     .next()
                     .unwrap_or_else(|| usage_error("--format needs a value"));
                 explicit = Some(ImageFormat::from_token(v).unwrap_or_else(|| {
-                    usage_error(&format!("unknown format {v:?} (jpg|png|webp|avif)"))
+                    usage_error(&format!(
+                        "unknown format {v:?} ({})",
+                        ImageFormat::output_token_hint()
+                    ))
                 }));
             }
             "--preset" => {

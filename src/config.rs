@@ -562,8 +562,13 @@ mod tests {
             accepted_doc.difference(&accepted_code).collect::<Vec<_>>(),
             accepted_code.difference(&accepted_doc).collect::<Vec<_>>(),
         );
+        let hint = ImageFormat::output_token_hint();
         for &(tok, fmt) in ImageFormat::OUTPUT_TOKENS {
             assert_eq!(ImageFormat::from_token(tok), Some(fmt), "{tok}");
+            assert!(
+                hint.split('|').any(|t| t == tok),
+                "output_token_hint {hint:?} missing {tok}"
+            );
         }
         let refused_line = map
             .lines()

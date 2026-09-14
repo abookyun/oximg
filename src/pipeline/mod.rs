@@ -341,6 +341,17 @@ impl ImageFormat {
     /// grammar answers with 400 instead of treating as a filename.
     pub const REFUSED_OUTPUT_TOKENS: &[&str] = &["gif", "jxl"];
 
+    /// Pipe-separated tokens for CLI / ctl usage errors, derived from
+    /// [`OUTPUT_TOKENS`] so a new format cannot land in `from_token`
+    /// while the hint still lists the old set.
+    pub fn output_token_hint() -> String {
+        Self::OUTPUT_TOKENS
+            .iter()
+            .map(|(tok, _)| *tok)
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+
     /// Parse an output-format token (the URL's `@{fmt}` suffix and the
     /// OXIMG_AUTO_FORMAT list). Unlike source extensions — which are
     /// never trusted — these name the *requested* output format.
