@@ -2,7 +2,7 @@
 
 imgproxy-style HMAC over the percent-decoded path. When `OXIMG_KEY`
 and `OXIMG_SALT` are set (both or neither), unsigned image URLs are
-403. Catalog: [docs/features/routes.md](../../../docs/features/routes.md)
+403. Catalog: [docs/features/routes.md](../../../../docs/features/routes.md)
 (Signing), vectors in `tests/ctl.rs` `sign_matches_the_server_vector`
 and `tests/server.rs` `signing_gate`.
 

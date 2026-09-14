@@ -2,8 +2,8 @@
 
 One-shot surface: no HTTP. `oximg resize` fits a file and writes
 bytes; `oximg probe` is header-only stored size (plus animation
-metadata). Catalog: [docs/features/paths.md](../../../docs/features/paths.md)
-(CLI), [formats.md](../../../docs/features/formats.md).
+metadata). Catalog: [docs/features/paths.md](../../../../docs/features/paths.md)
+(CLI), [formats.md](../../../../docs/features/formats.md).
 
 ## Sub-features
 
@@ -23,8 +23,10 @@ oximg resize tests/fixtures/photo.jpg 100 100 /tmp/out.jpg
 oximg probe tests/fixtures/anim.gif
 ```
 
-Same pipeline knobs (`OXIMG_*`, `QUALITY`, `PRESET`) as the server,
-fail-closed at startup.
+Pipeline `OXIMG_*` knobs apply to `oximg resize` (fail-closed at
+startup via `config_validate`). JPEG quality and encoder preset on
+the CLI are `-q` / `--preset`, not the server's `QUALITY` / `PRESET`
+env. `oximg probe` is header-only and does not consume those knobs.
 
 ## Driving it with oximg-ctl
 

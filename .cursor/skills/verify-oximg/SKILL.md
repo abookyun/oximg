@@ -60,9 +60,10 @@ test -x ./target/release/oximg-ctl
 Each `oximg-ctl get` / `matrix` auto-spawns `oximg` on `PORT=0`,
 `OXIMG_BIND=127.0.0.1`, `IMAGES_DIR=tests/fixtures` (override with
 `--images-dir`), and `OXIMG_WORKERS=1` if unset. Ready when stderr
-prints `oximg listening on :N` **and** `GET /health` returns 200 with
-body `ok` (ctl waits up to 15s). The child is reaped when that ctl
-process exits — no extra teardown.
+prints `oximg listening on :N` **and** `GET /health` returns 200 (ctl
+waits up to 15s; it does not inspect the body). oximg itself answers
+`/health` with body `ok`. The child is reaped when that ctl process
+exits — no extra teardown.
 
 Prefer that path over `serve`. Auto-spawn also **strips inherited**
 `OXIMG_KEY`, `OXIMG_SALT`, and `OXIMG_SOURCE_BASE_URL` so unsigned
@@ -97,11 +98,13 @@ One read-only check. Does not spawn, bind a port, or kill anything.
 
 Pass (`ok: true`, exit 0) means: `cmake` and `nasm` are on `PATH`,
 `./target/release/oximg` and `./target/release/oximg-ctl` exist and
-print `oximg <semver>` / `oximg-ctl <semver>`, `tests/fixtures/` is a
-directory. If `OXIMG_VERIFY_PID` is set, that pid must be alive, owned
-by this uid, and its exe must be `oximg` or `oximg-ctl` — otherwise
-the script reports `spawned: none` (the expected state after
-auto-spawn). It never greps or kills by process name.
+`--version` matches `oximg <semver>` / `oximg-ctl <semver>`,
+`tests/fixtures/` is a directory. `OXIMG_VERIFY_PID` unset →
+`spawned: none` (the expected state after auto-spawn). If set, that
+pid must be alive (Unix `ps`/`kill`, not `/proc`), owned by this uid,
+and `comm` must be `oximg` or `oximg-ctl`; otherwise `ok: false` and
+`spawned` is `invalid` / `dead` / `foreign` / `wrong-exe`. It never
+greps or kills by process name.
 
 Capture stdout to evidence (it is JSON).
 
@@ -162,8 +165,9 @@ $CTL --env OXIMG_KEY="$KEY" --env OXIMG_SALT="$SALT" \
 
 `--pretty` indents JSON. `--write PATH` saves an HTTP body (side
 effect). `--dry-run` prints the plan without spawning. `--bin PATH`
-selects the `oximg` binary (else sibling of ctl, `OXIMG_BIN`, or
-`PATH`).
+selects the `oximg` binary. Without `--bin`, `resolve_bin` uses
+`OXIMG_BIN` if set and non-empty, else a sibling `oximg` next to the
+running `oximg-ctl`, else `PATH` (`oximg`).
 
 Which layer to drive (do not run every layer every time):
 
@@ -221,11 +225,13 @@ the JSON is the proof.
 Tear down only what this session started.
 
 - Auto-spawn (`get` / `matrix` without `--base`): already gone when
-  ctl exits. Confirm doctor still reports `spawned: none`.
+  ctl exits. Leave `OXIMG_VERIFY_PID` unset and confirm doctor still
+  reports `spawned: none`.
 - `serve`: SIGTERM the wrapper pid you launched (the `oximg-ctl`
   process). It forwards to the child in the ready JSON's `pid`. Wait
   for the wrapper to exit. If you exported `OXIMG_VERIFY_PID`, unset
-  it after the child is reaped.
+  it after the child is reaped (a leftover value makes doctor report
+  `dead`, not `none`).
 - Temp `--out` files **outside** `evidence/` may be removed. Do not
   delete `evidence/`.
 - Never `killall oximg` / `pkill -f oximg` / kill-by-process-name.

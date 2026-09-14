@@ -3,8 +3,8 @@
 Mounted only when `OXIMG_OPTIONS_PREFIX` is set (e.g. `/image`,
 `/cdn-cgi/image`). Speaks `key=value,key=value` so Cloudflare Images
 URLs survive without a rewrite layer. Catalog:
-[docs/features/routes.md](../../../docs/features/routes.md) (Options),
-[knobs.md](../../../docs/features/knobs.md).
+[docs/features/routes.md](../../../../docs/features/routes.md) (Options),
+[knobs.md](../../../../docs/features/knobs.md).
 
 ## Sub-features
 

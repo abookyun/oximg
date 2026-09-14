@@ -2,7 +2,7 @@
 
 Agent drive book for [verify-oximg](../SKILL.md). Invariants, status
 tables, and the full knob inventory live in
-[`docs/features/`](../../../docs/features/) — link out, do not copy.
+[`docs/features/`](../../../../docs/features/) — link out, do not copy.
 
 Drive with `oximg-ctl` (JSON on stdout, real `oximg` underneath,
 fixtures under `tests/fixtures/`). `cargo test --release` is necessary
@@ -12,7 +12,7 @@ the linked invariant.
 After a route, knob, format, or status is added or removed, run
 `/maintain-verification-skill` and update the matching file (or add
 one). Complementary Grok skill:
-[`.grok/skills/verify/SKILL.md`](../../../.grok/skills/verify/SKILL.md).
+[`.grok/skills/verify/SKILL.md`](../../../../.grok/skills/verify/SKILL.md).
 
 | File | User-facing surface |
 |---|---|

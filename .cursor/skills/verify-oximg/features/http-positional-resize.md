@@ -2,9 +2,9 @@
 
 The default user path: `GET /resize/{w}/{h}/{*file}` fits a source
 inside a box (never enlarges, aspect preserved) and re-encodes it.
-Catalog: [docs/features/routes.md](../../../docs/features/routes.md)
-(Positional), [invariants.md](../../../docs/features/invariants.md)
-(Geometry), [errors.md](../../../docs/features/errors.md).
+Catalog: [docs/features/routes.md](../../../../docs/features/routes.md)
+(Positional), [invariants.md](../../../../docs/features/invariants.md)
+(Geometry), [errors.md](../../../../docs/features/errors.md).
 
 ## Sub-features
 

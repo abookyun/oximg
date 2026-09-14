@@ -2,14 +2,28 @@
 # Read-only verification doctor for oximg. Does not spawn, bind, or kill.
 set -euo pipefail
 
-root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# scripts/ -> verify-oximg -> skills -> .cursor -> repo root
+root=$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null || true)
 if [[ -z "${root}" ]]; then
-  root=$(cd "$(dirname "$0")/../../.." && pwd)
+  root=$(cd "$script_dir/../../../.." && pwd)
 fi
 cd "$root"
 
+# JSON string. python3 if present; otherwise a bash escape sufficient for
+# paths, versions, and the short error strings this script emits.
 json_str() {
-  python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+    return
+  fi
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\t'/\\t}
+  printf '"%s"' "$s"
 }
 
 ok=true
@@ -47,6 +61,10 @@ ctl_version=""
 
 if [[ -x "$oximg" ]]; then
   oximg_version=$("$oximg" --version 2>/dev/null | head -n1 | tr -d '\r')
+  if [[ ! "$oximg_version" =~ ^oximg\ [0-9] ]]; then
+    ok=false
+    errors+=("unexpected oximg --version: ${oximg_version:-empty}")
+  fi
 else
   ok=false
   errors+=("missing executable $oximg — run: cargo build --release")
@@ -54,6 +72,10 @@ fi
 
 if [[ -x "$ctl" ]]; then
   ctl_version=$("$ctl" --version 2>/dev/null | head -n1 | tr -d '\r')
+  if [[ ! "$ctl_version" =~ ^oximg-ctl\ [0-9] ]]; then
+    ok=false
+    errors+=("unexpected oximg-ctl --version: ${ctl_version:-empty}")
+  fi
 else
   ok=false
   errors+=("missing executable $ctl — run: cargo build --release")
@@ -68,6 +90,8 @@ else
   errors+=("missing $fixtures")
 fi
 
+# Unix pid check via kill/ps (Linux and macOS). Not /proc — that is
+# Linux-only and would mark a live macOS serve pid as dead.
 spawned="none"
 if [[ -n "${OXIMG_VERIFY_PID:-}" ]]; then
   pid="$OXIMG_VERIFY_PID"
@@ -75,22 +99,22 @@ if [[ -n "${OXIMG_VERIFY_PID:-}" ]]; then
     ok=false
     errors+=("OXIMG_VERIFY_PID is not a pid: $pid")
     spawned="invalid"
-  elif [[ ! -d "/proc/$pid" ]]; then
+  elif ! ps -p "$pid" >/dev/null 2>&1; then
     ok=false
     errors+=("OXIMG_VERIFY_PID=$pid is not running")
     spawned="dead"
   else
     uid=$(id -u)
-    proc_uid=$(stat -c '%u' "/proc/$pid" 2>/dev/null || echo "")
-    exe=$(readlink "/proc/$pid/exe" 2>/dev/null || echo "")
-    base=$(basename "$exe")
-    if [[ "$proc_uid" != "$uid" ]]; then
+    proc_uid=$(ps -o uid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    base=$(basename "$comm")
+    if [[ -n "$proc_uid" && "$proc_uid" != "$uid" ]]; then
       ok=false
       errors+=("OXIMG_VERIFY_PID=$pid is not owned by uid $uid")
       spawned="foreign"
     elif [[ "$base" != "oximg" && "$base" != "oximg-ctl" ]]; then
       ok=false
-      errors+=("OXIMG_VERIFY_PID=$pid exe is ${exe:-unknown}, expected oximg or oximg-ctl")
+      errors+=("OXIMG_VERIFY_PID=$pid comm is ${comm:-unknown}, expected oximg or oximg-ctl")
       spawned="wrong-exe"
     else
       spawned="$pid $base"

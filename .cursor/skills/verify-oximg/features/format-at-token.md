@@ -3,8 +3,8 @@
 Output format is chosen by an exact `@{fmt}` token on the positional
 filename, by `format=` on the options route, or by CLI `-f`. GIF is
 decode-only and becomes WebP. Catalog:
-[docs/features/formats.md](../../../docs/features/formats.md),
-[routes.md](../../../docs/features/routes.md) (Precedence).
+[docs/features/formats.md](../../../../docs/features/formats.md),
+[routes.md](../../../../docs/features/routes.md) (Precedence).
 
 ## Sub-features
 
@@ -55,8 +55,10 @@ $CTL matrix --source photo.jpg --box 100x100 --format source --format webp
 $CTL probe tests/fixtures/anim.gif
 ```
 
-Do not add `--format avif` unless `photo.avif` was built with the avif
-feature and doctor/`oximg --version` is from that build.
+Do not add `--format avif` unless this `oximg` was built with
+`--features avif`. That cell transcodes `photo.jpg` (any decodeable
+source); it does not need the `photo.avif` fixture. Use `photo.avif`
+only when proving AVIF *decode*.
 
 ## Gotchas
 
