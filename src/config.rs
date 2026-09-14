@@ -652,7 +652,7 @@ mod tests {
             {
                 continue;
             }
-            let after = rest[end + 1..].trim_start_matches(|c: char| c == ' ' || c == '|');
+            let after = rest[end + 1..].trim_start_matches([' ', '|']);
             let status_cell = after.split('|').next().unwrap_or("").trim();
             let status: u16 = status_cell.parse().unwrap_or_else(|_| {
                 panic!("{name} Kind row has no HTTP status, got {status_cell:?}")
