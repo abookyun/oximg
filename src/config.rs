@@ -400,9 +400,10 @@ mod tests {
     fn feature_map_errors() {
         let map = include_str!("../docs/features/errors.md");
         for kind in error_kind_variants(include_str!("pipeline/error.rs")) {
+            let cell = format!("| `{kind}` |");
             assert!(
-                map.contains(kind),
-                "{kind} is not in docs/features/errors.md"
+                map.contains(&cell),
+                "{kind} has no Kind-column cell in docs/features/errors.md"
             );
         }
         let main = include_str!("main.rs");
@@ -456,7 +457,7 @@ mod tests {
                 .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
                 .unwrap_or(t.len());
             let name = &t[..end];
-            if !name.is_empty() && name.starts_with(|c: char| c.is_ascii_uppercase()) {
+            if !name.is_empty() && name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
                 kinds.push(name);
             }
         }
@@ -490,18 +491,24 @@ mod tests {
     #[test]
     fn feature_map_format_tokens() {
         let map = include_str!("../docs/features/formats.md");
+        let accepted = map
+            .lines()
+            .find(|l| l.starts_with("Accepted `@{fmt}` tokens:"))
+            .expect("Accepted @{fmt} tokens line in docs/features/formats.md");
         for &(tok, fmt) in ImageFormat::OUTPUT_TOKENS {
             assert_eq!(ImageFormat::from_token(tok), Some(fmt), "{tok}");
+            let entry = format!("`{tok}`");
             assert!(
-                map.contains(tok),
-                "{tok} is not in docs/features/formats.md"
+                accepted.contains(&entry),
+                "{tok} is not in the Accepted @{{fmt}} tokens list"
             );
         }
         for tok in ImageFormat::REFUSED_OUTPUT_TOKENS {
             assert_eq!(ImageFormat::from_token(tok), None, "{tok}");
+            let entry = format!("`@{tok}`");
             assert!(
-                map.contains(tok),
-                "{tok} is not in docs/features/formats.md"
+                map.contains(&entry),
+                "{tok} has no refused `@{tok}` entry in docs/features/formats.md"
             );
         }
         // Exhaustive: a new ImageFormat variant fails to compile here.
