@@ -16,7 +16,8 @@ run the **compiled** artifact and the JSON matches
 [docs/features/](../../../docs/features/).
 
 Invariants, routes, formats, knobs, and error classes live in that
-map — do not copy them here. `oximg-ctl --help` is the CLI contract.
+map — do not copy them here. CI pins the map to `config.rs` / ErrorKind
+/ `@{fmt}`. `oximg-ctl --help` is the CLI contract.
 
 ## Build
 

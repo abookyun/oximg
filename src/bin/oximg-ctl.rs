@@ -141,7 +141,7 @@ get:
 
 resize:
   --out PATH                Output file (default: a temp file)
-  -f, --format FMT          jpg | png | webp | avif
+  -f, --format FMT          {}
   -q, --quality N           JPEG quality 1-100
   --preset P                jpegli | fast | small
 
@@ -153,7 +153,7 @@ matrix:
   --source FILE             Fixture filename (repeatable; default: a
                             small committed set under tests/fixtures)
   --box WxH                 e.g. 100x100 or 750x0 (repeatable)
-  --format TOKEN            source | jpg | png | webp | avif
+  --format TOKEN            source | {}
                             (repeatable; default: source and webp)
   --no-negatives            Skip the 400/404 cells
   --base URL                Drive an existing server
@@ -171,7 +171,9 @@ Examples:
   oximg-ctl sign /resize/100/100/photo.jpg --key deadbeef... --salt cafebabe...
   oximg-ctl matrix --box 100x100 --source photo.jpg
 ",
-        env!("CARGO_PKG_VERSION")
+        env!("CARGO_PKG_VERSION"),
+        ImageFormat::output_token_hint().replace('|', " | "),
+        ImageFormat::output_token_hint().replace('|', " | "),
     );
 }
 
@@ -601,12 +603,12 @@ fn parse_matrix(args: &[String]) -> Result<Cmd, CtlError> {
                     .next()
                     .ok_or_else(|| CtlError::usage("--format needs a value"))?;
                 match v.as_str() {
-                    "" | "source" | "jpg" | "jpeg" | "png" | "webp" | "avif" => {
-                        formats.push(v.clone());
-                    }
+                    "" | "source" => formats.push(v.clone()),
+                    tok if ImageFormat::from_token(tok).is_some() => formats.push(v.clone()),
                     other => {
                         return Err(CtlError::usage(format!(
-                            "unknown --format {other:?} (source|jpg|png|webp|avif)"
+                            "unknown --format {other:?} (source|{})",
+                            ImageFormat::output_token_hint()
                         )));
                     }
                 }

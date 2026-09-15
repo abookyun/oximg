@@ -9,10 +9,13 @@ Lenient exceptions (the process still boots):
 - `OXIMG_TIMING` is presence-based (any set value enables), not `0`/`1`
 - `OXIMG_GCS_ENDPOINT` is read when a `gs://` request is built, not at
   boot; a bad URL fails that request, not startup
+- `GCE_METADATA_HOST` is read when fetching or refreshing the metadata
+  token (including the startup credential probe), not snapshotted into
+  `Config`
 
 Validated booleans are `0`/`1` only. Long form: [README Configuration](../../README.md#configuration).
-Pipeline knobs are pinned to that README by `src/config.rs`
-(`knobs_are_documented`).
+Pipeline knobs are pinned to that README **and this file** by
+`src/config.rs` (`knobs_are_documented`).
 
 Pass extras to a spawned server with `oximg-ctl --env KEY=VAL …`.
 
@@ -31,6 +34,7 @@ Pass extras to a spawned server with `oximg-ctl --env KEY=VAL …`.
 | `OXIMG_METRICS` | `0` | `1` serves `/metrics` |
 | `OXIMG_SOURCE_BASE_URL` | unset | `https://…` or `gs://bucket[/prefix]` |
 | `OXIMG_GCS_ENDPOINT` | GCS default | Emulator / PSC; read per `gs://` request, not fail-closed at boot |
+| `GCE_METADATA_HOST` | Google metadata | GCS auth emulator / PSC; read when fetching or refreshing the metadata token (including the startup credential probe) |
 | `OXIMG_AUTO_FORMAT` | unset | `avif,webp` preference list |
 | `QUALITY` | `80` | JPEG quality (process-wide) |
 | `PRESET` | `jpegli` | `fast` / `small` select mozjpeg |

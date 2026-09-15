@@ -118,7 +118,8 @@ pub(crate) struct Config {
     pub anim_frame_step: usize,
 }
 
-/// The knob inventory, pinned to the README by `knobs_are_documented`.
+/// Pipeline knob inventory, pinned to the README and
+/// `docs/features/knobs.md` by `knobs_are_documented`.
 #[cfg(test)]
 const KNOBS: &[&str] = &[
     "OXIMG_TIMING",
@@ -151,6 +152,33 @@ const KNOBS: &[&str] = &[
     "OXIMG_UPSTREAM_TIMEOUT",
     "OXIMG_GCS_ENDPOINT",
     "OXIMG_OVERLAP",
+];
+
+/// Server-startup env (live in `main.rs`), documented in the README
+/// separately and in `docs/features/knobs.md`.
+#[cfg(test)]
+const STARTUP: &[&str] = &[
+    "OXIMG_LOG",
+    "OXIMG_KEY",
+    "OXIMG_SALT",
+    "OXIMG_SOURCE_BASE_URL",
+    "OXIMG_AUTO_FORMAT",
+    "OXIMG_PAR",
+    "OXIMG_METRICS",
+    "OXIMG_OPTIONS_PREFIX",
+    "OXIMG_WORKERS",
+    "OXIMG_FETCH_CONCURRENCY",
+    "OXIMG_BIND",
+];
+
+/// Process env without the `OXIMG_` prefix; still in the feature map.
+#[cfg(test)]
+const PROCESS: &[&str] = &[
+    "PORT",
+    "IMAGES_DIR",
+    "QUALITY",
+    "PRESET",
+    "GCE_METADATA_HOST",
 ];
 
 fn parsed<T: std::str::FromStr>(name: &str) -> Option<T> {
@@ -312,17 +340,34 @@ pub(crate) fn config() -> &'static Config {
 
 #[cfg(test)]
 mod tests {
-    use super::KNOBS;
+    use super::{KNOBS, PROCESS, STARTUP};
+    use crate::pipeline::ImageFormat;
+    use std::collections::{HashMap, HashSet};
 
-    /// Every knob in the inventory must appear in the README, and
-    /// every OXIMG_* the crate reads must be in the inventory — the
-    /// config is the canonical list.
+    /// Every name in KNOBS+STARTUP+PROCESS must appear in the README
+    /// and in knobs.md. Every OXIMG_* the crate reads must be in
+    /// KNOBS or STARTUP. Drift here is how #36's review rounds started.
     #[test]
     fn knobs_are_documented() {
         let readme = include_str!("../README.md");
-        for k in KNOBS {
+        let map = include_str!("../docs/features/knobs.md");
+        let inventory: HashSet<&str> = KNOBS
+            .iter()
+            .chain(STARTUP)
+            .chain(PROCESS)
+            .copied()
+            .collect();
+        for k in &inventory {
             assert!(readme.contains(k), "{k} is not documented in README.md");
         }
+        let documented = knob_table_names(map);
+        assert_eq!(
+            documented,
+            inventory,
+            "docs/features/knobs.md table cells != KNOBS+STARTUP+PROCESS\nextra in map: {:?}\nmissing from map: {:?}",
+            documented.difference(&inventory).collect::<Vec<_>>(),
+            inventory.difference(&documented).collect::<Vec<_>>(),
+        );
         // Inventory completeness: scan our own sources for env reads.
         let sources = [
             include_str!("config.rs"),
@@ -355,25 +400,370 @@ mod tests {
                     continue;
                 }
                 let name = &rest[..end];
-                // main.rs startup settings are documented separately.
-                let startup = [
-                    "OXIMG_LOG",
-                    "OXIMG_KEY",
-                    "OXIMG_SALT",
-                    "OXIMG_SOURCE_BASE_URL",
-                    "OXIMG_AUTO_FORMAT",
-                    "OXIMG_PAR",
-                    "OXIMG_METRICS",
-                    "OXIMG_OPTIONS_PREFIX",
-                    "OXIMG_WORKERS",
-                    "OXIMG_FETCH_CONCURRENCY",
-                    "OXIMG_BIND",
-                ];
                 assert!(
-                    KNOBS.contains(&name) || startup.contains(&name),
+                    KNOBS.contains(&name) || STARTUP.contains(&name),
                     "{name} is read but missing from the config inventory"
                 );
             }
         }
+        // Do not scan config.rs: PROCESS names appear in the inventory
+        // itself. Always include gcs.rs so --no-default-features still
+        // sees GCE_METADATA_HOST.
+        let process_sources = [
+            include_str!("main.rs"),
+            include_str!("cli.rs"),
+            include_str!("pipeline/gcs.rs"),
+        ];
+        let mut reads: HashSet<&str> = HashSet::new();
+        for src in process_sources {
+            for name in process_env_reads(src) {
+                reads.insert(name);
+            }
+        }
+        let process: HashSet<&str> = PROCESS.iter().copied().collect();
+        assert_eq!(
+            reads,
+            process,
+            "non-OXIMG_ env reads != PROCESS\nextra in code: {:?}\nmissing from PROCESS: {:?}",
+            reads.difference(&process).collect::<Vec<_>>(),
+            process.difference(&reads).collect::<Vec<_>>(),
+        );
+    }
+
+    /// HTTP statuses and ErrorKind names in docs/features/errors.md
+    /// must match the server/library contract. A missing row is how
+    /// `@avif` without the feature drifted to "422" in the map.
+    #[test]
+    fn feature_map_errors() {
+        let map = include_str!("../docs/features/errors.md");
+        let from_code: HashSet<&str> = error_kind_variants(include_str!("pipeline/error.rs"))
+            .into_iter()
+            .collect();
+        let kind_http_doc = kind_http_pairs(map);
+        let from_map: HashSet<&str> = kind_http_doc.keys().copied().collect();
+        assert_eq!(
+            from_map,
+            from_code,
+            "docs/features/errors.md Kind column != ErrorKind\nextra in map: {:?}\nmissing from map: {:?}",
+            from_map.difference(&from_code).collect::<Vec<_>>(),
+            from_code.difference(&from_map).collect::<Vec<_>>(),
+        );
+        let main = include_str!("main.rs");
+        let kind_http_code = error_kind_http_from_main(main);
+        for (kind, status) in &kind_http_doc {
+            assert_eq!(
+                kind_http_code.get(kind),
+                Some(status),
+                "{kind} documented as {status}, error_response maps {:?}",
+                kind_http_code.get(kind)
+            );
+        }
+        assert_eq!(
+            unknown_http_row(map),
+            Some(500),
+            "unknown (non_exhaustive) Kind row must be HTTP 500"
+        );
+        let http = map
+            .split("## Library")
+            .next()
+            .expect("## Library heading in docs/features/errors.md");
+        let mut from_code_status: HashSet<u16> = HashSet::new();
+        for (i, _) in main.match_indices("StatusCode::") {
+            let rest = &main[i + "StatusCode::".len()..];
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphabetic() || c == '_'))
+                .unwrap_or(rest.len());
+            let ident = &rest[..end];
+            if ident.is_empty() {
+                continue;
+            }
+            from_code_status.insert(status_from_ident(ident));
+        }
+        // 200 (success) and 405 (axum method-router) are not spelled
+        // StatusCode::OK / METHOD_NOT_ALLOWED in main.rs.
+        from_code_status.insert(200);
+        from_code_status.insert(405);
+        let from_http = http_status_column(http);
+        assert_eq!(
+            from_http,
+            from_code_status,
+            "HTTP section statuses != StatusCode uses in main.rs\nextra in map: {:?}\nmissing from map: {:?}",
+            from_http.difference(&from_code_status).collect::<Vec<_>>(),
+            from_code_status.difference(&from_http).collect::<Vec<_>>(),
+        );
+    }
+
+    // Variant identifiers of `pub enum ErrorKind` (docs/attributes skipped).
+    fn error_kind_variants(src: &str) -> Vec<&str> {
+        let start = src.find("pub enum ErrorKind").expect("pub enum ErrorKind");
+        let body = src[start..]
+            .find('{')
+            .map(|i| &src[start + i + 1..])
+            .expect("ErrorKind body");
+        let mut kinds = Vec::new();
+        let mut depth = 1i32;
+        for line in body.lines() {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with("//") || t.starts_with("#[") {
+                continue;
+            }
+            depth += t.bytes().filter(|&c| c == b'{').count() as i32;
+            depth -= t.bytes().filter(|&c| c == b'}').count() as i32;
+            if depth <= 0 {
+                break;
+            }
+            let end = t
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(t.len());
+            let name = &t[..end];
+            if !name.is_empty() && name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                kinds.push(name);
+            }
+        }
+        assert!(
+            !kinds.is_empty(),
+            "parsed no ErrorKind variants from pipeline/error.rs"
+        );
+        kinds
+    }
+
+    fn status_from_ident(ident: &str) -> u16 {
+        match ident {
+            "NO_CONTENT" => 204,
+            "BAD_REQUEST" => 400,
+            "FORBIDDEN" => 403,
+            "NOT_FOUND" => 404,
+            "PAYLOAD_TOO_LARGE" => 413,
+            "UNPROCESSABLE_ENTITY" => 422,
+            "INTERNAL_SERVER_ERROR" => 500,
+            "BAD_GATEWAY" => 502,
+            "SERVICE_UNAVAILABLE" => 503,
+            "GATEWAY_TIMEOUT" => 504,
+            other => panic!(
+                "StatusCode::{other} has no mapping in feature_map_errors; add the mapping and a docs/features/errors.md row"
+            ),
+        }
+    }
+
+    /// `from_token`'s accepted and refused tables must appear in the
+    /// formats map, and every non-Gif ImageFormat must have a token.
+    #[test]
+    fn feature_map_format_tokens() {
+        let map = include_str!("../docs/features/formats.md");
+        let accepted_line = map
+            .lines()
+            .find(|l| l.starts_with("Accepted `@{fmt}` tokens:"))
+            .expect("Accepted @{fmt} tokens line in docs/features/formats.md");
+        let accepted_doc: HashSet<&str> =
+            backtick_token_idents(accepted_line).into_iter().collect();
+        let accepted_code: HashSet<&str> = ImageFormat::OUTPUT_TOKENS
+            .iter()
+            .map(|&(tok, _)| tok)
+            .collect();
+        assert_eq!(
+            accepted_doc,
+            accepted_code,
+            "Accepted @{{fmt}} list != OUTPUT_TOKENS\nextra in map: {:?}\nmissing from map: {:?}",
+            accepted_doc.difference(&accepted_code).collect::<Vec<_>>(),
+            accepted_code.difference(&accepted_doc).collect::<Vec<_>>(),
+        );
+        let hint = ImageFormat::output_token_hint();
+        for &(tok, fmt) in ImageFormat::OUTPUT_TOKENS {
+            assert_eq!(ImageFormat::from_token(tok), Some(fmt), "{tok}");
+            assert!(
+                hint.split('|').any(|t| t == tok),
+                "output_token_hint {hint:?} missing {tok}"
+            );
+        }
+        let refused_line = map
+            .lines()
+            .find(|l| l.contains("are refused"))
+            .expect("refused-token sentence in docs/features/formats.md");
+        let refused_doc: HashSet<&str> = at_tokens(refused_line).into_iter().collect();
+        let refused_code: HashSet<&str> =
+            ImageFormat::REFUSED_OUTPUT_TOKENS.iter().copied().collect();
+        assert_eq!(
+            refused_doc,
+            refused_code,
+            "refused `@{{tok}}` set != REFUSED_OUTPUT_TOKENS\nextra in map: {:?}\nmissing from map: {:?}",
+            refused_doc.difference(&refused_code).collect::<Vec<_>>(),
+            refused_code.difference(&refused_doc).collect::<Vec<_>>(),
+        );
+        assert!(
+            accepted_code.is_disjoint(&refused_code),
+            "OUTPUT_TOKENS and REFUSED_OUTPUT_TOKENS overlap"
+        );
+        for tok in ImageFormat::REFUSED_OUTPUT_TOKENS {
+            assert_eq!(ImageFormat::from_token(tok), None, "{tok}");
+        }
+        // Exhaustive: a new ImageFormat variant fails to compile here.
+        let mut jpeg = false;
+        let mut png = false;
+        let mut webp = false;
+        let mut avif = false;
+        for &(_, fmt) in ImageFormat::OUTPUT_TOKENS {
+            match fmt {
+                ImageFormat::Jpeg => jpeg = true,
+                ImageFormat::Png => png = true,
+                ImageFormat::Webp => webp = true,
+                ImageFormat::Avif => avif = true,
+                ImageFormat::Gif => panic!("Gif must not appear in OUTPUT_TOKENS"),
+            }
+        }
+        assert!(
+            jpeg && png && webp && avif,
+            "OUTPUT_TOKENS is missing an encodable ImageFormat"
+        );
+    }
+
+    fn backtick_inners(s: &str) -> Vec<&str> {
+        let mut out = Vec::new();
+        let mut rest = s;
+        while let Some(i) = rest.find('`') {
+            rest = &rest[i + 1..];
+            let Some(j) = rest.find('`') else { break };
+            out.push(&rest[..j]);
+            rest = &rest[j + 1..];
+        }
+        out
+    }
+
+    fn is_env_ident(s: &str) -> bool {
+        let mut chars = s.chars();
+        matches!(chars.next(), Some('A'..='Z'))
+            && s.len() > 1
+            && s.chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    }
+
+    fn knob_table_names(map: &str) -> HashSet<&str> {
+        map.lines()
+            .filter(|l| l.starts_with("| `"))
+            .flat_map(|l| backtick_inners(l.split('|').nth(1).unwrap_or("")))
+            .filter(|s| is_env_ident(s))
+            .collect()
+    }
+
+    fn kind_http_pairs(map: &str) -> HashMap<&str, u16> {
+        let lib = map
+            .split("## Library")
+            .nth(1)
+            .expect("## Library heading in docs/features/errors.md");
+        let mut pairs = HashMap::new();
+        for line in lib.lines() {
+            let Some(rest) = line.trim().strip_prefix("| `") else {
+                continue;
+            };
+            let Some(end) = rest.find('`') else { continue };
+            let name = &rest[..end];
+            if !(name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                && name.chars().all(|c| c.is_ascii_alphanumeric())
+                && name.chars().any(|c| c.is_ascii_lowercase()))
+            {
+                continue;
+            }
+            let after = rest[end + 1..].trim_start_matches([' ', '|']);
+            let status_cell = after.split('|').next().unwrap_or("").trim();
+            let status: u16 = status_cell.parse().unwrap_or_else(|_| {
+                panic!("{name} Kind row has no HTTP status, got {status_cell:?}")
+            });
+            pairs.insert(name, status);
+        }
+        pairs
+    }
+
+    fn unknown_http_row(map: &str) -> Option<u16> {
+        map.lines().find_map(|line| {
+            let t = line.trim();
+            if !t.contains("non_exhaustive") {
+                return None;
+            }
+            t.split('|').nth(2).and_then(|c| c.trim().parse().ok())
+        })
+    }
+
+    fn http_status_column(http: &str) -> HashSet<u16> {
+        http.lines()
+            .filter_map(|line| {
+                let t = line.trim();
+                let rest = t.strip_prefix('|')?;
+                let cell = rest.split('|').next()?.trim();
+                cell.parse().ok()
+            })
+            .collect()
+    }
+
+    fn error_kind_http_from_main(src: &str) -> HashMap<&str, u16> {
+        let start = src
+            .find("fn error_response")
+            .expect("fn error_response in main.rs");
+        let slice = &src[start..];
+        let end = slice[1..]
+            .find("\nfn ")
+            .map(|i| i + 1)
+            .unwrap_or(slice.len());
+        let body = &slice[..end];
+        let mut map = HashMap::new();
+        let mut i = 0;
+        while let Some(p) = body[i..].find("ErrorKind::") {
+            let rest = &body[i + p + "ErrorKind::".len()..];
+            let name_end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            let name = &rest[..name_end];
+            if let Some(s) = rest.find("StatusCode::") {
+                let ident_rest = &rest[s + "StatusCode::".len()..];
+                let ident_end = ident_rest
+                    .find(|c: char| !(c.is_ascii_alphabetic() || c == '_'))
+                    .unwrap_or(ident_rest.len());
+                let ident = &ident_rest[..ident_end];
+                if !name.is_empty() && !ident.is_empty() {
+                    map.insert(name, status_from_ident(ident));
+                }
+            }
+            i += p + "ErrorKind::".len();
+        }
+        map
+    }
+
+    fn backtick_token_idents(s: &str) -> Vec<&str> {
+        backtick_inners(s)
+            .into_iter()
+            .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_lowercase()))
+            .collect()
+    }
+
+    /// `env_or("PORT"` / `std::env::var("IMAGES_DIR"` — ALL_CAPS names
+    /// that are not `OXIMG_*`.
+    fn process_env_reads(src: &str) -> Vec<&str> {
+        let mut names = Vec::new();
+        for needle in ["env_or(\"", "env::var(\""] {
+            let mut i = 0;
+            while let Some(p) = src[i..].find(needle) {
+                let rest = &src[i + p + needle.len()..];
+                let end = rest
+                    .find(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+                    .unwrap_or(rest.len());
+                if rest[end..].starts_with('"') && end > 0 {
+                    let name = &rest[..end];
+                    if is_env_ident(name) && !name.starts_with("OXIMG_") {
+                        names.push(name);
+                    }
+                }
+                i += p + needle.len();
+            }
+        }
+        names
+    }
+
+    fn at_tokens(map: &str) -> Vec<&str> {
+        backtick_inners(map)
+            .into_iter()
+            .filter_map(|inner| {
+                inner.strip_prefix('@').and_then(|tok| {
+                    (!tok.is_empty() && tok.chars().all(|c| c.is_ascii_lowercase())).then_some(tok)
+                })
+            })
+            .collect()
     }
 }
