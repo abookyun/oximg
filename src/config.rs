@@ -344,24 +344,22 @@ mod tests {
     use crate::pipeline::ImageFormat;
     use std::collections::{HashMap, HashSet};
 
-    /// Every knob in the inventory must appear in the README, and
-    /// every OXIMG_* the crate reads must be in the inventory — the
-    /// config is the canonical list. The feature map is the same
-    /// inventory compressed for agents; drift here is how #36's
-    /// review rounds started.
+    /// Every name in KNOBS+STARTUP+PROCESS must appear in the README
+    /// and in knobs.md. Every OXIMG_* the crate reads must be in
+    /// KNOBS or STARTUP. Drift here is how #36's review rounds started.
     #[test]
     fn knobs_are_documented() {
         let readme = include_str!("../README.md");
         let map = include_str!("../docs/features/knobs.md");
-        for k in KNOBS {
-            assert!(readme.contains(k), "{k} is not documented in README.md");
-        }
         let inventory: HashSet<&str> = KNOBS
             .iter()
             .chain(STARTUP)
             .chain(PROCESS)
             .copied()
             .collect();
+        for k in &inventory {
+            assert!(readme.contains(k), "{k} is not documented in README.md");
+        }
         let documented = knob_table_names(map);
         assert_eq!(
             documented,
