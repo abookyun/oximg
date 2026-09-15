@@ -3713,7 +3713,7 @@ Used by:
 - [percent-encoding 2.3.2](https://github.com/servo/rust-url/)
 - [pkg-config 0.3.33](https://github.com/rust-lang/pkg-config-rs)
 - [png 0.18.1](https://github.com/image-rs/image-png)
-- [rustls 0.23.41](https://github.com/rustls/rustls)
+- [rustls 0.23.45](https://github.com/rustls/rustls)
 - [signal-hook-registry 1.4.8](https://github.com/vorner/signal-hook)
 - [smallvec 1.15.2](https://github.com/servo/rust-smallvec)
 - [socket2 0.6.4](https://github.com/rust-lang/socket2)
@@ -5399,7 +5399,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ## ISC License
 
 Used by:
-- [rustls-webpki 0.103.13](https://github.com/rustls/webpki)
+- [rustls-webpki 0.103.15](https://github.com/rustls/webpki)
 
 ```
 Except as otherwise noted, this project is licensed under the following

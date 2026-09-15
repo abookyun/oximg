@@ -1,0 +1,22 @@
+{
+  "body_path": ".cursor/skills/verify-oximg/evidence/photo-100x100.jpg",
+  "bytes": 2046,
+  "content_type": "image/jpeg",
+  "headers": {
+    "allow": null,
+    "cache-control": "public, max-age=31536000",
+    "content-type": "image/jpeg",
+    "vary": null
+  },
+  "ms": 2.9,
+  "ok": true,
+  "probe": {
+    "content_type": "image/jpeg",
+    "height": 75,
+    "stored_pixels": 7500,
+    "width": 100
+  },
+  "sha256": "0aac36d3ec682bb52451ea4ca20457a1610c91beb9bb1487674f99054483ff0b",
+  "status": 200,
+  "url": "http://127.0.0.1:45139/resize/100/100/photo.jpg"
+}
