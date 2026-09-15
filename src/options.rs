@@ -75,7 +75,8 @@ pub fn parse(options: &str) -> Result<ResizeOptions, String> {
                         Some(f) => Some(f),
                         None => {
                             return Err(format!(
-                                "invalid format {value:?} (jpeg|png|webp|avif|auto)"
+                                "invalid format {value:?} ({}|auto)",
+                                ImageFormat::output_token_hint()
                             ));
                         }
                     },

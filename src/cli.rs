@@ -27,14 +27,15 @@ pub fn print_help() {
              extension, else the source's own format (GIF sources,\n          \
              which have no encoder here, become WebP).\n          \
              -q, --quality N    JPEG quality, 1-100 (default 80)\n          \
-             -f, --format FMT   jpg | png | webp | avif\n          \
+             -f, --format FMT   {}\n          \
              --preset P         jpegli (default) | fast | small\n  \
            oximg probe <file>\n          \
              Print the format and stored dimensions (header-only, no\n          \
              pixel decode), plus frame count, duration and loop count\n          \
              when the source is animated.\n  \
            oximg --version | --help",
-        env!("CARGO_PKG_VERSION")
+        env!("CARGO_PKG_VERSION"),
+        ImageFormat::output_token_hint().replace('|', " | "),
     );
 }
 

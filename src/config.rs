@@ -416,13 +416,20 @@ mod tests {
             include_str!("cli.rs"),
             include_str!("pipeline/gcs.rs"),
         ];
-        for name in PROCESS {
-            let lit = format!("\"{name}\"");
-            assert!(
-                process_sources.iter().any(|s| s.contains(&lit)),
-                "{name} is in PROCESS but not read as a string literal"
-            );
+        let mut reads: HashSet<&str> = HashSet::new();
+        for src in process_sources {
+            for name in process_env_reads(src) {
+                reads.insert(name);
+            }
         }
+        let process: HashSet<&str> = PROCESS.iter().copied().collect();
+        assert_eq!(
+            reads,
+            process,
+            "non-OXIMG_ env reads != PROCESS\nextra in code: {:?}\nmissing from PROCESS: {:?}",
+            reads.difference(&process).collect::<Vec<_>>(),
+            process.difference(&reads).collect::<Vec<_>>(),
+        );
     }
 
     /// HTTP statuses and ErrorKind names in docs/features/errors.md
@@ -726,6 +733,29 @@ mod tests {
             .into_iter()
             .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_lowercase()))
             .collect()
+    }
+
+    /// `env_or("PORT"` / `std::env::var("IMAGES_DIR"` — ALL_CAPS names
+    /// that are not `OXIMG_*`.
+    fn process_env_reads(src: &str) -> Vec<&str> {
+        let mut names = Vec::new();
+        for needle in ["env_or(\"", "env::var(\""] {
+            let mut i = 0;
+            while let Some(p) = src[i..].find(needle) {
+                let rest = &src[i + p + needle.len()..];
+                let end = rest
+                    .find(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+                    .unwrap_or(rest.len());
+                if rest[end..].starts_with('"') && end > 0 {
+                    let name = &rest[..end];
+                    if is_env_ident(name) && !name.starts_with("OXIMG_") {
+                        names.push(name);
+                    }
+                }
+                i += p + needle.len();
+            }
+        }
+        names
     }
 
     fn at_tokens(map: &str) -> Vec<&str> {
