@@ -1042,6 +1042,14 @@ fn interior_mean(png_bytes: &[u8]) -> f64 {
     let mut buf = vec![0u8; r.output_buffer_size().unwrap()];
     let info = r.next_frame(&mut buf).unwrap();
     assert_eq!((info.width, info.height), (32, 32));
+    // RGB or RGBA only: the loop below reads one byte per pixel as a
+    // channel value. In an indexed PNG that byte is not a color.
+    use png::ColorType::{Rgb, Rgba};
+    assert!(
+        matches!(info.color_type, Rgb | Rgba),
+        "interior_mean needs RGB or RGBA, got {:?}",
+        info.color_type
+    );
     let stride = info.line_size;
     let channels = stride / info.width as usize;
     let (mut sum, mut n) = (0u64, 0u64);
