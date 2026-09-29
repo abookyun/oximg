@@ -34,3 +34,6 @@ jobs:
           cache-dependency-path: site/package-lock.json
       - run: npm ci
       - run: npm run build
+      # Parses wrangler.jsonc and packages dist/ the way a deploy would,
+      # without credentials, so a bad route or asset option fails here.
+      - run: npx wrangler deploy --dry-run

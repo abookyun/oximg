@@ -8,6 +8,7 @@ planned.
 npm install
 npm run dev       # http://localhost:4321
 npm run build     # static output in dist/
+npm run deploy    # build, then upload to Cloudflare Workers
 ```
 
 ## Docs
@@ -26,6 +27,15 @@ of truth. The output in `src/content/docs/docs/` is gitignored.
   anchors go to the page that now holds that heading, anything else goes
   to GitHub. Renaming a synced README heading fails the build, which is
   why the Site workflow also runs on README and `docs/` changes.
+
+## Hosting
+
+A static-assets Cloudflare Worker, configured in `wrangler.jsonc`, serves
+`dist/` on `oximg.dev` and `www.oximg.dev`. The `oximg.dev` zone, its
+delegation from the registrar, and the www → apex redirect are managed
+with OpenTofu outside this repo. `wrangler deploy` reads
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` from the environment;
+neither goes in a file.
 
 ## Rules
 
