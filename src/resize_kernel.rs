@@ -178,28 +178,10 @@ pub(crate) trait RowKernel {
     /// bit-identical to `lut[v] as u16` followed by [`RowKernel::stage_x3`].
     // SAFETY: caller contract as for `stage_x3` (`Self::detect()` verified,
     // `row.len() >= 3 * w`, `stage.len() >= w * Self::STAGE3_FLOATS_PER_PIXEL`).
-    // The default body's `get_unchecked` indices are bounded by exactly those
-    // lengths, and the `lut` index is a u8, always < 256.
+    // The default body forwards exactly that contract to
+    // [`stage_x3_u8_words`].
     unsafe fn stage_x3_u8(row: &[u8], lut: &[f32; 256], stage: &mut [f32], w: usize) {
-        unsafe {
-            if Self::STAGE3_FLOATS_PER_PIXEL == 4 {
-                for x in 0..w {
-                    *stage.get_unchecked_mut(x * 4) = lut[*row.get_unchecked(x * 3) as usize];
-                    *stage.get_unchecked_mut(x * 4 + 1) =
-                        lut[*row.get_unchecked(x * 3 + 1) as usize];
-                    *stage.get_unchecked_mut(x * 4 + 2) =
-                        lut[*row.get_unchecked(x * 3 + 2) as usize];
-                    *stage.get_unchecked_mut(x * 4 + 3) = 0.0;
-                }
-            } else {
-                for x in 0..w {
-                    *stage.get_unchecked_mut(x) = lut[*row.get_unchecked(x * 3) as usize];
-                    *stage.get_unchecked_mut(w + x) = lut[*row.get_unchecked(x * 3 + 1) as usize];
-                    *stage.get_unchecked_mut(2 * w + x) =
-                        lut[*row.get_unchecked(x * 3 + 2) as usize];
-                }
-            }
-        }
+        unsafe { stage_x3_u8_words(row, lut, stage, w, Self::STAGE3_FLOATS_PER_PIXEL == 4) }
     }
     /// Convert one u16 RGBA row to f32, keeping the interleaved layout.
     // SAFETY: caller must have verified `Self::detect()` and pass
@@ -296,6 +278,84 @@ pub(crate) trait RowKernel {
         unsafe {
             for (i, &slot) in slots.iter().enumerate().take(n) {
                 Self::horiz_x4(&stage[i * row_stride..], w, ring, plane, slot, dst_w);
+            }
+        }
+    }
+}
+
+/// Portable u8 RGB -> f32 staging through `lut`, planar or (`rgbx`)
+/// interleaved with a zero fourth lane: the body of
+/// [`RowKernel::stage_x3_u8`] for kernels without a faster lookup.
+//
+// SAFETY: caller must pass `row.len() >= 3 * w` and `stage.len() >= w * 4`
+// (`rgbx`) or `>= w * 3` (planar). The `get_unchecked` indices are bounded
+// by exactly those lengths (the 12-byte group reads end at
+// `3 * (x + 4) <= 3 * w`), and every `lut` index is one byte, always < 256.
+//
+// The cost is the three table reads per pixel, which NEON and AVX2 have no
+// lookup wide enough to vectorize (a 256-entry f32 table); what is left to
+// save is the byte loads, so four pixels' bytes come in as one u64 and one
+// u32 and are split in registers (-22% on an M2 Max, -7% on Zen 4).
+#[inline(always)]
+pub(crate) unsafe fn stage_x3_u8_words(
+    row: &[u8],
+    lut: &[f32; 256],
+    stage: &mut [f32],
+    w: usize,
+    rgbx: bool,
+) {
+    #[inline(always)]
+    unsafe fn group(row: &[u8], x: usize) -> [usize; 12] {
+        // SAFETY: caller guarantees `3 * (x + 4) <= row.len()`.
+        let (a, b) = unsafe {
+            let p = row.as_ptr().add(x * 3);
+            (
+                (p as *const u64).read_unaligned().to_le(),
+                (p.add(8) as *const u32).read_unaligned().to_le(),
+            )
+        };
+        std::array::from_fn(|i| {
+            if i < 8 {
+                ((a >> (i * 8)) & 0xff) as usize
+            } else {
+                ((b >> ((i - 8) * 8)) & 0xff) as usize
+            }
+        })
+    }
+    unsafe {
+        let mut x0 = 0;
+        if rgbx {
+            while x0 + 4 <= w {
+                let v = group(row, x0);
+                for k in 0..4 {
+                    let o = stage.get_unchecked_mut((x0 + k) * 4..(x0 + k) * 4 + 4);
+                    o[0] = *lut.get_unchecked(v[3 * k]);
+                    o[1] = *lut.get_unchecked(v[3 * k + 1]);
+                    o[2] = *lut.get_unchecked(v[3 * k + 2]);
+                    o[3] = 0.0;
+                }
+                x0 += 4;
+            }
+            for x in x0..w {
+                *stage.get_unchecked_mut(x * 4) = lut[*row.get_unchecked(x * 3) as usize];
+                *stage.get_unchecked_mut(x * 4 + 1) = lut[*row.get_unchecked(x * 3 + 1) as usize];
+                *stage.get_unchecked_mut(x * 4 + 2) = lut[*row.get_unchecked(x * 3 + 2) as usize];
+                *stage.get_unchecked_mut(x * 4 + 3) = 0.0;
+            }
+        } else {
+            while x0 + 4 <= w {
+                let v = group(row, x0);
+                for k in 0..4 {
+                    *stage.get_unchecked_mut(x0 + k) = *lut.get_unchecked(v[3 * k]);
+                    *stage.get_unchecked_mut(w + x0 + k) = *lut.get_unchecked(v[3 * k + 1]);
+                    *stage.get_unchecked_mut(2 * w + x0 + k) = *lut.get_unchecked(v[3 * k + 2]);
+                }
+                x0 += 4;
+            }
+            for x in x0..w {
+                *stage.get_unchecked_mut(x) = lut[*row.get_unchecked(x * 3) as usize];
+                *stage.get_unchecked_mut(w + x) = lut[*row.get_unchecked(x * 3 + 1) as usize];
+                *stage.get_unchecked_mut(2 * w + x) = lut[*row.get_unchecked(x * 3 + 2) as usize];
             }
         }
     }
@@ -846,6 +906,140 @@ pub(crate) mod testkit {
                 assert_eq!(sr.rows_emitted(), dh);
                 assert_eq!(streamed, full, "{sw}x{sh}->{dw}x{dh} x{ch} streamed");
             }
+        }
+    }
+
+    /// u8 staging through a LUT == the same LUT applied up front and staged
+    /// as u16, bit-exact, including widths that leave a partial 4-pixel group.
+    pub(crate) fn assert_u8_staging_matches_u16<K: RowKernel>() {
+        let lut: [f32; 256] = std::array::from_fn(|v| {
+            let c = v as f64 / 255.0;
+            let l = if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            };
+            (l * 65535.0).round() as f32
+        });
+        let narrow = (1..=13usize).map(|w| (w, 5, w.div_ceil(2), 3));
+        for (sw, sh, dw, dh) in SHAPES.iter().copied().chain(narrow) {
+            let src: Vec<u8> = test_image(sw, sh, 3)
+                .iter()
+                .map(|&v| (v >> 8) as u8)
+                .collect();
+            let mut a = StreamResize::<K>::new(sw, sh, dw, dh, 3).unwrap();
+            let mut b = StreamResize::<K>::new(sw, sh, dw, dh, 3).unwrap();
+            let mut via_u8 = vec![0u16; dw * dh * 3];
+            let mut via_u16 = vec![0u16; dw * dh * 3];
+            for y in 0..sh {
+                let row = &src[y * sw * 3..(y + 1) * sw * 3];
+                a.push_row_u8(row, &lut, |oy, out| {
+                    via_u8[oy * dw * 3..(oy + 1) * dw * 3].copy_from_slice(out)
+                });
+                let wide: Vec<u16> = row.iter().map(|&v| lut[v as usize] as u16).collect();
+                b.push_row(&wide, |oy, out| {
+                    via_u16[oy * dw * 3..(oy + 1) * dw * 3].copy_from_slice(out)
+                });
+            }
+            assert_eq!(via_u8, via_u16, "{sw}x{sh}->{dw}x{dh} u8 staging");
+        }
+    }
+
+    /// Stage `rows` rows of a 3-channel test image the way the driver
+    /// does: `(stage, row_stride)`, slack included.
+    fn staged_x3<K: RowKernel>(sw: usize, rows: usize, w: &Windows) -> (Vec<f32>, usize) {
+        let src = test_image(sw, rows, 3);
+        let rs = (sw + w.stride) * K::STAGE3_FLOATS_PER_PIXEL;
+        let mut stage = vec![0f32; rs * rows];
+        for y in 0..rows {
+            // SAFETY: tests call this only after K::detect(); the slice
+            // holds `sw * STAGE3_FLOATS_PER_PIXEL` floats.
+            unsafe { K::stage_x3(&src[y * sw * 3..(y + 1) * sw * 3], &mut stage[y * rs..], sw) };
+        }
+        (stage, rs)
+    }
+
+    /// Every batch size up to `HORIZ_BATCH` == one row at a time, bit-exact.
+    pub(crate) fn assert_horiz_batch_matches_single<K: RowKernel>() {
+        let narrow = (1..=13usize).map(|w| (w, 4, w.div_ceil(2), 1));
+        for (sw, _, dw, _) in SHAPES.iter().copied().chain(narrow) {
+            let w = Windows::new(sw, dw);
+            let (stage, rs) = staged_x3::<K>(sw, 4, &w);
+            // Ring slots out of order and a plane wider than 4 rows, so a
+            // kernel mixing up rows or slots cannot pass.
+            let plane = 5 * dw;
+            let slots = [3 * dw, dw, 4 * dw, 0];
+            let mut single = vec![0f32; 3 * plane];
+            for (r, &slot) in slots.iter().enumerate() {
+                // SAFETY: after K::detect(); stage rows carry the slack and
+                // every slot + dst_w <= plane.
+                unsafe { K::horiz_x3(&stage[r * rs..], sw, &w, &mut single, plane, slot, dw) };
+            }
+            // n == 0 included: the trait allows an empty batch, which must
+            // leave the ring untouched. Slots past n must stay untouched too.
+            const UNTOUCHED: f32 = -1.0;
+            for n in 0..=K::HORIZ_BATCH {
+                let mut batched = vec![UNTOUCHED; 3 * plane];
+                // SAFETY: as above, for rows 0..n.
+                unsafe {
+                    K::horiz_x3_batch(&stage, rs, n, sw, &w, &mut batched, plane, &slots, dw)
+                };
+                for (r, &slot) in slots.iter().enumerate() {
+                    for c in 0..3 {
+                        let at = c * plane + slot..c * plane + slot + dw;
+                        let same = if r < n {
+                            batched[at.clone()]
+                                .iter()
+                                .zip(&single[at])
+                                .all(|(a, b)| a.to_bits() == b.to_bits())
+                        } else {
+                            batched[at]
+                                .iter()
+                                .all(|v| v.to_bits() == UNTOUCHED.to_bits())
+                        };
+                        assert!(same, "{sw}->{dw} batch {n} row {r} channel {c}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Horizontal-pass timing over a DIV2K-sized frame, full batches
+    /// (`cargo test --release -- --ignored --nocapture horiz_bench`).
+    pub(crate) fn bench_horiz<K: RowKernel>() {
+        for (sw, dw, rows) in [
+            (2040usize, 512usize, 1356usize),
+            (2040, 683, 1356),
+            (2040, 256, 1356),
+        ] {
+            let w = Windows::new(sw, dw);
+            let (stage, rs) = staged_x3::<K>(sw, rows, &w);
+            let b = K::HORIZ_BATCH;
+            let plane = b * dw;
+            let slots: [usize; 4] = std::array::from_fn(|i| i * dw);
+            let mut ring = vec![0f32; 3 * plane];
+            let mut best = f64::MAX;
+            for _ in 0..15 {
+                let t = std::time::Instant::now();
+                for y in (0..rows - rows % b).step_by(b) {
+                    // SAFETY: after K::detect(); rows y..y + b are staged.
+                    unsafe {
+                        K::horiz_x3_batch(
+                            std::hint::black_box(&stage[y * rs..]),
+                            rs,
+                            b,
+                            sw,
+                            &w,
+                            &mut ring,
+                            plane,
+                            &slots,
+                            dw,
+                        )
+                    };
+                }
+                best = best.min(t.elapsed().as_secs_f64() * 1e3);
+            }
+            println!("horiz {sw}->{dw} x{rows}: {best:.3} ms");
         }
     }
 

@@ -24,9 +24,10 @@ pub(crate) struct Neon;
 
 // SAFETY (method bodies): each unsafe block only dispatches to the matching
 // #[target_feature(enable = "neon")] fn below under the trait method's
-// documented preconditions; the trait contract's `detect()` check guarantees
-// NEON is present.
+// documented preconditions (`horiz_x3` as a one-row `horiz_rows_x3::<1>`
+// batch); the trait contract's `detect()` check guarantees NEON is present.
 impl RowKernel for Neon {
+    const HORIZ_BATCH: usize = 2;
     fn detect() -> bool {
         std::arch::is_aarch64_feature_detected!("neon")
     }
@@ -45,7 +46,27 @@ impl RowKernel for Neon {
         slot: usize,
         dst_w: usize,
     ) {
-        unsafe { horiz_row_x3(stage, src_w, w, ring, plane, slot, dst_w) }
+        unsafe { horiz_rows_x3::<1>(stage, 0, src_w, w, ring, plane, &[slot, 0, 0, 0], dst_w) }
+    }
+    unsafe fn horiz_x3_batch(
+        stage: &[f32],
+        row_stride: usize,
+        n: usize,
+        src_w: usize,
+        w: &Windows,
+        ring: &mut [f32],
+        plane: usize,
+        slots: &[usize; 4],
+        dst_w: usize,
+    ) {
+        unsafe {
+            // An empty batch is a no-op, as in the default body.
+            match n {
+                0 => {}
+                2 => horiz_rows_x3::<2>(stage, row_stride, src_w, w, ring, plane, slots, dst_w),
+                _ => horiz_rows_x3::<1>(stage, row_stride, src_w, w, ring, plane, slots, dst_w),
+            }
+        }
     }
     unsafe fn horiz_x4(
         stage: &[f32],
@@ -160,58 +181,96 @@ unsafe fn stage_row_x4(row: &[u16], stage: &mut [f32]) {
     }
 }
 
-/// One horizontal row, 3 channels, reading planar f32 staged rows:
-/// per output pixel, 8-tap blocks accumulate each channel in a f32x4
-/// register (same FMA sequence as widening from u16 directly).
+/// `R` rows' three planar dot products for output pixel `o`: 4-tap blocks
+/// accumulate each channel in a f32x4 register, one coefficient load
+/// shared by every row and channel. Lane `j` sums taps `j, j + 4, ...` in
+/// ascending order whatever `R` is, so batching changes no value.
+#[inline(always)]
+// SAFETY: requires NEON; `o < w.starts.len()`, and every `ins[r][ch]` must
+// allow reads of f32 [start, start + padded) with `padded` = size rounded
+// up to 4 (`<= w.stride`, a Windows invariant).
+unsafe fn dot3_rows<const R: usize>(
+    ins: &[[*const f32; 3]; R],
+    w: &Windows,
+    o: usize,
+) -> [[std::arch::aarch64::float32x4_t; 3]; R] {
+    unsafe {
+        use std::arch::aarch64::*;
+        let start = *w.starts.get_unchecked(o);
+        let padded = w.sizes.get_unchecked(o).div_ceil(4) * 4;
+        let cp = w.coeffs.as_ptr().add(o * w.stride);
+        let mut acc = [[vdupq_n_f32(0.0); 3]; R];
+        let mut k = 0usize;
+        while k < padded {
+            let c = vld1q_f32(cp.add(k));
+            for r in 0..R {
+                for ch in 0..3 {
+                    let v = vld1q_f32(ins[r][ch].add(start + k));
+                    acc[r][ch] = vfmaq_f32(acc[r][ch], v, c);
+                }
+            }
+            k += 4;
+        }
+        acc
+    }
+}
+
+/// Horizontal pass over `R` planar 3-channel staged rows (row `r` at
+/// `stage[r * row_stride..]`, landing at ring offset `slots[r]`).
+/// Four adjacent outputs are reduced together: two rounds of pairwise
+/// adds leave each output's `(l0 + l1) + (l2 + l3)` — the order
+/// `vaddvq_f32` uses — in one vector, stored in a single write.
 #[target_feature(enable = "neon")]
-// SAFETY: requires NEON. Each plane pointer (base stage + {0, src_w, 2*src_w})
-// reads f32 [start, start + padded); `start + sizes <= src_w` and
-// `padded <= w.stride` (Windows invariants), so `stage` must hold at least
-// 3 * src_w + w.stride readable f32. Coefficient loads stay inside the checked
-// `padded`-long subslice; ring writes are bounds-checked.
-unsafe fn horiz_row_x3(
+#[allow(clippy::too_many_arguments)]
+// SAFETY: requires NEON. Each row's plane pointers (row base + {0, src_w,
+// 2*src_w}) read f32 [start, start + padded) with `start + sizes <= src_w`
+// and `padded <= w.stride` (Windows invariants), so `stage` must hold
+// (R - 1) * row_stride + 3 * src_w + w.stride readable f32. Coefficient
+// reads stay inside each window's `stride`-long row. Ring writes cover
+// [ch * plane + slots[r], + dst_w), checked by the asserts.
+unsafe fn horiz_rows_x3<const R: usize>(
     stage: &[f32],
+    row_stride: usize,
     src_w: usize,
     w: &Windows,
     ring: &mut [f32],
     plane: usize,
-    slot: usize,
+    slots: &[usize; 4],
     dst_w: usize,
 ) {
+    assert!(ring.len() >= 3 * plane);
+    assert!(slots[..R].iter().all(|&s| s + dst_w <= plane));
     unsafe {
         use std::arch::aarch64::*;
-        let r_in = stage.as_ptr();
-        let g_in = stage.as_ptr().add(src_w);
-        let b_in = stage.as_ptr().add(2 * src_w);
-        for ox in 0..dst_w {
-            let start = w.starts[ox];
-            // Whole 8-tap blocks over the zero-padded coefficients: no
-            // scalar tail, no per-tap branch (padding contributes
-            // exactly +0.0 against the finite staged slack).
-            let padded = w.sizes[ox].div_ceil(8) * 8;
-            let coeffs = &w.coeffs[ox * w.stride..ox * w.stride + padded];
-
-            let mut acc = [vdupq_n_f32(0.0); 3];
-            let mut k = 0usize;
-            while k < padded {
-                let c_lo = vld1q_f32(coeffs.as_ptr().add(k));
-                let c_hi = vld1q_f32(coeffs.as_ptr().add(k + 4));
-                macro_rules! ch {
-                    ($i:tt, $in:expr) => {{
-                        let lo = vld1q_f32($in.add(start + k));
-                        let hi = vld1q_f32($in.add(start + k + 4));
-                        acc[$i] = vfmaq_f32(acc[$i], lo, c_lo);
-                        acc[$i] = vfmaq_f32(acc[$i], hi, c_hi);
-                    }};
+        let ins: [[*const f32; 3]; R] = std::array::from_fn(|r| {
+            let p = stage.as_ptr().add(r * row_stride);
+            [p, p.add(src_w), p.add(2 * src_w)]
+        });
+        let base = ring.as_mut_ptr();
+        let mut ox = 0usize;
+        while ox + 4 <= dst_w {
+            let a0 = dot3_rows::<R>(&ins, w, ox);
+            let a1 = dot3_rows::<R>(&ins, w, ox + 1);
+            let a2 = dot3_rows::<R>(&ins, w, ox + 2);
+            let a3 = dot3_rows::<R>(&ins, w, ox + 3);
+            for r in 0..R {
+                for ch in 0..3 {
+                    let s = vpaddq_f32(
+                        vpaddq_f32(a0[r][ch], a1[r][ch]),
+                        vpaddq_f32(a2[r][ch], a3[r][ch]),
+                    );
+                    vst1q_f32(base.add(ch * plane + slots[r] + ox), s);
                 }
-                ch!(0, r_in);
-                ch!(1, g_in);
-                ch!(2, b_in);
-                k += 8;
             }
-            ring[slot + ox] = vaddvq_f32(acc[0]);
-            ring[plane + slot + ox] = vaddvq_f32(acc[1]);
-            ring[2 * plane + slot + ox] = vaddvq_f32(acc[2]);
+            ox += 4;
+        }
+        for ox in ox..dst_w {
+            let a = dot3_rows::<R>(&ins, w, ox);
+            for (row, &slot) in a.iter().zip(slots) {
+                for (ch, v) in row.iter().enumerate() {
+                    *base.add(ch * plane + slot + ox) = vaddvq_f32(*v);
+                }
+            }
         }
     }
 }
@@ -408,6 +467,22 @@ mod tests {
     #[test]
     fn streaming_with_trailing_rows_matches_full_frame() {
         testkit::assert_streaming_with_trailing_rows::<Neon>();
+    }
+
+    #[test]
+    fn u8_staging_matches_u16() {
+        testkit::assert_u8_staging_matches_u16::<Neon>();
+    }
+
+    #[test]
+    fn horiz_batch_matches_single_rows() {
+        testkit::assert_horiz_batch_matches_single::<Neon>();
+    }
+
+    #[test]
+    #[ignore]
+    fn horiz_bench() {
+        testkit::bench_horiz::<Neon>();
     }
 
     #[test]
