@@ -323,27 +323,53 @@ fn png_effort_accepts_zlib_style_levels() {
     assert_eq!(e("1"), e("fastest"));
 }
 
-/// Aliases widen the accepted set, not the policy: a value that is
-/// neither a level name nor 0-9 still refuses to start, and says what
-/// would have been accepted.
+/// Issue #46: effort is cosmetic like `OXIMG_LOG`, so a value that is
+/// neither a level name nor 0-9 warns — naming what would have been
+/// accepted — and encodes exactly as if the knob were unset, instead
+/// of refusing to start.
 #[test]
-fn unknown_png_effort_is_still_fatal() {
-    let out = tmp("bad-effort.png");
+fn unknown_png_effort_warns_and_uses_the_default() {
+    let unset = resize_with_env("bad-effort-unset.png", &[]);
+    for bad in ["10", "max", "High"] {
+        let out = tmp("bad-effort.png");
+        let output = bin()
+            .args(["resize", &fixture("photo.jpg"), "400", "400"])
+            .arg(&out)
+            .env("OXIMG_PNG_EFFORT", bad)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{bad:?}: {stderr}");
+        assert!(
+            stderr.contains(&format!("oximg: warning: OXIMG_PNG_EFFORT={bad:?}")),
+            "{bad:?}: {stderr}"
+        );
+        assert!(
+            stderr.contains("0-9"),
+            "must name the numeric form: {stderr}"
+        );
+        let bytes = std::fs::read(&out).expect("read output");
+        std::fs::remove_file(&out).ok();
+        assert_eq!(bytes, unset, "{bad:?} must encode as if unset");
+    }
+}
+
+/// The fallback is scoped to effort: its fail-closed neighbours in the
+/// same table still refuse to start.
+#[test]
+fn unknown_png_quantize_is_still_fatal() {
+    let out = tmp("bad-quantize.png");
     let output = bin()
         .args(["resize", &fixture("photo.jpg"), "100", "100"])
         .arg(&out)
-        .env("OXIMG_PNG_EFFORT", "10")
+        .env("OXIMG_PNG_QUANTIZE", "yes")
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("oximg: fatal: OXIMG_PNG_EFFORT=\"10\""),
+        stderr.contains("oximg: fatal: OXIMG_PNG_QUANTIZE=\"yes\""),
         "{stderr}"
-    );
-    assert!(
-        stderr.contains("0-9"),
-        "must name the numeric form: {stderr}"
     );
     assert!(!out.exists(), "nothing may be written on a fatal config");
 }

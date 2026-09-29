@@ -265,12 +265,18 @@ pub(crate) fn validate() -> Result<(), String> {
     one_of("OXIMG_OVERLAP", &["0", "1", "auto"])?;
     one_of("OXIMG_RESIZE", &["srgb", "linear"])?;
     one_of("OXIMG_RESIZE_BACKEND", &["fir", "kernel"])?;
+    // Lenient, like OXIMG_LOG (issue #46): effort only trades encode
+    // time against file size, never what is produced, so an unknown
+    // value — `10`, rounding zlib's best up, is the likely one — warns
+    // and falls back to the unset default (`config()` already reads it
+    // as `None`) instead of crash-looping a rollout over a typo.
     if let Some(v) = set("OXIMG_PNG_EFFORT")
         && png_effort(v.trim()).is_none()
     {
-        return Err(format!(
-            "OXIMG_PNG_EFFORT={v:?} must be one of \"fastest\", \"fast\", \"balanced\", \"high\", or a zlib-style level 0-9"
-        ));
+        eprintln!(
+            "oximg: warning: OXIMG_PNG_EFFORT={v:?} is not one of fastest, fast, balanced, \
+             high, or a zlib-style level 0-9; using the default, as if unset"
+        );
     }
     one_of("OXIMG_METRICS", &["0", "1"])?;
     num("OXIMG_DCT_MARGIN", 1.0f64, 8.0)?;
@@ -795,7 +801,8 @@ mod tests {
 
     /// Issue #8: every zlib-style level lands on the named level with
     /// the same deflate underneath (6 = zlib default = `balanced`,
-    /// 9 = zlib best = `high`); anything else is still refused.
+    /// 9 = zlib best = `high`); anything else is `None`, which
+    /// `validate` turns into a warning and the unset default.
     #[test]
     fn png_effort_accepts_names_and_zlib_levels() {
         use png::Compression as C;
@@ -805,7 +812,7 @@ mod tests {
             Some(C::Balanced) => "balanced",
             Some(C::High) => "high",
             Some(other) => panic!("{v:?} mapped to unexpected {other:?}"),
-            None => "refused",
+            None => "unknown",
         };
         for name in ["fastest", "fast", "balanced", "high"] {
             assert_eq!(level(name), name);
@@ -819,7 +826,7 @@ mod tests {
             ]
         );
         for bad in ["10", "-1", "09", "1.5", "max", "High", ""] {
-            assert_eq!(level(bad), "refused", "{bad:?}");
+            assert_eq!(level(bad), "unknown", "{bad:?}");
         }
     }
 }
