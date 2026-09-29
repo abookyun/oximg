@@ -411,6 +411,11 @@ mod tests {
     }
 
     #[test]
+    fn u8_staging_matches_u16() {
+        testkit::assert_u8_staging_matches_u16::<Neon>();
+    }
+
+    #[test]
     fn tracks_ground_truth_for_rgb() {
         for (sw, sh, dw, dh) in [
             (2040, 1356, 512, 340),

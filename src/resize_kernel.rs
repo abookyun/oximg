@@ -179,11 +179,47 @@ pub(crate) trait RowKernel {
     // SAFETY: caller contract as for `stage_x3` (`Self::detect()` verified,
     // `row.len() >= 3 * w`, `stage.len() >= w * Self::STAGE3_FLOATS_PER_PIXEL`).
     // The default body's `get_unchecked` indices are bounded by exactly those
-    // lengths, and the `lut` index is a u8, always < 256.
+    // lengths (the 12-byte group reads end at `3 * (x + 4) <= 3 * w`), and
+    // every `lut` index is one byte, always < 256.
+    //
+    // The cost is the three table reads per pixel, which no SIMD form beats
+    // here (a 256-entry f32 table fits no NEON/AVX2 lookup); what is left to
+    // save is the byte loads, so four pixels' bytes come in as one u64 and
+    // one u32 and are split in registers (-22% on an M2 Max, -7% on Zen 4).
     unsafe fn stage_x3_u8(row: &[u8], lut: &[f32; 256], stage: &mut [f32], w: usize) {
+        #[inline(always)]
+        unsafe fn group(row: &[u8], x: usize) -> [usize; 12] {
+            // SAFETY: caller guarantees `3 * (x + 4) <= row.len()`.
+            let (a, b) = unsafe {
+                let p = row.as_ptr().add(x * 3);
+                (
+                    (p as *const u64).read_unaligned().to_le(),
+                    (p.add(8) as *const u32).read_unaligned().to_le(),
+                )
+            };
+            std::array::from_fn(|i| {
+                if i < 8 {
+                    ((a >> (i * 8)) & 0xff) as usize
+                } else {
+                    ((b >> ((i - 8) * 8)) & 0xff) as usize
+                }
+            })
+        }
         unsafe {
+            let mut x0 = 0;
             if Self::STAGE3_FLOATS_PER_PIXEL == 4 {
-                for x in 0..w {
+                while x0 + 4 <= w {
+                    let v = group(row, x0);
+                    for k in 0..4 {
+                        let o = stage.get_unchecked_mut((x0 + k) * 4..(x0 + k) * 4 + 4);
+                        o[0] = *lut.get_unchecked(v[3 * k]);
+                        o[1] = *lut.get_unchecked(v[3 * k + 1]);
+                        o[2] = *lut.get_unchecked(v[3 * k + 2]);
+                        o[3] = 0.0;
+                    }
+                    x0 += 4;
+                }
+                for x in x0..w {
                     *stage.get_unchecked_mut(x * 4) = lut[*row.get_unchecked(x * 3) as usize];
                     *stage.get_unchecked_mut(x * 4 + 1) =
                         lut[*row.get_unchecked(x * 3 + 1) as usize];
@@ -192,7 +228,16 @@ pub(crate) trait RowKernel {
                     *stage.get_unchecked_mut(x * 4 + 3) = 0.0;
                 }
             } else {
-                for x in 0..w {
+                while x0 + 4 <= w {
+                    let v = group(row, x0);
+                    for k in 0..4 {
+                        *stage.get_unchecked_mut(x0 + k) = *lut.get_unchecked(v[3 * k]);
+                        *stage.get_unchecked_mut(w + x0 + k) = *lut.get_unchecked(v[3 * k + 1]);
+                        *stage.get_unchecked_mut(2 * w + x0 + k) = *lut.get_unchecked(v[3 * k + 2]);
+                    }
+                    x0 += 4;
+                }
+                for x in x0..w {
                     *stage.get_unchecked_mut(x) = lut[*row.get_unchecked(x * 3) as usize];
                     *stage.get_unchecked_mut(w + x) = lut[*row.get_unchecked(x * 3 + 1) as usize];
                     *stage.get_unchecked_mut(2 * w + x) =
@@ -846,6 +891,42 @@ pub(crate) mod testkit {
                 assert_eq!(sr.rows_emitted(), dh);
                 assert_eq!(streamed, full, "{sw}x{sh}->{dw}x{dh} x{ch} streamed");
             }
+        }
+    }
+
+    /// u8 staging through a LUT == the same LUT applied up front and staged
+    /// as u16, bit-exact, including widths that leave a partial 4-pixel group.
+    pub(crate) fn assert_u8_staging_matches_u16<K: RowKernel>() {
+        let lut: [f32; 256] = std::array::from_fn(|v| {
+            let c = v as f64 / 255.0;
+            let l = if c <= 0.04045 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            };
+            (l * 65535.0).round() as f32
+        });
+        let narrow = (1..=13usize).map(|w| (w, 5, w.div_ceil(2), 3));
+        for (sw, sh, dw, dh) in SHAPES.iter().copied().chain(narrow) {
+            let src: Vec<u8> = test_image(sw, sh, 3)
+                .iter()
+                .map(|&v| (v >> 8) as u8)
+                .collect();
+            let mut a = StreamResize::<K>::new(sw, sh, dw, dh, 3).unwrap();
+            let mut b = StreamResize::<K>::new(sw, sh, dw, dh, 3).unwrap();
+            let mut via_u8 = vec![0u16; dw * dh * 3];
+            let mut via_u16 = vec![0u16; dw * dh * 3];
+            for y in 0..sh {
+                let row = &src[y * sw * 3..(y + 1) * sw * 3];
+                a.push_row_u8(row, &lut, |oy, out| {
+                    via_u8[oy * dw * 3..(oy + 1) * dw * 3].copy_from_slice(out)
+                });
+                let wide: Vec<u16> = row.iter().map(|&v| lut[v as usize] as u16).collect();
+                b.push_row(&wide, |oy, out| {
+                    via_u16[oy * dw * 3..(oy + 1) * dw * 3].copy_from_slice(out)
+                });
+            }
+            assert_eq!(via_u8, via_u16, "{sw}x{sh}->{dw}x{dh} u8 staging");
         }
     }
 

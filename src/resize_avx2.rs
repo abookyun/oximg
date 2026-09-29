@@ -509,6 +509,14 @@ mod tests {
     }
 
     #[test]
+    fn u8_staging_matches_u16() {
+        if !detected() {
+            return;
+        }
+        testkit::assert_u8_staging_matches_u16::<Avx2>();
+    }
+
+    #[test]
     fn tracks_ground_truth_for_rgb() {
         if !detected() {
             return;
