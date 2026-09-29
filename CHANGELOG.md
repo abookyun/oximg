@@ -117,6 +117,14 @@ be a 422 now serves bytes, and one CLI edge changes its exit code.
 
 ### Changed
 
+- **`OXIMG_LOG` takes the RUST_LOG level names and no longer refuses to
+  boot** ([#8]). `warn` means failures only, like `error`; `info`,
+  `debug` and `trace` add the success line, like `request`; all
+  case-insensitive. An unknown value now warns on stderr and logs
+  failures only, where it used to exit 2: verbosity cannot make output
+  wrong or weaken a guarantee, so a typo in a deploy config should not
+  be a crash loop. Every other startup setting stays fatal.
+
 - **`oximg resize` refuses a `.gif` output extension** — exit 2, before
   anything is read or written — instead of ignoring it. It used to fall
   through to the source format, so `oximg resize photo.jpg 100 100

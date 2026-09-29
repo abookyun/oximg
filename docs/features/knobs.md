@@ -30,7 +30,7 @@ Pass extras to a spawned server with `oximg-ctl --env KEY=VAL …`.
 | `OXIMG_KEY` / `OXIMG_SALT` | unset | Hex HMAC; both or neither |
 | `OXIMG_WORKERS` | observed parallelism | CPU permits, 1–512. `oximg-ctl` spawn sets `1` if unset |
 | `OXIMG_FETCH_CONCURRENCY` | default `min(4 × permits, 256)`; explicit 1–1024 | Concurrent origin downloads |
-| `OXIMG_LOG` | `error` | `request` also logs 200s |
+| `OXIMG_LOG` | `error` | `request` (or `info`/`debug`/`trace`) also logs 200s; unknown warns, not fatal |
 | `OXIMG_METRICS` | `0` | `1` serves `/metrics` |
 | `OXIMG_SOURCE_BASE_URL` | unset | `https://…` or `gs://bucket[/prefix]` |
 | `OXIMG_GCS_ENDPOINT` | GCS default | Emulator / PSC; read per `gs://` request, not fail-closed at boot |

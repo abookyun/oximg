@@ -3314,6 +3314,52 @@ fn oriented_sources_are_capped_on_the_larger_fit() {
     }
 }
 
+/// Run one server with `envs`, issue `path`, then stop it and drain
+/// stderr to EOF — every line, startup included. Killing first is what
+/// makes the read terminate: reading a live process's stderr for a
+/// line that may never come is how the first user of this hung.
+fn run_once(images: &str, envs: &[(&str, String)], path: &str) -> (u16, Vec<String>) {
+    use std::io::BufRead;
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_oximg"));
+    cmd.env("PORT", "0")
+        .env("IMAGES_DIR", images)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().expect("spawn oximg");
+    let stderr = child.stderr.take().unwrap();
+    let mut reader = std::io::BufReader::new(stderr);
+    let mut port = None;
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for _ in 0..100 {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                lines.push(line.trim_end().to_string());
+                if let Some(rest) = line.strip_prefix("oximg listening on :") {
+                    port = rest.split_whitespace().next().and_then(|p| p.parse().ok());
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let port: u16 = port.unwrap_or_else(|| panic!("no listening line: {lines:?}"));
+    let status = match ureq::get(format!("http://127.0.0.1:{port}{path}")).call() {
+        Ok(r) => r.status().as_u16(),
+        Err(ureq::Error::StatusCode(s)) => s,
+        Err(e) => panic!("transport error: {e}"),
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    lines.extend(reader.lines().map_while(Result::ok));
+    (status, lines)
+}
+
 /// Issue #19: the cap can only ever name what it *rejects*, so a
 /// deployment learning its corpus needs expensive requests named while
 /// they are still served. The threshold is orthogonal to the cap, both
@@ -3337,53 +3383,9 @@ fn expensive_requests_are_reported_without_being_refused() {
     std::fs::write(dir.join("costly.png"), &png).unwrap();
     let images = dir.to_str().unwrap().to_string();
 
-    /// Run one server with `envs`, issue `path`, then stop it and drain
-    /// stderr to EOF. Killing first is what makes the read terminate —
-    /// reading a live process's stderr for a line that may never come
-    /// is how this test first hung.
-    fn run(images: &str, envs: &[(&str, String)], path: &str) -> (u16, Vec<String>) {
-        use std::io::BufRead;
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_oximg"));
-        cmd.env("PORT", "0")
-            .env("IMAGES_DIR", images)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped());
-        for (k, v) in envs {
-            cmd.env(k, v);
-        }
-        let mut child = cmd.spawn().expect("spawn oximg");
-        let stderr = child.stderr.take().unwrap();
-        let mut reader = std::io::BufReader::new(stderr);
-        let mut port = None;
-        let mut line = String::new();
-        for _ in 0..100 {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) => break,
-                Ok(_) => {
-                    if let Some(rest) = line.strip_prefix("oximg listening on :") {
-                        port = rest.split_whitespace().next().and_then(|p| p.parse().ok());
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        let port: u16 = port.expect("listening line");
-        let status = match ureq::get(format!("http://127.0.0.1:{port}{path}")).call() {
-            Ok(r) => r.status().as_u16(),
-            Err(ureq::Error::StatusCode(s)) => s,
-            Err(e) => panic!("transport error: {e}"),
-        };
-        let _ = child.kill();
-        let _ = child.wait();
-        let rest = reader.lines().map_while(Result::ok).collect();
-        (status, rest)
-    }
-
     // Threshold below the estimate: served *and* named, with the
     // filename and the terms.
-    let (status, logs) = run(
+    let (status, logs) = run_once(
         &images,
         &[("OXIMG_LOG_DECODED_BYTES_ABOVE", (1024 * 1024).to_string())],
         "/resize/200/200/costly.png",
@@ -3398,7 +3400,7 @@ fn expensive_requests_are_reported_without_being_refused() {
     assert!(line.contains("resize input"), "{line}");
 
     // Threshold above the estimate: nothing reported, request served.
-    let (status, logs) = run(
+    let (status, logs) = run_once(
         &images,
         &[(
             "OXIMG_LOG_DECODED_BYTES_ABOVE",
@@ -3413,14 +3415,14 @@ fn expensive_requests_are_reported_without_being_refused() {
     );
 
     // Unset: byte-identical behaviour to before the feature.
-    let (status, logs) = run(&images, &[], "/resize/200/200/costly.png");
+    let (status, logs) = run_once(&images, &[], "/resize/200/200/costly.png");
     assert_eq!(status, 200);
     assert!(!logs.iter().any(|l| l.contains("decoded-bytes")));
 
     // The knobs are orthogonal, and one request never logs the same
     // terms twice: a refusal names itself with its limit clause and
     // does not also emit the served-request report.
-    let (status, logs) = run(
+    let (status, logs) = run_once(
         &images,
         &[
             ("OXIMG_LOG_DECODED_BYTES_ABOVE", "1048576".to_string()),
@@ -3437,6 +3439,32 @@ fn expensive_requests_are_reported_without_being_refused() {
         !logs.iter().any(|l| l.contains("decoded-bytes")),
         "a refused request must not also emit the served report: {logs:?}"
     );
+}
+
+/// Issue #8: `OXIMG_LOG` takes the RUST_LOG level names, and an
+/// unknown value boots with a warning instead of crash-looping the
+/// deployment — verbosity cannot make output wrong.
+#[test]
+fn log_level_aliases_and_unknown_values_boot() {
+    let images = format!("{}/tests/fixtures", env!("CARGO_MANIFEST_DIR"));
+    let path = "/resize/50/50/photo.jpg";
+    let logged = |logs: &[String]| logs.iter().any(|l| l.contains("status=200"));
+
+    for (level, successes) in [("info", true), ("DEBUG", true), ("warn", false)] {
+        let (status, logs) = run_once(&images, &[("OXIMG_LOG", level.into())], path);
+        assert_eq!(status, 200);
+        assert_eq!(logged(&logs), successes, "OXIMG_LOG={level}: {logs:?}");
+        assert!(!logs.iter().any(|l| l.contains("warning")), "{logs:?}");
+    }
+
+    let (status, logs) = run_once(&images, &[("OXIMG_LOG", "verbose".into())], path);
+    assert_eq!(status, 200, "an unknown log level must not refuse to boot");
+    assert!(
+        logs.iter()
+            .any(|l| l.starts_with("oximg: warning: OXIMG_LOG=\"verbose\"")),
+        "the fallback must say so: {logs:?}"
+    );
+    assert!(!logged(&logs), "falls back to failures-only: {logs:?}");
 }
 
 /// The `phase="fetch"` split (issue #20 follow-up), with issue #22's

@@ -272,7 +272,6 @@ pub(crate) fn validate() -> Result<(), String> {
             "OXIMG_PNG_EFFORT={v:?} must be one of \"fastest\", \"fast\", \"balanced\", \"high\", or a zlib-style level 0-9"
         ));
     }
-    one_of("OXIMG_LOG", &["error", "request"])?;
     one_of("OXIMG_METRICS", &["0", "1"])?;
     num("OXIMG_DCT_MARGIN", 1.0f64, 8.0)?;
     num("OXIMG_WEBP_QUALITY", 0.0f32, 100.0)?;
