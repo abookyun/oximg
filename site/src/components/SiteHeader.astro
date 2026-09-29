@@ -1,0 +1,74 @@
+---
+import Logo from "./Logo.astro";
+
+// Docs, benchmarks and migrate pages are planned; the header links to
+// their home-page sections until those routes exist.
+const links = [
+  { href: "/#benchmarks", label: "Benchmarks" },
+  { href: "/#quality", label: "Quality" },
+  { href: "/#urls", label: "URLs" },
+  { href: "/#use", label: "Use" },
+  { href: "https://github.com/oximg/oximg/tree/main/docs", label: "Docs" },
+];
+---
+
+<header class="site-header">
+  <div class="container bar">
+    <a href="/" class="home" aria-label="oximg home"><Logo /></a>
+    <nav aria-label="Primary">
+      <ul>
+        {links.map((l) => <li><a href={l.href}>{l.label}</a></li>)}
+      </ul>
+    </nav>
+    <a class="btn gh" href="https://github.com/oximg/oximg">GitHub ↗</a>
+  </div>
+</header>
+
+<style>
+  .site-header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: rgb(11 13 14 / 0.8);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--line);
+  }
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+    height: 3.5rem;
+  }
+  .home {
+    text-decoration: none;
+  }
+  nav {
+    margin-left: auto;
+  }
+  ul {
+    display: flex;
+    gap: var(--space-6);
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  nav a {
+    color: var(--text-muted);
+    font-size: var(--step--1);
+    text-decoration: none;
+  }
+  nav a:hover {
+    color: var(--text);
+  }
+  .gh {
+    padding: var(--space-1) var(--space-3);
+  }
+  @media (max-width: 720px) {
+    nav {
+      display: none;
+    }
+    .gh {
+      margin-left: auto;
+    }
+  }
+</style>

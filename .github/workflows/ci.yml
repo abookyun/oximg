@@ -1,9 +1,13 @@
 name: CI
 
+# The website has its own workflow (site.yml); a change confined to
+# site/ touches nothing this one builds or tests.
 on:
   push:
     branches: [main]
+    paths-ignore: ["site/**"]
   pull_request:
+    paths-ignore: ["site/**"]
 
 env:
   CARGO_TERM_COLOR: always

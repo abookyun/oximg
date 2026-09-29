@@ -1,0 +1,84 @@
+---
+import CodeCard from "./CodeCard.astro";
+
+const grammars = [
+  {
+    name: "Positional",
+    blurb: "Fit within w×h, never enlarge. 0 frees an axis — what srcset and Next.js loaders emit.",
+    lang: "http",
+    code: `
+GET /resize/750/0/photos/2026/a.jpg
+GET /resize/300/200/photo.jpg@webp
+GET /resize/1600/1600/photo.png@avif`,
+  },
+  {
+    name: "Cloudflare Images",
+    blurb: "Mount OXIMG_OPTIONS_PREFIX and URLs built for Cloudflare survive the migration as-is.",
+    lang: "http",
+    code: `
+GET /image/width=750,quality=80/albums/photo.png
+GET /image/width=1200,format=auto/hero.jpg`,
+  },
+  {
+    name: "Signed, imgproxy-style",
+    blurb: "Set OXIMG_KEY and OXIMG_SALT: every URL needs an HMAC-SHA256 prefix, or it answers 403.",
+    lang: "http",
+    code: `
+GET /{base64url(HMAC(key, salt ‖ path))}/resize/750/0/a.jpg`,
+  },
+];
+---
+
+<section class="section" id="urls">
+  <div class="container">
+    <header class="section-head">
+      <p class="eyebrow">urls</p>
+      <h2>Speaks the URLs you already have.</h2>
+      <p>
+        Moving off imgproxy or Cloudflare Images shouldn't mean rewriting every image URL in your
+        templates. Sources come from a directory, any HTTP(S) origin, or a private
+        <code>gs://</code> bucket.
+      </p>
+    </header>
+    <div class="grid">
+      {
+        grammars.map((g) => (
+          <article>
+            <h3>{g.name}</h3>
+            <p>{g.blurb}</p>
+            <CodeCard code={g.code} lang={g.lang} />
+          </article>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-6);
+  }
+  article {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    gap: var(--space-3);
+    min-width: 0;
+  }
+  h3 {
+    font-size: var(--step-1);
+  }
+  article > p {
+    color: var(--text-muted);
+    font-size: var(--step--1);
+  }
+  code {
+    color: var(--accent-strong);
+  }
+  @media (max-width: 960px) {
+    .grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

@@ -1,0 +1,79 @@
+---
+// Mirrors README.md's "Not yet implemented" and "Roadmap" sections.
+const issues = "https://github.com/oximg/oximg/issues";
+const notYet = [
+  { item: "s3:// sources (S3, R2, MinIO, B2)", href: `${issues}/11` },
+  { item: "Per-image output format selection", href: `${issues}/6` },
+  { item: "JXL output — @jxl is reserved" },
+  { item: "Animated output from animated AVIF / WebP sources" },
+  { item: "Response caching — use the CDN in front" },
+];
+---
+
+<section class="section" id="limits">
+  <div class="container layout">
+    <header class="section-head">
+      <p class="eyebrow">status</p>
+      <h2>Experimental, and saying so.</h2>
+      <p>
+        oximg is a proof of concept: the HTTP interface and the library API can change without
+        notice. Pin a version tag in production. Here is what isn't there yet.
+      </p>
+      <div class="actions">
+        <a class="btn btn-primary" href="https://github.com/oximg/oximg">Star on GitHub</a>
+        <a class="btn" href="https://github.com/oximg/oximg/blob/main/CHANGELOG.md">Changelog</a>
+      </div>
+    </header>
+    <ul class="card">
+      {
+        notYet.map((n) => (
+          <li>
+            <span class="box mono" aria-hidden="true">[ ]</span>
+            {n.href ? <a href={n.href}>{n.item}</a> : <span>{n.item}</span>}
+          </li>
+        ))
+      }
+    </ul>
+  </div>
+</section>
+
+<style>
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-16);
+    align-items: start;
+  }
+  .section-head {
+    margin-bottom: 0;
+  }
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    margin-top: var(--space-4);
+  }
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: var(--space-4) var(--space-6);
+  }
+  li {
+    display: flex;
+    gap: var(--space-3);
+    padding-block: var(--space-3);
+    border-bottom: 1px solid var(--line);
+    color: var(--text-muted);
+  }
+  li:last-child {
+    border-bottom: none;
+  }
+  .box {
+    color: var(--text-faint);
+  }
+  @media (max-width: 960px) {
+    .layout {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

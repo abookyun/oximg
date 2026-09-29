@@ -1,0 +1,203 @@
+---
+// Grouped bars per format, one panel per instance. The instance switch
+// is two radio inputs and CSS — the chart ships no JavaScript.
+import { FORMATS, harness } from "../data/bench";
+
+const runs = harness.runs;
+---
+
+<div class="chart">
+  <div class="switch mono" role="radiogroup" aria-label="Instance type">
+    {
+      runs.map((r, i) => (
+        <>
+          <input type="radio" name="bench-run" id={`run-${r.id}`} value={r.id} checked={i === 0} />
+          <label for={`run-${r.id}`}>
+            {r.instance}
+            <span>{r.arch}</span>
+          </label>
+        </>
+      ))
+    }
+  </div>
+
+  {
+    runs.map((r) => (
+      <div class="panel" data-run={r.id}>
+        <div class="formats">
+          {FORMATS.map((f) => {
+            const max = Math.max(...r.rows.map((row) => row.cells[f].rps));
+            return (
+              <div class="format card">
+                <h3 class="mono">{f}</h3>
+                <ul>
+                  {r.rows.map((row) => {
+                    const c = row.cells[f];
+                    return (
+                      <li class:list={{ ours: row.ours }}>
+                        <span class="server">{row.server}</span>
+                        <span class="track">
+                          <span class="bar" style={`--w:${(c.rps / max) * 100}%`} />
+                        </span>
+                        <span class="num rps">{c.rps.toFixed(1)}</span>
+                        <span class="num p95">{c.p95ms} ms</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            );
+          })}
+        </div>
+        <p class="meta mono">
+          req/s (higher is better) · p95 latency · {harness.workload} · measured {r.measured} ·{" "}
+          <a href={harness.source}>source table ↗</a>
+        </p>
+      </div>
+    ))
+  }
+</div>
+
+<style>
+  .switch {
+    display: inline-flex;
+    padding: var(--space-1);
+    margin-bottom: var(--space-6);
+    background: var(--bg-sunken);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+  }
+  .switch input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .switch label {
+    display: grid;
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-sm);
+    font-size: var(--step--1);
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .switch label span {
+    font-size: 0.72rem;
+    color: var(--text-faint);
+  }
+  .switch input:checked + label {
+    background: var(--surface-raised);
+    color: var(--text);
+    box-shadow: inset 0 0 0 1px var(--line-strong);
+  }
+  .switch input:focus-visible + label {
+    outline: 2px solid var(--accent);
+  }
+
+  .panel {
+    display: none;
+  }
+  .chart:has(#run-c7i:checked) .panel[data-run="c7i"],
+  .chart:has(#run-c7g:checked) .panel[data-run="c7g"] {
+    display: block;
+  }
+
+  .formats {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-4);
+  }
+  .format {
+    padding: var(--space-6);
+  }
+  h3 {
+    font-size: var(--step--1);
+    font-weight: 600;
+    color: var(--text-faint);
+    letter-spacing: 0.08em;
+    margin-bottom: var(--space-4);
+  }
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: var(--space-3);
+  }
+  li {
+    display: grid;
+    grid-template-columns: 7.5rem 1fr 3.5rem 4rem;
+    align-items: center;
+    gap: var(--space-3);
+    font-size: var(--step--1);
+    color: var(--text-faint);
+  }
+  li.ours {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .track {
+    height: 10px;
+    background: var(--bg-sunken);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .bar {
+    display: block;
+    height: 100%;
+    width: var(--w);
+    background: var(--series-theirs-2);
+    border-radius: 2px;
+    transform-origin: left;
+  }
+  li.ours .bar {
+    background: linear-gradient(90deg, var(--rust-600), var(--series-ours));
+    box-shadow: 0 0 16px -2px rgb(232 98 44 / 0.6);
+  }
+  .rps {
+    text-align: right;
+  }
+  li.ours .rps {
+    color: var(--brand-strong);
+  }
+  .p95 {
+    text-align: right;
+    color: var(--text-faint);
+    font-weight: 400;
+  }
+  .meta {
+    margin-top: var(--space-4);
+    font-size: 0.75rem;
+    color: var(--text-faint);
+  }
+
+  /* Bars grow to their value as the chart scrolls into view, where the
+     browser supports scroll-driven animation; elsewhere they are static. */
+  @supports (animation-timeline: view()) {
+    @media (prefers-reduced-motion: no-preference) {
+      .bar {
+        animation: grow linear both;
+        animation-timeline: view();
+        animation-range: entry 10% cover 35%;
+      }
+    }
+  }
+  @keyframes grow {
+    from {
+      transform: scaleX(0);
+    }
+  }
+
+  @media (max-width: 860px) {
+    .formats {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  @media (max-width: 480px) {
+    li {
+      grid-template-columns: 5.5rem 1fr 3rem;
+    }
+    .p95 {
+      display: none;
+    }
+  }
+</style>

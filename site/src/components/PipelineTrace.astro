@@ -1,0 +1,155 @@
+---
+// A request as it moves through the pipeline. The stages and what they
+// do come from README.md#pipeline; the only timing shown is the
+// measured end-to-end p95, since per-stage times are not published.
+const stages = [
+  { name: "sniff", detail: "format by magic bytes, never the extension" },
+  { name: "decode", detail: "mozjpeg streaming, full size" },
+  { name: "linearize", detail: "sRGB u8 → linear u16, alpha premultiplied" },
+  { name: "resize", detail: "Lanczos3 · NEON / AVX2 row kernels" },
+  { name: "encode", detail: "libwebp lossy, ICC passed through" },
+];
+---
+
+<figure class="trace card" aria-label="A request moving through the oximg pipeline">
+  <div class="titlebar mono">
+    <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    <span class="title">oximg · request trace</span>
+  </div>
+  <div class="body mono">
+    <p class="req">
+      <span class="method">GET</span> /resize/512/512/<span class="file">0801.jpg</span>@webp
+    </p>
+    <ol>
+      {
+        stages.map((s, i) => (
+          <li style={`--i:${i}`}>
+            <span class="tick" aria-hidden="true" />
+            <span class="name">{s.name}</span>
+            <span class="detail">{s.detail}</span>
+          </li>
+        ))
+      }
+    </ol>
+    <p class="res" style={`--i:${stages.length}`}>
+      <span class="ok">200</span> image/webp
+      <span class="sep">·</span>
+      <span class="num">p95 33 ms</span>
+      <span class="note">c7g.large, JPEG→WebP cell</span>
+    </p>
+  </div>
+</figure>
+
+<style>
+  .trace {
+    margin: 0;
+    overflow: hidden;
+    box-shadow: 0 30px 80px -40px rgb(232 98 44 / 0.35);
+  }
+  .titlebar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-raised);
+    font-size: var(--step--1);
+  }
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--line-strong);
+  }
+  .title {
+    margin-left: var(--space-3);
+    color: var(--text-faint);
+  }
+  .body {
+    padding: var(--space-6);
+    font-size: var(--step--1);
+    display: grid;
+    gap: var(--space-4);
+  }
+  .method {
+    color: var(--accent-strong);
+  }
+  .file {
+    color: var(--text);
+  }
+  .req {
+    color: var(--text-muted);
+  }
+  ol {
+    list-style: none;
+    margin: 0;
+    padding: 0 0 0 var(--space-2);
+    display: grid;
+    gap: var(--space-2);
+    border-left: 1px dashed var(--line-strong);
+  }
+  li,
+  .res {
+    display: grid;
+    grid-template-columns: auto 6.5rem 1fr;
+    align-items: baseline;
+    gap: var(--space-3);
+    opacity: 0.25;
+    animation: light var(--duration) var(--ease-out) forwards;
+    animation-delay: calc(var(--i) * 280ms + 300ms);
+  }
+  .res {
+    display: block;
+    color: var(--text-muted);
+  }
+  .tick {
+    width: 8px;
+    height: 8px;
+    margin-left: calc(-1 * var(--space-2) - 4.5px);
+    border-radius: 2px;
+    background: var(--brand);
+    transform: translateY(-1px);
+  }
+  .name {
+    color: var(--brand-strong);
+  }
+  .detail {
+    color: var(--text-muted);
+  }
+  .ok {
+    color: var(--accent);
+    font-weight: 700;
+  }
+  .sep {
+    color: var(--text-faint);
+    margin-inline: var(--space-1);
+  }
+  .num {
+    color: var(--text);
+  }
+  .note {
+    display: block;
+    margin-top: var(--space-1);
+    color: var(--text-faint);
+  }
+  @keyframes light {
+    to {
+      opacity: 1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    li,
+    .res {
+      opacity: 1;
+      animation: none;
+    }
+  }
+  @media (max-width: 520px) {
+    li {
+      grid-template-columns: auto 1fr;
+    }
+    .detail {
+      grid-column: 2;
+    }
+  }
+</style>

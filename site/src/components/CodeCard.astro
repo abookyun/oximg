@@ -1,0 +1,38 @@
+---
+import { Code } from "astro:components";
+import { oxideTheme } from "../styles/code-theme";
+
+interface Props {
+  code: string;
+  lang: string;
+  caption?: string;
+}
+const { code, lang, caption } = Astro.props;
+---
+
+<figure class="code-card card">
+  {caption && <figcaption class="mono">{caption}</figcaption>}
+  <Code code={code.trim()} lang={lang as any} theme={oxideTheme as any} />
+</figure>
+
+<style>
+  .code-card {
+    margin: 0;
+    overflow: hidden;
+    min-width: 0;
+  }
+  figcaption {
+    padding: var(--space-2) var(--space-4);
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-raised);
+    font-size: 0.75rem;
+    color: var(--text-faint);
+  }
+  .code-card :global(pre) {
+    margin: 0;
+    padding: var(--space-4);
+    font-size: var(--step--1);
+    line-height: 1.7;
+    overflow-x: auto;
+  }
+</style>

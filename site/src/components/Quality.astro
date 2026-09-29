@@ -1,0 +1,147 @@
+---
+import { quality } from "../data/bench";
+
+// SSIMULACRA2 bars share one fixed 0–100 axis, so the gap is drawn to
+// scale rather than exaggerated by a cropped baseline.
+const properties = [
+  { k: "linear light", v: "resampled on 16-bit linear samples, not gamma-encoded bytes" },
+  { k: "Lanczos3", v: "full-size decode, so the whole reduction is the resampler's" },
+  { k: "premultiplied alpha", v: "no dark fringes around transparent edges" },
+  { k: "ICC passthrough", v: "Display P3 photos keep the colors sRGB would clip" },
+];
+---
+
+<section class="section" id="quality">
+  <div class="container layout">
+    <div>
+      <header class="section-head">
+        <p class="eyebrow">quality</p>
+        <h2>Speed that wasn't bought with pixels.</h2>
+        <p>
+          SSIMULACRA2 scores how close an output looks to its source. At the same settings,
+          oximg's output scores higher — the throughput above is not a quality trade.
+        </p>
+      </header>
+      <dl class="props">
+        {
+          properties.map((p) => (
+            <div>
+              <dt class="mono">{p.k}</dt>
+              <dd>{p.v}</dd>
+            </div>
+          ))
+        }
+      </dl>
+    </div>
+
+    <div class="scores">
+      {
+        quality.map((q) => (
+          <div class="score card">
+            <p class="label">{q.label}</p>
+            <p class="detail">{q.detail}</p>
+            <div class="row ours">
+              <span class="who mono">oximg</span>
+              <span class="track">
+                <span class="bar" style={`--w:${q.ours}%`} />
+              </span>
+              <span class="num">{q.ours.toFixed(1)}</span>
+            </div>
+            <div class="row">
+              <span class="who mono">{q.theirsName}</span>
+              <span class="track">
+                <span class="bar" style={`--w:${q.theirs}%`} />
+              </span>
+              <span class="num">{q.theirs.toFixed(1)}</span>
+            </div>
+          </div>
+        ))
+      }
+      <p class="meta mono">
+        SSIMULACRA2, 0–100, higher is better ·{" "}
+        <a href="https://github.com/oximg/oximg/blob/main/bench/quality/QUALITY.md">QUALITY.md ↗</a>
+      </p>
+    </div>
+  </div>
+</section>
+
+<style>
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-16);
+    align-items: start;
+  }
+  .props {
+    display: grid;
+    gap: var(--space-4);
+    margin: 0;
+  }
+  dt {
+    color: var(--brand-strong);
+    font-size: var(--step--1);
+  }
+  dd {
+    margin: 0;
+    color: var(--text-muted);
+  }
+  .scores {
+    display: grid;
+    gap: var(--space-4);
+  }
+  .score {
+    padding: var(--space-6);
+    display: grid;
+    gap: var(--space-3);
+  }
+  .label {
+    font-weight: 600;
+  }
+  .detail {
+    margin-top: calc(-1 * var(--space-2));
+    color: var(--text-faint);
+    font-size: var(--step--1);
+  }
+  .row {
+    display: grid;
+    grid-template-columns: 5.5rem 1fr 3rem;
+    align-items: center;
+    gap: var(--space-3);
+    font-size: var(--step--1);
+    color: var(--text-faint);
+  }
+  .row.ours {
+    color: var(--text);
+  }
+  .track {
+    height: 10px;
+    background: var(--bg-sunken);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .bar {
+    display: block;
+    height: 100%;
+    width: var(--w);
+    background: var(--series-theirs-2);
+  }
+  .ours .bar {
+    background: linear-gradient(90deg, var(--rust-600), var(--series-ours));
+  }
+  .ours .num {
+    color: var(--brand-strong);
+    font-weight: 600;
+  }
+  .num {
+    text-align: right;
+  }
+  .meta {
+    font-size: 0.75rem;
+    color: var(--text-faint);
+  }
+  @media (max-width: 960px) {
+    .layout {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

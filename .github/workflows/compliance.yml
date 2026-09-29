@@ -1,9 +1,13 @@
 name: License Compliance
 
+# Both checks read only the Cargo dependency tree, which site/ is not
+# part of.
 on:
   push:
     branches: [main]
+    paths-ignore: ["site/**"]
   pull_request:
+    paths-ignore: ["site/**"]
   # Advisories land on their own schedule; a quiet repo must still
   # hear about them.
   schedule:
