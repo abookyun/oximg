@@ -18,11 +18,10 @@ on:
 permissions:
   contents: read
 
-# Whole runs queue per ref, so build and deploy of one push finish before
-# the next push's run starts, and an older build can never deploy after a
-# newer one. On main a run in progress is never cancelled (it may be
-# mid-upload); a waiting run is replaced by a newer push, which is fine
-# because the newest commit contains it. Pull request runs just cancel.
+# Whole runs queue per ref, so no two deploys overlap. On main a run in
+# progress is never cancelled (it may be mid-upload), and a waiting run
+# gives way to the next one. Order does not matter: the deploy job always
+# ships the current head of main. Pull request runs just cancel.
 concurrency:
   group: site-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -61,7 +60,14 @@ jobs:
       run:
         working-directory: site
     steps:
+      # Deploy whatever main is now, not the commit that triggered this
+      # run. Runs are serialized but join the queue in arrival order, not
+      # push order, so a delayed run for an older push could otherwise
+      # displace or follow a newer one and roll the site back.
       - uses: actions/checkout@v5
+        with:
+          ref: main
+      - run: git log -1 --format='Deploying %H (%s)'
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
