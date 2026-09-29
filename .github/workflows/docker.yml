@@ -1,10 +1,15 @@
 name: Docker
 
+# The image COPYs only the crate sources, so a site/-only change would
+# rebuild identical bytes. Path filters are not evaluated for tag
+# pushes, so release tags always build.
 on:
   push:
     branches: [main]
     tags: ["v*"]
+    paths-ignore: ["site/**"]
   pull_request:
+    paths-ignore: ["site/**"]
 
 jobs:
   image:
