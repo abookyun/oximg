@@ -267,6 +267,18 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
         ),
         "unsupported JPEG color space {cs:?}"
     );
+    // Subsampled chroma is upsampled by replication (libjpeg's merged
+    // upsampler) rather than the triangle filter whenever the resize
+    // reduces: the resampler's own low-pass already does the
+    // interpolating, and the triangle pass only blurs chroma ahead of
+    // it. Scored against a linear-light ground truth (DIV2K, q92 and
+    // q75, 4:2:0 and 4:2:2), replication is +0.2..+0.6 SSIMULACRA2
+    // from 1.13x to 8x reduction and loses only at 1:1 (-0.16), which
+    // keeps the triangle filter. It is also the cheaper decode.
+    let num = dct_scale_num(src_w, src_h, dst_w, dst_h, margin) as usize;
+    if dst_w < (src_w * num).div_ceil(8) && dst_h < (src_h * num).div_ceil(8) {
+        dec.do_fancy_upsampling(false);
+    }
     let mut started = dec.rgb().context("decode start failed")?;
     let (dec_w, dec_h) = (started.width(), started.height());
     let row_bytes = dec_w * 3;
