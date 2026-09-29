@@ -1,0 +1,66 @@
+/*
+ * Maps the Oxide tokens onto Starlight's variables, so /docs reads as
+ * the same site as the home page. Dark is the brand default; the light
+ * theme keeps the same hues on paper-colored surfaces.
+ */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+@import "./tokens.css";
+
+:root {
+  --sl-font: var(--font-sans);
+  --sl-font-mono: var(--font-mono);
+
+  --sl-color-accent-low: var(--rust-900);
+  --sl-color-accent: var(--rust-500);
+  --sl-color-accent-high: var(--rust-300);
+
+  --sl-color-white: var(--graphite-900);
+  --sl-color-gray-1: var(--graphite-800);
+  --sl-color-gray-2: var(--graphite-700);
+  --sl-color-gray-3: var(--graphite-600);
+  --sl-color-gray-4: var(--graphite-500);
+  --sl-color-gray-5: var(--graphite-300);
+  --sl-color-gray-6: var(--graphite-150);
+  --sl-color-black: var(--graphite-50);
+}
+
+:root[data-theme="light"] {
+  --sl-color-accent-low: #fde4d6;
+  --sl-color-accent: var(--rust-600);
+  --sl-color-accent-high: var(--rust-700);
+
+  --sl-color-white: var(--graphite-0);
+  --sl-color-gray-1: var(--graphite-150);
+  --sl-color-gray-2: var(--graphite-300);
+  --sl-color-gray-3: var(--graphite-500);
+  --sl-color-gray-4: var(--graphite-600);
+  --sl-color-gray-5: var(--graphite-800);
+  --sl-color-gray-6: #eef1f3;
+  --sl-color-gray-7: #f6f8f9;
+  --sl-color-black: #ffffff;
+}
+
+/* The wordmark: mono, tight, like the home page's Logo component. */
+.site-title {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+/* Current page: a rust rule, not a filled block. */
+.sidebar-content a[aria-current="page"] {
+  background: var(--sl-color-accent-low);
+  color: var(--sl-color-accent-high);
+  box-shadow: inset 2px 0 0 var(--sl-color-accent);
+}
+
+/* Tables carry most of the reference content; keep numbers aligned. */
+.sl-markdown-content table {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--sl-text-sm);
+}
+
+.sl-markdown-content code:not(pre code) {
+  color: var(--sl-color-accent-high);
+}
