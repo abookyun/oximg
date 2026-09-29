@@ -8,11 +8,14 @@ and this project adheres to
 experimental PoC: until 1.0.0, minor versions may change APIs and the
 HTTP interface without notice.
 
-## [Unreleased]
+## [0.12.0] - 2026-09-29
 
 GIF becomes a source format, and the first one that can leave as an
-animation. Minor rather than patch when released: a source that used to
-be a 422 now serves bytes, and one CLI edge changes its exit code.
+animation. A minor, not a patch: a source that used to be a 422 now
+serves bytes, one CLI edge changes its exit code, and an unknown
+`OXIMG_LOG` now boots where it used to exit. Upgrade the `oximg` gem
+with the binary — the 0.11.0 gem cannot parse this release's `probe`
+line on animated sources.
 
 ### Added
 
@@ -1476,7 +1479,8 @@ did, in any output format.
   concurrency pinned to the core count — published to crates.io via
   Trusted Publishing.
 
-[unreleased]: https://github.com/oximg/oximg/compare/v0.11.0...HEAD
+[unreleased]: https://github.com/oximg/oximg/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/oximg/oximg/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/oximg/oximg/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/oximg/oximg/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/oximg/oximg/compare/v0.9.0...v0.10.0
