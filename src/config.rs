@@ -181,8 +181,19 @@ const PROCESS: &[&str] = &[
     "GCE_METADATA_HOST",
 ];
 
+/// A knob as `validate` sees it: trimmed, and blank reads as unset.
+/// Every reader goes through this, so a value that passed validation
+/// cannot then be ignored over surrounding whitespace — `" 90"` was
+/// accepted as a quality and then silently served at the default.
+pub(crate) fn var(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 fn parsed<T: std::str::FromStr>(name: &str) -> Option<T> {
-    std::env::var(name).ok().and_then(|v| v.parse().ok())
+    var(name).and_then(|v| v.parse().ok())
 }
 
 /// Strict startup validation for the server binary: every knob that
@@ -272,16 +283,15 @@ pub(crate) fn config() -> &'static Config {
     static CONFIG: OnceLock<Config> = OnceLock::new();
     CONFIG.get_or_init(|| Config {
         timing: std::env::var("OXIMG_TIMING").is_ok(),
-        linear_light: std::env::var("OXIMG_RESIZE").as_deref() != Ok("srgb"),
-        fir_backend: std::env::var("OXIMG_RESIZE_BACKEND").as_deref() == Ok("fir"),
-        auto_rotate: std::env::var("OXIMG_AUTO_ROTATE").as_deref() != Ok("0"),
-        icc_passthrough: std::env::var("OXIMG_ICC").as_deref() != Ok("0"),
+        linear_light: var("OXIMG_RESIZE").as_deref() != Some("srgb"),
+        fir_backend: var("OXIMG_RESIZE_BACKEND").as_deref() == Some("fir"),
+        auto_rotate: var("OXIMG_AUTO_ROTATE").as_deref() != Some("0"),
+        icc_passthrough: var("OXIMG_ICC").as_deref() != Some("0"),
         dct_margin: parsed("OXIMG_DCT_MARGIN"),
-        jpegli_progressive: std::env::var("OXIMG_JPEG_PROGRESSIVE").as_deref() != Ok("0"),
-        flatten_bg: std::env::var("OXIMG_FLATTEN_BG")
-            .ok()
+        jpegli_progressive: var("OXIMG_JPEG_PROGRESSIVE").as_deref() != Some("0"),
+        flatten_bg: var("OXIMG_FLATTEN_BG")
             .and_then(|v| {
-                let v = v.trim().trim_start_matches('#');
+                let v = v.trim_start_matches('#');
                 // is_ascii keeps the byte-offset slicing below from
                 // panicking on multi-byte values; malformed input falls
                 // back to white either way.
@@ -292,23 +302,23 @@ pub(crate) fn config() -> &'static Config {
                 Some([c(0)?, c(2)?, c(4)?])
             })
             .unwrap_or([255, 255, 255]),
-        png_compression: match std::env::var("OXIMG_PNG_EFFORT").as_deref() {
-            Ok("fastest") => Some(png::Compression::Fastest),
-            Ok("fast") => Some(png::Compression::Fast),
+        png_compression: match var("OXIMG_PNG_EFFORT").as_deref() {
+            Some("fastest") => Some(png::Compression::Fastest),
+            Some("fast") => Some(png::Compression::Fast),
             // Balanced spends ~15ms/request more than Fast to shave
             // ~14% of the file; Fast still undercuts libvips' default
             // output size.
-            Ok("balanced") => Some(png::Compression::Balanced),
-            Ok("high") => Some(png::Compression::High),
+            Some("balanced") => Some(png::Compression::Balanced),
+            Some("high") => Some(png::Compression::High),
             _ => None,
         },
-        png_quantize: std::env::var("OXIMG_PNG_QUANTIZE").as_deref() == Ok("1"),
+        png_quantize: var("OXIMG_PNG_QUANTIZE").as_deref() == Some("1"),
         png_quantize_colors: parsed::<u16>("OXIMG_PNG_QUANTIZE_COLORS")
             .filter(|c| (2..=256).contains(c))
             .unwrap_or(256),
         webp_quality: parsed("OXIMG_WEBP_QUALITY").unwrap_or(75.0),
         webp_effort: parsed("OXIMG_WEBP_EFFORT").unwrap_or(2),
-        webp_decode_threads: std::env::var("OXIMG_WEBP_DECODE_THREADS").as_deref() != Ok("0"),
+        webp_decode_threads: var("OXIMG_WEBP_DECODE_THREADS").as_deref() != Some("0"),
         #[cfg(feature = "avif")]
         avif_quality: parsed("OXIMG_AVIF_QUALITY").unwrap_or(55),
         #[cfg(feature = "avif")]
@@ -320,7 +330,7 @@ pub(crate) fn config() -> &'static Config {
             .unwrap_or(if cfg!(target_arch = "x86_64") { 2 } else { 1 }),
         max_source_bytes: parsed("OXIMG_MAX_SOURCE_BYTES").unwrap_or(64 * 1024 * 1024),
         max_src_pixels: parsed("OXIMG_MAX_SRC_PIXELS").unwrap_or(64_000_000),
-        gif_animation: std::env::var("OXIMG_GIF_ANIMATION").as_deref() != Ok("0"),
+        gif_animation: var("OXIMG_GIF_ANIMATION").as_deref() != Some("0"),
         max_anim_frames: parsed("OXIMG_MAX_ANIM_FRAMES").unwrap_or(200),
         // 8 Mpx of post-resize frame area: the corpus in
         // docs/gif-evaluation.md §5 puts its worst in-budget file

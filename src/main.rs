@@ -427,7 +427,9 @@ async fn async_main(workers: usize, fetch_limit: usize) -> anyhow::Result<()> {
     // Off by default; the route sits outside the URL-signing scheme,
     // so expose it to the scrape network only. The counters themselves
     // are always maintained — a handful of relaxed atomics per request.
-    if std::env::var("OXIMG_METRICS").as_deref() == Ok("1") {
+    // Trimmed, as startup validation trims: " 1" must not pass the
+    // check and then leave the route unmounted.
+    if std::env::var("OXIMG_METRICS").is_ok_and(|v| v.trim() == "1") {
         eprintln!("oximg: /metrics enabled");
         router = router.route("/metrics", get(handle_metrics));
     }

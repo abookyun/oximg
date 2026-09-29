@@ -136,6 +136,12 @@ be a 422 now serves bytes, and one CLI edge changes its exit code.
   gem driving this release's binary from PATH hits the raise on every
   animated source, so upgrade the two together.
 
+- **Padded knob values take effect instead of being ignored.** Startup
+  validation trims `OXIMG_*` values, but the readers compared them
+  raw, so `OXIMG_WEBP_QUALITY=" 30"` passed the check and was then
+  served at the default 75, and `OXIMG_METRICS=" 1"` booted without
+  `/metrics`. Every reader now sees the value validation saw.
+
 ## [0.11.0] - 2026-08-07
 
 A minor, not a patch: the default JPEG output changes. Sources that

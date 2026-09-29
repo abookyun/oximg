@@ -1915,6 +1915,14 @@ fn metric(body: &str, prefix: &str) -> f64 {
         .unwrap_or_else(|_| panic!("unparseable value for {prefix:?}"))
 }
 
+/// Startup validation trims, so mounting must too: " 1" passed the
+/// check and then left `/metrics` unmounted.
+#[test]
+fn padded_metrics_flag_mounts_the_route() {
+    let s = Server::start(&[("OXIMG_METRICS", " 1 ".into())]);
+    assert_eq!(s.status_of("/metrics"), 200);
+}
+
 /// Issue #4: the metrics surface. Off by default (the route does not
 /// exist); with OXIMG_METRICS=1 the counters move with traffic —
 /// status class and resolved format, both duration phases, permits,
