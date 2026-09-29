@@ -1294,9 +1294,9 @@ fn logical_cpus() -> usize {
 /// are identical on either side of the gate on every architecture.
 fn overlap_mode() -> u8 {
     static M: OnceLock<u8> = OnceLock::new();
-    *M.get_or_init(|| match std::env::var("OXIMG_OVERLAP").as_deref() {
-        Ok("0") => 0,
-        Ok("1") => 1,
+    *M.get_or_init(|| match crate::config::var("OXIMG_OVERLAP").as_deref() {
+        Some("0") => 0,
+        Some("1") => 1,
         _ => 2,
     })
 }

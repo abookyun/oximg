@@ -181,8 +181,39 @@ const PROCESS: &[&str] = &[
     "GCE_METADATA_HOST",
 ];
 
+/// A knob as `validate` sees it: trimmed, and blank reads as unset.
+/// Every reader goes through this, so a value that passed validation
+/// cannot then be ignored over surrounding whitespace — `" 90"` was
+/// accepted as a quality and then silently served at the default.
+pub(crate) fn var(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 fn parsed<T: std::str::FromStr>(name: &str) -> Option<T> {
-    std::env::var(name).ok().and_then(|v| v.parse().ok())
+    var(name).and_then(|v| v.parse().ok())
+}
+
+/// OXIMG_PNG_EFFORT: a level name, or a zlib-style 0-9 — the numeric
+/// scale zlib, pngcrush and ImageMagick use, and what a reader from
+/// that ecosystem types first (issue #8). The numbers follow what the
+/// levels are underneath: `balanced` is zlib's default 6 and `high`
+/// its best 9, while `fast`/`fastest` are fdeflate modes quicker than
+/// any zlib level, so they take the low end. There is no stored-only
+/// level, so 0 is the fastest one there is.
+fn png_effort(v: &str) -> Option<png::Compression> {
+    Some(match v {
+        "fastest" | "0" | "1" => png::Compression::Fastest,
+        "fast" | "2" | "3" | "4" | "5" => png::Compression::Fast,
+        // Balanced spends ~15ms/request more than Fast to shave ~14%
+        // of the file; Fast still undercuts libvips' default output
+        // size.
+        "balanced" | "6" | "7" | "8" => png::Compression::Balanced,
+        "high" | "9" => png::Compression::High,
+        _ => return None,
+    })
 }
 
 /// Strict startup validation for the server binary: every knob that
@@ -234,8 +265,13 @@ pub(crate) fn validate() -> Result<(), String> {
     one_of("OXIMG_OVERLAP", &["0", "1", "auto"])?;
     one_of("OXIMG_RESIZE", &["srgb", "linear"])?;
     one_of("OXIMG_RESIZE_BACKEND", &["fir", "kernel"])?;
-    one_of("OXIMG_PNG_EFFORT", &["fastest", "fast", "balanced", "high"])?;
-    one_of("OXIMG_LOG", &["error", "request"])?;
+    if let Some(v) = set("OXIMG_PNG_EFFORT")
+        && png_effort(v.trim()).is_none()
+    {
+        return Err(format!(
+            "OXIMG_PNG_EFFORT={v:?} must be one of \"fastest\", \"fast\", \"balanced\", \"high\", or a zlib-style level 0-9"
+        ));
+    }
     one_of("OXIMG_METRICS", &["0", "1"])?;
     num("OXIMG_DCT_MARGIN", 1.0f64, 8.0)?;
     num("OXIMG_WEBP_QUALITY", 0.0f32, 100.0)?;
@@ -272,16 +308,15 @@ pub(crate) fn config() -> &'static Config {
     static CONFIG: OnceLock<Config> = OnceLock::new();
     CONFIG.get_or_init(|| Config {
         timing: std::env::var("OXIMG_TIMING").is_ok(),
-        linear_light: std::env::var("OXIMG_RESIZE").as_deref() != Ok("srgb"),
-        fir_backend: std::env::var("OXIMG_RESIZE_BACKEND").as_deref() == Ok("fir"),
-        auto_rotate: std::env::var("OXIMG_AUTO_ROTATE").as_deref() != Ok("0"),
-        icc_passthrough: std::env::var("OXIMG_ICC").as_deref() != Ok("0"),
+        linear_light: var("OXIMG_RESIZE").as_deref() != Some("srgb"),
+        fir_backend: var("OXIMG_RESIZE_BACKEND").as_deref() == Some("fir"),
+        auto_rotate: var("OXIMG_AUTO_ROTATE").as_deref() != Some("0"),
+        icc_passthrough: var("OXIMG_ICC").as_deref() != Some("0"),
         dct_margin: parsed("OXIMG_DCT_MARGIN"),
-        jpegli_progressive: std::env::var("OXIMG_JPEG_PROGRESSIVE").as_deref() != Ok("0"),
-        flatten_bg: std::env::var("OXIMG_FLATTEN_BG")
-            .ok()
+        jpegli_progressive: var("OXIMG_JPEG_PROGRESSIVE").as_deref() != Some("0"),
+        flatten_bg: var("OXIMG_FLATTEN_BG")
             .and_then(|v| {
-                let v = v.trim().trim_start_matches('#');
+                let v = v.trim_start_matches('#');
                 // is_ascii keeps the byte-offset slicing below from
                 // panicking on multi-byte values; malformed input falls
                 // back to white either way.
@@ -292,23 +327,14 @@ pub(crate) fn config() -> &'static Config {
                 Some([c(0)?, c(2)?, c(4)?])
             })
             .unwrap_or([255, 255, 255]),
-        png_compression: match std::env::var("OXIMG_PNG_EFFORT").as_deref() {
-            Ok("fastest") => Some(png::Compression::Fastest),
-            Ok("fast") => Some(png::Compression::Fast),
-            // Balanced spends ~15ms/request more than Fast to shave
-            // ~14% of the file; Fast still undercuts libvips' default
-            // output size.
-            Ok("balanced") => Some(png::Compression::Balanced),
-            Ok("high") => Some(png::Compression::High),
-            _ => None,
-        },
-        png_quantize: std::env::var("OXIMG_PNG_QUANTIZE").as_deref() == Ok("1"),
+        png_compression: var("OXIMG_PNG_EFFORT").and_then(|v| png_effort(&v)),
+        png_quantize: var("OXIMG_PNG_QUANTIZE").as_deref() == Some("1"),
         png_quantize_colors: parsed::<u16>("OXIMG_PNG_QUANTIZE_COLORS")
             .filter(|c| (2..=256).contains(c))
             .unwrap_or(256),
         webp_quality: parsed("OXIMG_WEBP_QUALITY").unwrap_or(75.0),
         webp_effort: parsed("OXIMG_WEBP_EFFORT").unwrap_or(2),
-        webp_decode_threads: std::env::var("OXIMG_WEBP_DECODE_THREADS").as_deref() != Ok("0"),
+        webp_decode_threads: var("OXIMG_WEBP_DECODE_THREADS").as_deref() != Some("0"),
         #[cfg(feature = "avif")]
         avif_quality: parsed("OXIMG_AVIF_QUALITY").unwrap_or(55),
         #[cfg(feature = "avif")]
@@ -320,7 +346,7 @@ pub(crate) fn config() -> &'static Config {
             .unwrap_or(if cfg!(target_arch = "x86_64") { 2 } else { 1 }),
         max_source_bytes: parsed("OXIMG_MAX_SOURCE_BYTES").unwrap_or(64 * 1024 * 1024),
         max_src_pixels: parsed("OXIMG_MAX_SRC_PIXELS").unwrap_or(64_000_000),
-        gif_animation: std::env::var("OXIMG_GIF_ANIMATION").as_deref() != Ok("0"),
+        gif_animation: var("OXIMG_GIF_ANIMATION").as_deref() != Some("0"),
         max_anim_frames: parsed("OXIMG_MAX_ANIM_FRAMES").unwrap_or(200),
         // 8 Mpx of post-resize frame area: the corpus in
         // docs/gif-evaluation.md §5 puts its worst in-budget file
@@ -340,7 +366,7 @@ pub(crate) fn config() -> &'static Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{KNOBS, PROCESS, STARTUP};
+    use super::{KNOBS, PROCESS, STARTUP, png_effort};
     use crate::pipeline::ImageFormat;
     use std::collections::{HashMap, HashSet};
 
@@ -765,5 +791,35 @@ mod tests {
                 })
             })
             .collect()
+    }
+
+    /// Issue #8: every zlib-style level lands on the named level with
+    /// the same deflate underneath (6 = zlib default = `balanced`,
+    /// 9 = zlib best = `high`); anything else is still refused.
+    #[test]
+    fn png_effort_accepts_names_and_zlib_levels() {
+        use png::Compression as C;
+        let level = |v: &str| match png_effort(v) {
+            Some(C::Fastest) => "fastest",
+            Some(C::Fast) => "fast",
+            Some(C::Balanced) => "balanced",
+            Some(C::High) => "high",
+            Some(other) => panic!("{v:?} mapped to unexpected {other:?}"),
+            None => "refused",
+        };
+        for name in ["fastest", "fast", "balanced", "high"] {
+            assert_eq!(level(name), name);
+        }
+        let by_number: Vec<&str> = (0..=9).map(|n| level(&n.to_string())).collect();
+        assert_eq!(
+            by_number,
+            [
+                "fastest", "fastest", "fast", "fast", "fast", "fast", "balanced", "balanced",
+                "balanced", "high"
+            ]
+        );
+        for bad in ["10", "-1", "09", "1.5", "max", "High", ""] {
+            assert_eq!(level(bad), "refused", "{bad:?}");
+        }
     }
 }

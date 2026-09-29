@@ -24,6 +24,12 @@ be a 422 now serves bytes, and one CLI edge changes its exit code.
 - **`OXIMG_BIND`** — listen address, default `0.0.0.0`. Invalid values
   refuse to boot. `oximg-ctl` auto-spawn sets `127.0.0.1`.
 
+- **`OXIMG_PNG_EFFORT` accepts zlib-style levels `0`-`9`** ([#8]), the
+  numeric scale the rest of the PNG ecosystem uses, which used to
+  refuse to start. `6` is `balanced` and `9` is `high` because those
+  are zlib's default and best underneath; `0`-`5` land on the fdeflate
+  levels, `fastest` and `fast`. Anything else is still fatal.
+
 - **`oximg-ctl`** — a JSON control plane over the real `oximg` binary:
   spawn the server, `get` a path (auto-spawn unless `--base`), `probe`,
   `resize`, `sign` (the same HMAC scheme `tests/server.rs` pins), and
@@ -111,6 +117,15 @@ be a 422 now serves bytes, and one CLI edge changes its exit code.
 
 ### Changed
 
+- **`OXIMG_LOG` takes the RUST_LOG level names and no longer refuses to
+  boot** ([#8]). `warn` means failures only, like `error`; `info`,
+  `debug` and `trace` add the success line, like `request`; all
+  case-insensitive. An unknown value now warns on stderr and logs
+  failures only, where it used to exit 2: verbosity cannot make output
+  wrong or weaken a guarantee, so a typo in a deploy config should not
+  be a crash loop. It joins the documented lenient exceptions
+  (`OXIMG_AUTO_FORMAT`, `PRESET`); the fail-closed settings stay fatal.
+
 - **`oximg resize` refuses a `.gif` output extension** — exit 2, before
   anything is read or written — instead of ignoring it. It used to fall
   through to the source format, so `oximg resize photo.jpg 100 100
@@ -135,6 +150,14 @@ be a 422 now serves bytes, and one CLI edge changes its exit code.
   decode-only: `format: :gif` is still refused by `resize`. A 0.11.0
   gem driving this release's binary from PATH hits the raise on every
   animated source, so upgrade the two together.
+
+- **Padded knob values take effect instead of being ignored.** Startup
+  validation trims `OXIMG_*` values, but the readers compared them
+  raw, so `OXIMG_WEBP_QUALITY=" 30"` passed the check and was then
+  served at the default 75, and `OXIMG_METRICS=" 1"` booted without
+  `/metrics`. Every reader now sees the value validation saw.
+
+[#8]: https://github.com/oximg/oximg/issues/8
 
 ## [0.11.0] - 2026-08-07
 

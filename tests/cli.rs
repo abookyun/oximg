@@ -276,3 +276,74 @@ fn serve_subcommand_boots_the_server() {
     };
     assert!(status.success(), "exited {status}");
 }
+
+/// Resize photo.jpg into a 400px box with `envs` set; the run must
+/// succeed. Returns the output bytes.
+fn resize_with_env(name: &str, envs: &[(&str, &str)]) -> Vec<u8> {
+    let out = tmp(name);
+    let output = bin()
+        .args(["resize", &fixture("photo.jpg"), "400", "400"])
+        .arg(&out)
+        .envs(envs.iter().copied())
+        .output()
+        .expect("run oximg resize");
+    assert!(
+        output.status.success(),
+        "{envs:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bytes = std::fs::read(&out).expect("read output");
+    std::fs::remove_file(&out).ok();
+    bytes
+}
+
+/// Startup validation trims knob values, so the readers must too: a
+/// value that passes the check and is then ignored over whitespace is
+/// the silent fail-open the check exists to prevent (" 30" validated,
+/// then served at the default quality 75).
+#[test]
+fn padded_knob_values_take_effect() {
+    let q = |v| resize_with_env("pad-q.webp", &[("OXIMG_WEBP_QUALITY", v)]);
+    assert_ne!(q("30"), q("75"), "quality must change the output");
+    assert_eq!(q(" 30 "), q("30"), "padded quality ignored");
+
+    let e = |v| resize_with_env("pad-e.png", &[("OXIMG_PNG_EFFORT", v)]);
+    assert_ne!(e("high"), e("fastest"), "effort must change the output");
+    assert_eq!(e("\thigh "), e("high"), "padded effort ignored");
+}
+
+/// Issue #8: `OXIMG_PNG_EFFORT=9` is what the PNG ecosystem types, and
+/// it used to refuse to start. zlib-style levels now select the named
+/// level with the same deflate underneath — byte-identical output.
+#[test]
+fn png_effort_accepts_zlib_style_levels() {
+    let e = |v| resize_with_env("zlib-e.png", &[("OXIMG_PNG_EFFORT", v)]);
+    assert_eq!(e("9"), e("high"));
+    assert_eq!(e("6"), e("balanced"));
+    assert_eq!(e("1"), e("fastest"));
+}
+
+/// Aliases widen the accepted set, not the policy: a value that is
+/// neither a level name nor 0-9 still refuses to start, and says what
+/// would have been accepted.
+#[test]
+fn unknown_png_effort_is_still_fatal() {
+    let out = tmp("bad-effort.png");
+    let output = bin()
+        .args(["resize", &fixture("photo.jpg"), "100", "100"])
+        .arg(&out)
+        .env("OXIMG_PNG_EFFORT", "10")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("oximg: fatal: OXIMG_PNG_EFFORT=\"10\""),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("0-9"),
+        "must name the numeric form: {stderr}"
+    );
+    assert!(!out.exists(), "nothing may be written on a fatal config");
+}

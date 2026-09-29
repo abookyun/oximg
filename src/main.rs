@@ -356,7 +356,7 @@ async fn async_main(workers: usize, fetch_limit: usize) -> anyhow::Result<()> {
         ),
         resize_threads: env_or("OXIMG_PAR", 1),
         inflight: Arc::new(Mutex::new(HashMap::new())),
-        log_requests: std::env::var("OXIMG_LOG").as_deref() == Ok("request"),
+        log_requests: log_requests_from_env(),
         signing: Signing::from_env()
             .unwrap_or_else(|e| {
                 eprintln!("oximg: fatal: {e}");
@@ -427,7 +427,9 @@ async fn async_main(workers: usize, fetch_limit: usize) -> anyhow::Result<()> {
     // Off by default; the route sits outside the URL-signing scheme,
     // so expose it to the scrape network only. The counters themselves
     // are always maintained — a handful of relaxed atomics per request.
-    if std::env::var("OXIMG_METRICS").as_deref() == Ok("1") {
+    // Trimmed, as startup validation trims: " 1" must not pass the
+    // check and then leave the route unmounted.
+    if std::env::var("OXIMG_METRICS").is_ok_and(|v| v.trim() == "1") {
         eprintln!("oximg: /metrics enabled");
         router = router.route("/metrics", get(handle_metrics));
     }
@@ -490,6 +492,37 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
             .await
             .expect("install ctrl-C handler");
         eprintln!("oximg: ctrl-C received, draining in-flight requests");
+    }
+}
+
+/// OXIMG_LOG: whether successes are logged too (failures always are).
+/// One of the lenient exceptions to fail-closed startup (with
+/// `OXIMG_AUTO_FORMAT` and `PRESET`): an unknown value warns and falls
+/// back to `error` instead of refusing to boot. Verbosity cannot make
+/// output wrong or weaken a guarantee, so a crash loop over a typo
+/// would trade an outage for nothing (issue #8).
+fn log_requests_from_env() -> bool {
+    let Ok(raw) = std::env::var("OXIMG_LOG") else {
+        return false;
+    };
+    log_requests(&raw).unwrap_or_else(|| {
+        eprintln!(
+            "oximg: warning: OXIMG_LOG={raw:?} is not one of error, warn, request, \
+             info, debug, trace; logging failures only, as for \"error\""
+        );
+        false
+    })
+}
+
+/// The RUST_LOG level names map onto the two modes, since they are
+/// what a reader arrives typing: `warn` is failures only, like
+/// `error`; `info` and below add the per-request success line, like
+/// `request`. Case-insensitive, as RUST_LOG is; blank reads as unset.
+fn log_requests(v: &str) -> Option<bool> {
+    match v.trim().to_ascii_lowercase().as_str() {
+        "" | "error" | "warn" => Some(false),
+        "request" | "info" | "debug" | "trace" => Some(true),
+        _ => None,
     }
 }
 
@@ -1366,6 +1399,22 @@ fn error_response(e: &pipeline::Error, file: &str) -> (StatusCode, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #8: the conventional level names select a mode instead of
+    /// failing startup; anything else is `None`, which the caller turns
+    /// into a warning and the `error` default.
+    #[test]
+    fn log_levels_accept_rust_log_names() {
+        for v in ["error", "warn", "WARN", " Error ", ""] {
+            assert_eq!(log_requests(v), Some(false), "{v:?}");
+        }
+        for v in ["request", "info", "INFO", "debug", "trace", " info\n"] {
+            assert_eq!(log_requests(v), Some(true), "{v:?}");
+        }
+        for v in ["verbose", "off", "1", "requests"] {
+            assert_eq!(log_requests(v), None, "{v:?}");
+        }
+    }
 
     #[test]
     fn base64url_decodes_known_vectors() {

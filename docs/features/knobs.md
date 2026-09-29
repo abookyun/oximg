@@ -5,6 +5,7 @@ but unparseable or out of range refuses to boot and names the variable.
 Lenient exceptions (the process still boots):
 
 - `OXIMG_AUTO_FORMAT` skips unknown or build-unavailable tokens with a warning
+- `OXIMG_LOG` warns on an unknown level and logs failures only, as `error`
 - `PRESET` maps anything other than `fast`/`small` to jpegli
 - `OXIMG_TIMING` is presence-based (any set value enables), not `0`/`1`
 - `OXIMG_GCS_ENDPOINT` is read when a `gs://` request is built, not at
@@ -30,7 +31,7 @@ Pass extras to a spawned server with `oximg-ctl --env KEY=VAL …`.
 | `OXIMG_KEY` / `OXIMG_SALT` | unset | Hex HMAC; both or neither |
 | `OXIMG_WORKERS` | observed parallelism | CPU permits, 1–512. `oximg-ctl` spawn sets `1` if unset |
 | `OXIMG_FETCH_CONCURRENCY` | default `min(4 × permits, 256)`; explicit 1–1024 | Concurrent origin downloads |
-| `OXIMG_LOG` | `error` | `request` also logs 200s |
+| `OXIMG_LOG` | `error` | `request` (or `info`/`debug`/`trace`) also logs 200s; unknown warns, not fatal |
 | `OXIMG_METRICS` | `0` | `1` serves `/metrics` |
 | `OXIMG_SOURCE_BASE_URL` | unset | `https://…` or `gs://bucket[/prefix]` |
 | `OXIMG_GCS_ENDPOINT` | GCS default | Emulator / PSC; read per `gs://` request, not fail-closed at boot |
@@ -52,7 +53,7 @@ Pass extras to a spawned server with `oximg-ctl --env KEY=VAL …`.
 | `OXIMG_DCT_MARGIN` | unset | Shrink-on-load; speed, not quality |
 | `OXIMG_JPEG_PROGRESSIVE` | `1` | `0` = baseline jpegli |
 | `OXIMG_FLATTEN_BG` | `ffffff` | Alpha→JPEG background |
-| `OXIMG_PNG_EFFORT` | path-dependent | `fastest`/`fast`/`balanced`/`high` |
+| `OXIMG_PNG_EFFORT` | path-dependent | `fastest`/`fast`/`balanced`/`high`, or zlib-style `0`–`9` |
 | `OXIMG_PNG_QUANTIZE` | `0` | `1` palette-quantizes opaque PNG |
 | `OXIMG_PNG_QUANTIZE_COLORS` | `256` | Palette size 2–256 |
 | `OXIMG_WEBP_QUALITY` | `75` | |
