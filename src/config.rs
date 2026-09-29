@@ -221,6 +221,10 @@ fn png_effort(v: &str) -> Option<png::Compression> {
 /// silently fail open to a default (the fail-closed precedent set by
 /// the signing config). The library-facing `config()` stays lenient
 /// so embedding never aborts a host process over env noise.
+///
+/// One knob here is lenient by design: `OXIMG_PNG_EFFORT` warns and
+/// falls back rather than failing (see its arm below). Knobs that
+/// warn instead of failing are listed in docs/features/knobs.md.
 pub(crate) fn validate() -> Result<(), String> {
     fn set(name: &str) -> Option<String> {
         std::env::var(name).ok().filter(|v| !v.trim().is_empty())
