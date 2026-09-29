@@ -60,10 +60,11 @@ impl RowKernel for Neon {
         dst_w: usize,
     ) {
         unsafe {
-            if n == 2 {
-                horiz_rows_x3::<2>(stage, row_stride, src_w, w, ring, plane, slots, dst_w)
-            } else {
-                horiz_rows_x3::<1>(stage, row_stride, src_w, w, ring, plane, slots, dst_w)
+            // An empty batch is a no-op, as in the default body.
+            match n {
+                0 => {}
+                2 => horiz_rows_x3::<2>(stage, row_stride, src_w, w, ring, plane, slots, dst_w),
+                _ => horiz_rows_x3::<1>(stage, row_stride, src_w, w, ring, plane, slots, dst_w),
             }
         }
     }

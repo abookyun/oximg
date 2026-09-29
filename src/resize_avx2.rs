@@ -107,7 +107,9 @@ impl RowKernel for Avx2 {
         dst_w: usize,
     ) {
         unsafe {
+            // An empty batch is a no-op, as in the default body.
             match n {
+                0 => {}
                 4 => horiz_rows_x3::<4>(stage, row_stride, w, ring, plane, slots, dst_w),
                 3 => horiz_rows_x3::<3>(stage, row_stride, w, ring, plane, slots, dst_w),
                 2 => horiz_rows_x3::<2>(stage, row_stride, w, ring, plane, slots, dst_w),

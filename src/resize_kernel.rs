@@ -975,19 +975,28 @@ pub(crate) mod testkit {
                 // every slot + dst_w <= plane.
                 unsafe { K::horiz_x3(&stage[r * rs..], sw, &w, &mut single, plane, slot, dw) };
             }
-            for n in 1..=K::HORIZ_BATCH {
-                let mut batched = vec![0f32; 3 * plane];
+            // n == 0 included: the trait allows an empty batch, which must
+            // leave the ring untouched. Slots past n must stay untouched too.
+            const UNTOUCHED: f32 = -1.0;
+            for n in 0..=K::HORIZ_BATCH {
+                let mut batched = vec![UNTOUCHED; 3 * plane];
                 // SAFETY: as above, for rows 0..n.
                 unsafe {
                     K::horiz_x3_batch(&stage, rs, n, sw, &w, &mut batched, plane, &slots, dw)
                 };
-                for (r, &slot) in slots.iter().enumerate().take(n) {
+                for (r, &slot) in slots.iter().enumerate() {
                     for c in 0..3 {
                         let at = c * plane + slot..c * plane + slot + dw;
-                        let same = batched[at.clone()]
-                            .iter()
-                            .zip(&single[at])
-                            .all(|(a, b)| a.to_bits() == b.to_bits());
+                        let same = if r < n {
+                            batched[at.clone()]
+                                .iter()
+                                .zip(&single[at])
+                                .all(|(a, b)| a.to_bits() == b.to_bits())
+                        } else {
+                            batched[at]
+                                .iter()
+                                .all(|v| v.to_bits() == UNTOUCHED.to_bits())
+                        };
                         assert!(same, "{sw}->{dw} batch {n} row {r} channel {c}");
                     }
                 }
