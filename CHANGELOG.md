@@ -24,6 +24,12 @@ be a 422 now serves bytes, and one CLI edge changes its exit code.
 - **`OXIMG_BIND`** — listen address, default `0.0.0.0`. Invalid values
   refuse to boot. `oximg-ctl` auto-spawn sets `127.0.0.1`.
 
+- **`OXIMG_PNG_EFFORT` accepts zlib-style levels `0`-`9`** ([#8]), the
+  numeric scale the rest of the PNG ecosystem uses, which used to
+  refuse to start. `6` is `balanced` and `9` is `high` because those
+  are zlib's default and best underneath; `0`-`5` land on the fdeflate
+  levels, `fastest` and `fast`. Anything else is still fatal.
+
 - **`oximg-ctl`** — a JSON control plane over the real `oximg` binary:
   spawn the server, `get` a path (auto-spawn unless `--base`), `probe`,
   `resize`, `sign` (the same HMAC scheme `tests/server.rs` pins), and
@@ -141,6 +147,8 @@ be a 422 now serves bytes, and one CLI edge changes its exit code.
   raw, so `OXIMG_WEBP_QUALITY=" 30"` passed the check and was then
   served at the default 75, and `OXIMG_METRICS=" 1"` booted without
   `/metrics`. Every reader now sees the value validation saw.
+
+[#8]: https://github.com/oximg/oximg/issues/8
 
 ## [0.11.0] - 2026-08-07
 

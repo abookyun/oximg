@@ -196,6 +196,26 @@ fn parsed<T: std::str::FromStr>(name: &str) -> Option<T> {
     var(name).and_then(|v| v.parse().ok())
 }
 
+/// OXIMG_PNG_EFFORT: a level name, or a zlib-style 0-9 — the numeric
+/// scale zlib, pngcrush and ImageMagick use, and what a reader from
+/// that ecosystem types first (issue #8). The numbers follow what the
+/// levels are underneath: `balanced` is zlib's default 6 and `high`
+/// its best 9, while `fast`/`fastest` are fdeflate modes quicker than
+/// any zlib level, so they take the low end. There is no stored-only
+/// level, so 0 is the fastest one there is.
+fn png_effort(v: &str) -> Option<png::Compression> {
+    Some(match v {
+        "fastest" | "0" | "1" => png::Compression::Fastest,
+        "fast" | "2" | "3" | "4" | "5" => png::Compression::Fast,
+        // Balanced spends ~15ms/request more than Fast to shave ~14%
+        // of the file; Fast still undercuts libvips' default output
+        // size.
+        "balanced" | "6" | "7" | "8" => png::Compression::Balanced,
+        "high" | "9" => png::Compression::High,
+        _ => return None,
+    })
+}
+
 /// Strict startup validation for the server binary: every knob that
 /// is *set* must parse and sit in range — a typo in a limit must not
 /// silently fail open to a default (the fail-closed precedent set by
@@ -245,7 +265,13 @@ pub(crate) fn validate() -> Result<(), String> {
     one_of("OXIMG_OVERLAP", &["0", "1", "auto"])?;
     one_of("OXIMG_RESIZE", &["srgb", "linear"])?;
     one_of("OXIMG_RESIZE_BACKEND", &["fir", "kernel"])?;
-    one_of("OXIMG_PNG_EFFORT", &["fastest", "fast", "balanced", "high"])?;
+    if let Some(v) = set("OXIMG_PNG_EFFORT")
+        && png_effort(v.trim()).is_none()
+    {
+        return Err(format!(
+            "OXIMG_PNG_EFFORT={v:?} must be one of \"fastest\", \"fast\", \"balanced\", \"high\", or a zlib-style level 0-9"
+        ));
+    }
     one_of("OXIMG_LOG", &["error", "request"])?;
     one_of("OXIMG_METRICS", &["0", "1"])?;
     num("OXIMG_DCT_MARGIN", 1.0f64, 8.0)?;
@@ -302,16 +328,7 @@ pub(crate) fn config() -> &'static Config {
                 Some([c(0)?, c(2)?, c(4)?])
             })
             .unwrap_or([255, 255, 255]),
-        png_compression: match var("OXIMG_PNG_EFFORT").as_deref() {
-            Some("fastest") => Some(png::Compression::Fastest),
-            Some("fast") => Some(png::Compression::Fast),
-            // Balanced spends ~15ms/request more than Fast to shave
-            // ~14% of the file; Fast still undercuts libvips' default
-            // output size.
-            Some("balanced") => Some(png::Compression::Balanced),
-            Some("high") => Some(png::Compression::High),
-            _ => None,
-        },
+        png_compression: var("OXIMG_PNG_EFFORT").and_then(|v| png_effort(&v)),
         png_quantize: var("OXIMG_PNG_QUANTIZE").as_deref() == Some("1"),
         png_quantize_colors: parsed::<u16>("OXIMG_PNG_QUANTIZE_COLORS")
             .filter(|c| (2..=256).contains(c))
@@ -350,7 +367,7 @@ pub(crate) fn config() -> &'static Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{KNOBS, PROCESS, STARTUP};
+    use super::{KNOBS, PROCESS, STARTUP, png_effort};
     use crate::pipeline::ImageFormat;
     use std::collections::{HashMap, HashSet};
 
@@ -775,5 +792,35 @@ mod tests {
                 })
             })
             .collect()
+    }
+
+    /// Issue #8: every zlib-style level lands on the named level with
+    /// the same deflate underneath (6 = zlib default = `balanced`,
+    /// 9 = zlib best = `high`); anything else is still refused.
+    #[test]
+    fn png_effort_accepts_names_and_zlib_levels() {
+        use png::Compression as C;
+        let level = |v: &str| match png_effort(v) {
+            Some(C::Fastest) => "fastest",
+            Some(C::Fast) => "fast",
+            Some(C::Balanced) => "balanced",
+            Some(C::High) => "high",
+            Some(other) => panic!("{v:?} mapped to unexpected {other:?}"),
+            None => "refused",
+        };
+        for name in ["fastest", "fast", "balanced", "high"] {
+            assert_eq!(level(name), name);
+        }
+        let by_number: Vec<&str> = (0..=9).map(|n| level(&n.to_string())).collect();
+        assert_eq!(
+            by_number,
+            [
+                "fastest", "fastest", "fast", "fast", "fast", "fast", "balanced", "balanced",
+                "balanced", "high"
+            ]
+        );
+        for bad in ["10", "-1", "09", "1.5", "max", "High", ""] {
+            assert_eq!(level(bad), "refused", "{bad:?}");
+        }
     }
 }

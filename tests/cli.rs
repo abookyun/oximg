@@ -311,3 +311,39 @@ fn padded_knob_values_take_effect() {
     assert_ne!(e("high"), e("fastest"), "effort must change the output");
     assert_eq!(e("\thigh "), e("high"), "padded effort ignored");
 }
+
+/// Issue #8: `OXIMG_PNG_EFFORT=9` is what the PNG ecosystem types, and
+/// it used to refuse to start. zlib-style levels now select the named
+/// level with the same deflate underneath — byte-identical output.
+#[test]
+fn png_effort_accepts_zlib_style_levels() {
+    let e = |v| resize_with_env("zlib-e.png", &[("OXIMG_PNG_EFFORT", v)]);
+    assert_eq!(e("9"), e("high"));
+    assert_eq!(e("6"), e("balanced"));
+    assert_eq!(e("1"), e("fastest"));
+}
+
+/// Aliases widen the accepted set, not the policy: a value that is
+/// neither a level name nor 0-9 still refuses to start, and says what
+/// would have been accepted.
+#[test]
+fn unknown_png_effort_is_still_fatal() {
+    let out = tmp("bad-effort.png");
+    let output = bin()
+        .args(["resize", &fixture("photo.jpg"), "100", "100"])
+        .arg(&out)
+        .env("OXIMG_PNG_EFFORT", "10")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("oximg: fatal: OXIMG_PNG_EFFORT=\"10\""),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("0-9"),
+        "must name the numeric form: {stderr}"
+    );
+    assert!(!out.exists(), "nothing may be written on a fatal config");
+}
