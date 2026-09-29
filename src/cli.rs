@@ -6,6 +6,8 @@
 //! (OXIMG_WEBP_QUALITY, OXIMG_PNG_EFFORT, ...) apply to CLI encodes
 //! the same way, and are validated fail-closed at startup like the
 //! server does — a typo'd knob must not silently encode at a default.
+//! The exception is shared too: an unknown OXIMG_PNG_EFFORT warns
+//! and encodes as if unset, since effort never changes what is made.
 
 use anyhow::Context;
 use oximg::pipeline::{self, Encoder, ImageFormat, Params};

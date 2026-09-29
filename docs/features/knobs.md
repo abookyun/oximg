@@ -6,6 +6,7 @@ Lenient exceptions (the process still boots):
 
 - `OXIMG_AUTO_FORMAT` skips unknown or build-unavailable tokens with a warning
 - `OXIMG_LOG` warns on an unknown level and logs failures only, as `error`
+- `OXIMG_PNG_EFFORT` warns on an unknown level and encodes as if unset
 - `PRESET` maps anything other than `fast`/`small` to jpegli
 - `OXIMG_TIMING` is presence-based (any set value enables), not `0`/`1`
 - `OXIMG_GCS_ENDPOINT` is read when a `gs://` request is built, not at

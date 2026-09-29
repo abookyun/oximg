@@ -7,7 +7,8 @@ pub(crate) mod config;
 /// binary calls this at startup and refuses to boot on a set-but-
 /// invalid value. Library embedders may call it to get the same
 /// fail-closed behavior; without it, invalid values fall back to
-/// defaults.
+/// defaults. The one lenient pipeline knob, `OXIMG_PNG_EFFORT`, only
+/// warns on stderr here and falls back either way.
 pub fn config_validate() -> Result<(), String> {
     config::validate()
 }
