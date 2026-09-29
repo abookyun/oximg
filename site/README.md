@@ -1,14 +1,31 @@
 # oximg.dev
 
-The project website: a static [Astro](https://astro.build) site. Only
-the home page exists so far; docs, benchmarks, migration guides and a
-playground are planned.
+The project website: a static [Astro](https://astro.build) site with
+the home page and `/docs`. Benchmark, quality and migration pages are
+planned.
 
 ```sh
 npm install
 npm run dev       # http://localhost:4321
 npm run build     # static output in dist/
 ```
+
+## Docs
+
+`/docs` is [Starlight](https://starlight.astro.build), but its pages are
+not written here. `scripts/sync-docs.mjs` generates them from the repo's
+own markdown (`README.md` sections, `docs/`, the gem READMEs) before
+every `dev`, `build` and `check`, so the README stays the single source
+of truth. The output in `src/content/docs/docs/` is gitignored.
+
+- **To change a page**, edit its source; each page's "Edit page" link
+  points there.
+- **To add a page**, add an entry to `PAGES` in the script and a
+  sidebar item in `astro.config.mjs`.
+- Relative links are rewritten: synced files become site routes, README
+  anchors go to the page that now holds that heading, anything else goes
+  to GitHub. Renaming a synced README heading fails the build, which is
+  why the Site workflow also runs on README and `docs/` changes.
 
 ## Rules
 

@@ -1,13 +1,19 @@
 name: Site
 
-# The website under site/. The Rust workflows ignore site/, and this one
-# watches nothing else, so each change runs only what it can break.
+# The website under site/. The Rust workflows ignore site/; this one also
+# watches the markdown that scripts/sync-docs.mjs turns into /docs, since
+# a renamed heading there fails the site build.
 on:
   push:
     branches: [main]
-    paths: ["site/**", ".github/workflows/site.yml"]
+    paths: &site-paths
+      - "site/**"
+      - "README.md"
+      - "docs/**"
+      - "rubygem/*/README.md"
+      - ".github/workflows/site.yml"
   pull_request:
-    paths: ["site/**", ".github/workflows/site.yml"]
+    paths: *site-paths
 
 permissions:
   contents: read
