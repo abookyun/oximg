@@ -496,8 +496,9 @@ fn shutdown_signal() -> impl std::future::Future<Output = ()> {
 }
 
 /// OXIMG_LOG: whether successes are logged too (failures always are).
-/// Unlike every other startup setting, an unknown value warns and falls
-/// back to `error` instead of refusing to boot: verbosity cannot make
+/// One of the lenient exceptions to fail-closed startup (with
+/// `OXIMG_AUTO_FORMAT` and `PRESET`): an unknown value warns and falls
+/// back to `error` instead of refusing to boot. Verbosity cannot make
 /// output wrong or weaken a guarantee, so a crash loop over a typo
 /// would trade an outage for nothing (issue #8).
 fn log_requests_from_env() -> bool {

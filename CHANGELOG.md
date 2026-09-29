@@ -123,7 +123,8 @@ be a 422 now serves bytes, and one CLI edge changes its exit code.
   case-insensitive. An unknown value now warns on stderr and logs
   failures only, where it used to exit 2: verbosity cannot make output
   wrong or weaken a guarantee, so a typo in a deploy config should not
-  be a crash loop. Every other startup setting stays fatal.
+  be a crash loop. It joins the documented lenient exceptions
+  (`OXIMG_AUTO_FORMAT`, `PRESET`); the fail-closed settings stay fatal.
 
 - **`oximg resize` refuses a `.gif` output extension** — exit 2, before
   anything is read or written — instead of ignoring it. It used to fall
