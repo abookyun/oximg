@@ -8,6 +8,18 @@ and this project adheres to
 experimental PoC: until 1.0.0, minor versions may change APIs and the
 HTTP interface without notice.
 
+## [Unreleased]
+
+### Changed
+
+- **An unknown `OXIMG_PNG_EFFORT` no longer refuses to boot** ([#46]).
+  Like `OXIMG_LOG` since 0.12.0, it now warns on stderr and encodes as
+  if unset, where it used to exit 2: effort trades encode time against
+  file size and never changes what is produced, so a typo such as `10`
+  should not be a crash loop. The other PNG knobs stay fatal.
+
+[#46]: https://github.com/oximg/oximg/issues/46
+
 ## [0.12.0] - 2026-09-29
 
 GIF becomes a source format, and the first one that can leave as an
