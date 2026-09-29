@@ -37,14 +37,10 @@ with OpenTofu outside this repo. `wrangler deploy` reads
 `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` from the environment;
 neither goes in a file.
 
-The Site workflow deploys `main` whenever a push touches the site. Runs
-queue one at a time and each deploys the current head of `main`, not the
-commit that triggered it, so a burst of pushes may skip intermediate
-commits but a late run never rolls the site back. It
-reads the token from the `CLOUDFLARE_API_TOKEN` secret of the `production`
-environment (deployment branches: `main` only) and the account from the
-`CLOUDFLARE_ACCOUNT_ID` repository variable. Pull requests only build and
-dry-run.
+Cloudflare Workers Builds deploys `main`: it runs `npm run build` and
+`npx wrangler deploy` in `site/` whenever a push touches `site/`, `docs/`
+or a README. The trigger is configured in the private infra repo, not
+here. The Site workflow only builds and dry-runs, as a pull request check.
 
 ## Rules
 
