@@ -37,7 +37,9 @@ with OpenTofu outside this repo. `wrangler deploy` reads
 `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` from the environment;
 neither goes in a file.
 
-The Site workflow deploys every push to `main` that touches the site. It
+The Site workflow deploys `main` whenever a push touches the site. Runs
+queue one at a time, so a burst of pushes may skip intermediate commits,
+but the last one to deploy is always the newest. It
 reads the token from the `CLOUDFLARE_API_TOKEN` secret of the `production`
 environment (deployment branches: `main` only) and the account from the
 `CLOUDFLARE_ACCOUNT_ID` repository variable. Pull requests only build and

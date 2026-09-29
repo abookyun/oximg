@@ -18,6 +18,15 @@ on:
 permissions:
   contents: read
 
+# Whole runs queue per ref, so build and deploy of one push finish before
+# the next push's run starts, and an older build can never deploy after a
+# newer one. On main a run in progress is never cancelled (it may be
+# mid-upload); a waiting run is replaced by a newer push, which is fine
+# because the newest commit contains it. Pull request runs just cancel.
+concurrency:
+  group: site-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -38,7 +47,7 @@ jobs:
       # without credentials, so a bad route or asset option fails here.
       - run: npx wrangler deploy --dry-run
 
-  # Every push to main that touches the site ships it. The token lives in
+  # The latest push to main that touches the site ships it. The token lives in
   # the `production` environment, whose deployment branch policy admits
   # main only, so no PR run (and no workflow edited in a PR) can read it.
   deploy:
@@ -48,10 +57,6 @@ jobs:
     environment:
       name: production
       url: https://oximg.dev
-    # One deploy at a time, in push order; never cancel one mid-upload.
-    concurrency:
-      group: site-deploy
-      cancel-in-progress: false
     defaults:
       run:
         working-directory: site
