@@ -930,6 +930,95 @@ pub(crate) mod testkit {
         }
     }
 
+    /// Stage `rows` rows of a 3-channel test image the way the driver
+    /// does: `(stage, row_stride)`, slack included.
+    fn staged_x3<K: RowKernel>(sw: usize, rows: usize, w: &Windows) -> (Vec<f32>, usize) {
+        let src = test_image(sw, rows, 3);
+        let rs = (sw + w.stride) * K::STAGE3_FLOATS_PER_PIXEL;
+        let mut stage = vec![0f32; rs * rows];
+        for y in 0..rows {
+            // SAFETY: tests call this only after K::detect(); the slice
+            // holds `sw * STAGE3_FLOATS_PER_PIXEL` floats.
+            unsafe { K::stage_x3(&src[y * sw * 3..(y + 1) * sw * 3], &mut stage[y * rs..], sw) };
+        }
+        (stage, rs)
+    }
+
+    /// Every batch size up to `HORIZ_BATCH` == one row at a time, bit-exact.
+    pub(crate) fn assert_horiz_batch_matches_single<K: RowKernel>() {
+        let narrow = (1..=13usize).map(|w| (w, 4, w.div_ceil(2), 1));
+        for (sw, _, dw, _) in SHAPES.iter().copied().chain(narrow) {
+            let w = Windows::new(sw, dw);
+            let (stage, rs) = staged_x3::<K>(sw, 4, &w);
+            // Ring slots out of order and a plane wider than 4 rows, so a
+            // kernel mixing up rows or slots cannot pass.
+            let plane = 5 * dw;
+            let slots = [3 * dw, dw, 4 * dw, 0];
+            let mut single = vec![0f32; 3 * plane];
+            for (r, &slot) in slots.iter().enumerate() {
+                // SAFETY: after K::detect(); stage rows carry the slack and
+                // every slot + dst_w <= plane.
+                unsafe { K::horiz_x3(&stage[r * rs..], sw, &w, &mut single, plane, slot, dw) };
+            }
+            for n in 1..=K::HORIZ_BATCH {
+                let mut batched = vec![0f32; 3 * plane];
+                // SAFETY: as above, for rows 0..n.
+                unsafe {
+                    K::horiz_x3_batch(&stage, rs, n, sw, &w, &mut batched, plane, &slots, dw)
+                };
+                for (r, &slot) in slots.iter().enumerate().take(n) {
+                    for c in 0..3 {
+                        let at = c * plane + slot..c * plane + slot + dw;
+                        let same = batched[at.clone()]
+                            .iter()
+                            .zip(&single[at])
+                            .all(|(a, b)| a.to_bits() == b.to_bits());
+                        assert!(same, "{sw}->{dw} batch {n} row {r} channel {c}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Horizontal-pass timing over a DIV2K-sized frame, full batches
+    /// (`cargo test --release -- --ignored --nocapture horiz_bench`).
+    pub(crate) fn bench_horiz<K: RowKernel>() {
+        for (sw, dw, rows) in [
+            (2040usize, 512usize, 1356usize),
+            (2040, 683, 1356),
+            (2040, 256, 1356),
+        ] {
+            let w = Windows::new(sw, dw);
+            let (stage, rs) = staged_x3::<K>(sw, rows, &w);
+            let b = K::HORIZ_BATCH;
+            let plane = b * dw;
+            let slots: [usize; 4] = std::array::from_fn(|i| i * dw);
+            let mut ring = vec![0f32; 3 * plane];
+            let mut best = f64::MAX;
+            for _ in 0..15 {
+                let t = std::time::Instant::now();
+                for y in (0..rows - rows % b).step_by(b) {
+                    // SAFETY: after K::detect(); rows y..y + b are staged.
+                    unsafe {
+                        K::horiz_x3_batch(
+                            std::hint::black_box(&stage[y * rs..]),
+                            rs,
+                            b,
+                            sw,
+                            &w,
+                            &mut ring,
+                            plane,
+                            &slots,
+                            dw,
+                        )
+                    };
+                }
+                best = best.min(t.elapsed().as_secs_f64() * 1e3);
+            }
+            println!("horiz {sw}->{dw} x{rows}: {best:.3} ms");
+        }
+    }
+
     // SAFETY (raw-slice cast below): `&[u16]` viewed as bytes — same allocation,
     // `len * 2` bytes, u8 has alignment 1 and no invalid bit patterns.
     fn fir_resize(src: &[u16], sw: usize, sh: usize, dw: usize, dh: usize, ch: usize) -> Vec<u16> {

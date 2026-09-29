@@ -517,6 +517,23 @@ mod tests {
     }
 
     #[test]
+    fn horiz_batch_matches_single_rows() {
+        if !detected() {
+            return;
+        }
+        testkit::assert_horiz_batch_matches_single::<Avx2>();
+    }
+
+    #[test]
+    #[ignore]
+    fn horiz_bench() {
+        if !detected() {
+            return;
+        }
+        testkit::bench_horiz::<Avx2>();
+    }
+
+    #[test]
     fn tracks_ground_truth_for_rgb() {
         if !detected() {
             return;
