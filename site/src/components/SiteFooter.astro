@@ -1,0 +1,110 @@
+---
+import Logo from "./Logo.astro";
+
+const repo = "https://github.com/oximg/oximg";
+const columns = [
+  {
+    title: "Project",
+    links: [
+      { href: repo, label: "GitHub" },
+      { href: `${repo}/releases`, label: "Releases" },
+      { href: `${repo}/blob/main/CHANGELOG.md`, label: "Changelog" },
+      { href: `${repo}/blob/main/SECURITY.md`, label: "Security" },
+    ],
+  },
+  {
+    title: "Measure",
+    links: [
+      { href: `${repo}/blob/main/BENCH.md`, label: "BENCH.md" },
+      { href: `${repo}/blob/main/bench/quality/QUALITY.md`, label: "QUALITY.md" },
+      { href: `${repo}/blob/main/bench/METHODOLOGY.md`, label: "Methodology" },
+    ],
+  },
+  {
+    title: "Get it",
+    links: [
+      { href: `${repo}/blob/main/docs/deploy-docker.md`, label: "Docker" },
+      { href: "https://crates.io/crates/oximg", label: "crates.io" },
+      { href: "https://docs.rs/oximg", label: "docs.rs" },
+      { href: `${repo}/tree/main/rubygem`, label: "Ruby gems" },
+    ],
+  },
+];
+---
+
+<footer class="site-footer">
+  <div class="container grid">
+    <div class="brand">
+      <Logo />
+      <p>Image resizing in Rust. Apache-2.0.</p>
+      <p class="status mono">status: experimental PoC</p>
+    </div>
+    {
+      columns.map((c) => (
+        <div>
+          <h3>{c.title}</h3>
+          <ul>
+            {c.links.map((l) => (
+              <li>
+                <a href={l.href}>{l.label}</a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))
+    }
+  </div>
+</footer>
+
+<style>
+  .site-footer {
+    border-top: 1px solid var(--line);
+    background: var(--bg-sunken);
+    padding-block: var(--space-16);
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) repeat(3, minmax(0, 1fr));
+    gap: var(--space-8);
+  }
+  .brand p {
+    margin-top: var(--space-3);
+    color: var(--text-muted);
+    font-size: var(--step--1);
+  }
+  .status {
+    color: var(--text-faint) !important;
+  }
+  h3 {
+    font-family: var(--font-mono);
+    font-size: var(--step--1);
+    font-weight: 500;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: var(--space-3);
+  }
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: var(--space-2);
+  }
+  a {
+    color: var(--text-muted);
+    font-size: var(--step--1);
+    text-decoration: none;
+  }
+  a:hover {
+    color: var(--text);
+  }
+  @media (max-width: 720px) {
+    .grid {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+    .brand {
+      grid-column: 1 / -1;
+    }
+  }
+</style>

@@ -1,0 +1,118 @@
+/*
+ * oximg design tokens — "Oxide".
+ *
+ * Two hues carry meaning and nothing else may borrow them:
+ *   rust    = oximg (its data, its CTAs, its brand mark)
+ *   patina  = a secondary accent: states, links, "correct" signals
+ * Competitors in charts are always neutral grays, so a reader can tell
+ * whose bar is whose without a legend.
+ *
+ * Primitives are raw scales; components use only the semantic layer.
+ */
+
+:root {
+  /* --- Primitives ------------------------------------------------- */
+
+  /* Graphite: cool near-black neutrals. */
+  --graphite-0: #07090a;
+  --graphite-50: #0b0d0e;
+  --graphite-100: #111416;
+  --graphite-150: #171b1e;
+  --graphite-200: #1f2428;
+  --graphite-300: #2b3238;
+  --graphite-400: #3d464e;
+  --graphite-500: #5a6570;
+  --graphite-600: #7d8994;
+  --graphite-700: #a3adb6;
+  --graphite-800: #c9d0d6;
+  --graphite-900: #eceff1;
+
+  /* Rust: oxidized iron, the brand hue. */
+  --rust-300: #ffb088;
+  --rust-400: #ff8a52;
+  --rust-500: #e8622c;
+  --rust-600: #c44d1d;
+  --rust-700: #8f3714;
+  --rust-900: #2a130a;
+
+  /* Patina: oxidized copper, the secondary accent. */
+  --patina-300: #8fe3d8;
+  --patina-400: #5fcfc1;
+  --patina-500: #3fb6a8;
+  --patina-700: #1f6b63;
+  --patina-900: #0b2522;
+
+  /* Signal colors, used sparingly (error classes, warnings). */
+  --amber-400: #f5b83d;
+  --red-400: #f0605a;
+
+  /* --- Semantic --------------------------------------------------- */
+
+  --bg: var(--graphite-50);
+  --bg-sunken: var(--graphite-0);
+  --surface: var(--graphite-100);
+  --surface-raised: var(--graphite-150);
+  --line: var(--graphite-200);
+  --line-strong: var(--graphite-300);
+  --grid-line: rgb(255 255 255 / 0.035);
+
+  --text: var(--graphite-900);
+  --text-muted: var(--graphite-700);
+  --text-faint: var(--graphite-600);
+
+  --brand: var(--rust-500);
+  --brand-strong: var(--rust-400);
+  --brand-soft: var(--rust-900);
+  --on-brand: var(--graphite-0);
+
+  --accent: var(--patina-500);
+  --accent-strong: var(--patina-300);
+  --accent-soft: var(--patina-900);
+
+  /* Chart series. `ours` is oximg; `theirs-*` are competitors. */
+  --series-ours: var(--rust-500);
+  --series-theirs-1: var(--graphite-500);
+  --series-theirs-2: var(--graphite-400);
+  --series-theirs-3: var(--graphite-300);
+
+  /* --- Type ------------------------------------------------------- */
+
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Fluid scale, ~1.25 ratio. */
+  --step--1: clamp(0.8rem, 0.78rem + 0.1vw, 0.86rem);
+  --step-0: clamp(0.95rem, 0.92rem + 0.15vw, 1.05rem);
+  --step-1: clamp(1.15rem, 1.08rem + 0.35vw, 1.35rem);
+  --step-2: clamp(1.4rem, 1.25rem + 0.7vw, 1.8rem);
+  --step-3: clamp(1.75rem, 1.45rem + 1.4vw, 2.6rem);
+  --step-4: clamp(2.2rem, 1.6rem + 2.8vw, 4rem);
+
+  /* --- Space & shape ---------------------------------------------- */
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-24: 6rem;
+
+  --radius-sm: 4px;
+  --radius: 8px;
+  --content-width: 72rem;
+  --grid-size: 32px;
+
+  /* --- Motion ----------------------------------------------------- */
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration: 600ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration: 0ms;
+  }
+}

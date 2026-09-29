@@ -1,0 +1,61 @@
+---
+interface Props {
+  command: string;
+}
+const { command } = Astro.props;
+---
+
+<div class="copy">
+  <span class="prompt" aria-hidden="true">$</span>
+  <code>{command}</code>
+  <button type="button" data-copy={command} aria-label="Copy command">copy</button>
+</div>
+
+<script>
+  for (const btn of document.querySelectorAll<HTMLButtonElement>("button[data-copy]")) {
+    btn.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(btn.dataset.copy ?? "");
+      btn.textContent = "copied";
+      setTimeout(() => (btn.textContent = "copy"), 1500);
+    });
+  }
+</script>
+
+<style>
+  .copy {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
+    background: var(--bg-sunken);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    font-size: var(--step--1);
+    max-width: 100%;
+  }
+  .prompt {
+    color: var(--brand);
+    font-family: var(--font-mono);
+  }
+  code {
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    white-space: nowrap;
+    scrollbar-width: none;
+  }
+  button {
+    flex: none;
+    font: inherit;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    background: var(--surface-raised);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-3);
+    cursor: pointer;
+  }
+  button:hover {
+    color: var(--text);
+  }
+</style>

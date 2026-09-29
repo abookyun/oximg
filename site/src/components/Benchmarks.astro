@@ -1,0 +1,89 @@
+---
+import BenchChart from "./BenchChart.astro";
+
+// Kept next to the chart on purpose: a benchmark page that only shows
+// wins is not believed. Each item is stated in README.md or BENCH.md.
+const caveats = [
+  {
+    title: "JPEG → AVIF on c7i.large is a tie",
+    body: "44.6 req/s against imgproxy's 44.9 — within run-to-run variance, not a lead.",
+  },
+  {
+    title: "AVIF defaults target fidelity, not bytes",
+    body: "On photographic sources AVIF output measures 10–28% larger than WebP at default settings.",
+  },
+  {
+    title: "Request coalescing is per-process",
+    body: "Scaled out behind round-robin, identical requests rarely meet: 0 followers across 6 Cloud Run instances in the field. Put a CDN in front.",
+  },
+];
+---
+
+<section class="section" id="benchmarks">
+  <div class="container">
+    <header class="section-head">
+      <p class="eyebrow">benchmarks</p>
+      <h2>Measured on their harness, on their hardware.</h2>
+      <p>
+        imgproxy publishes numbers from its own benchmark on AWS c7i and c7g instances. We ran
+        the same harness, unmodified, on the same instance types — every server re-measured
+        together in one run.
+      </p>
+    </header>
+
+    <BenchChart />
+
+    <div class="caveats">
+      <h3 class="mono">where we don't lead</h3>
+      <ul>
+        {
+          caveats.map((c) => (
+            <li>
+              <strong>{c.title}</strong>
+              <p>{c.body}</p>
+            </li>
+          ))
+        }
+      </ul>
+    </div>
+  </div>
+</section>
+
+<style>
+  .caveats {
+    margin-top: var(--space-12);
+    padding: var(--space-6);
+    border: 1px dashed var(--line-strong);
+    border-radius: var(--radius);
+  }
+  h3 {
+    font-size: var(--step--1);
+    font-weight: 500;
+    color: var(--amber-400);
+    margin-bottom: var(--space-4);
+  }
+  h3::before {
+    content: "! ";
+  }
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-6);
+  }
+  strong {
+    font-weight: 600;
+  }
+  li p {
+    margin-top: var(--space-1);
+    color: var(--text-muted);
+    font-size: var(--step--1);
+  }
+  @media (max-width: 860px) {
+    ul {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

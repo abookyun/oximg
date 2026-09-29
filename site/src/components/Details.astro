@@ -1,0 +1,98 @@
+---
+// The operability and correctness details that don't fit a chart.
+// Each is a documented behavior (README.md / docs/features/).
+const details = [
+  {
+    k: "errors by fault",
+    title: "Status codes CDNs can trust",
+    body: "A client's bad key is 400, a missing object 404, a broken origin 502, a slow one 504. CDNs retry 5xx and cache 4xx, so misfiling turns crawlers into origin load.",
+  },
+  {
+    k: "/metrics",
+    title: "Queue wait, split from work",
+    body: "Opt-in Prometheus metrics separate queue wait from processing time — telling “needs more CPU” apart from “sources got bigger”.",
+  },
+  {
+    k: "SIGTERM",
+    title: "Graceful drain",
+    body: "Stops accepting, finishes in-flight encodes, exits 0 — what docker stop, Kubernetes and Cloud Run expect.",
+  },
+  {
+    k: "fail-closed",
+    title: "A typo'd knob refuses to boot",
+    body: "Every setting is an environment variable. Set but unparseable means the process exits naming it, not a silent default.",
+  },
+  {
+    k: "orientation",
+    title: "Upright in every format",
+    body: "EXIF, PNG eXIf, WebP EXIF and AVIF irot/imir are applied; pixels come out upright and nothing double-rotates.",
+  },
+  {
+    k: "GIF → WebP",
+    title: "Animated GIFs stay animated",
+    body: "Frames stream into an animated WebP, one canvas in memory. Measured: WebP reached 25% of the source bytes where the best GIF managed 81%.",
+  },
+];
+---
+
+<section class="section" id="details">
+  <div class="container">
+    <header class="section-head">
+      <p class="eyebrow">production</p>
+      <h2>The details that page you at 3 a.m.</h2>
+    </header>
+    <div class="grid">
+      {
+        details.map((d) => (
+          <article>
+            <p class="k mono">{d.k}</p>
+            <h3>{d.title}</h3>
+            <p class="body">{d.body}</p>
+          </article>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border-top: 1px solid var(--line);
+    border-left: 1px solid var(--line);
+  }
+  article {
+    display: grid;
+    align-content: start;
+    gap: var(--space-2);
+    padding: var(--space-8) var(--space-6);
+    border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    transition: background-color 150ms;
+  }
+  article:hover {
+    background: var(--surface);
+  }
+  .k {
+    font-size: var(--step--1);
+    color: var(--accent);
+  }
+  h3 {
+    font-size: var(--step-1);
+  }
+  .body {
+    color: var(--text-muted);
+    font-size: var(--step--1);
+  }
+  @media (max-width: 960px) {
+    .grid {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+  }
+  @media (max-width: 600px) {
+    .grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

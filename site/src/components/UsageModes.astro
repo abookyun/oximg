@@ -1,0 +1,115 @@
+---
+import CodeCard from "./CodeCard.astro";
+
+const modes = [
+  {
+    tag: "server",
+    title: "An image service",
+    body: "Multi-arch Docker image, linux/amd64 + arm64, AVIF included. Put a CDN in front; responses carry a one-year Cache-Control.",
+    lang: "sh",
+    code: `
+docker run -p 8081:8081 \\
+  -v $PWD/images:/images:ro \\
+  ghcr.io/oximg/oximg
+curl localhost:8081/resize/500/500/photo.jpg -o out.jpg`,
+  },
+  {
+    tag: "cli",
+    title: "A one-shot command",
+    body: "The same pipeline with no server, for CI asset builds. Prebuilt binaries for Linux and macOS, or Homebrew.",
+    lang: "sh",
+    code: `
+brew install oximg/tap/oximg
+oximg resize photo.jpg 1600 1600 out.webp
+oximg resize photo.jpg 750 0 out.jpg -q 70
+oximg probe photo.webp`,
+  },
+  {
+    tag: "rust",
+    title: "A library",
+    body: "default-features = false drops the whole HTTP stack. Failures are typed: match on ErrorKind, not on messages.",
+    lang: "rust",
+    code: `
+use oximg::pipeline::{self, Params};
+
+let params = Params {
+    max_width: 300,
+    max_height: 200,
+    ..Default::default()
+};
+let (bytes, format) = pipeline::process_path(path, &params)?;`,
+  },
+  {
+    tag: "ruby",
+    title: "A gem — no libvips",
+    body: "Platform gems bundle the executable, so bundle install is the whole installation. oximg-rails signs URLs and wires into ActiveStorage.",
+    lang: "ruby",
+    code: `
+gem "oximg"
+
+Oximg.resize("in.jpg", "out.webp", width: 750, quality: 80)
+Oximg.probe("in.jpg")
+#=> {format: :jpeg, width: 4000, height: 3000, ...}`,
+  },
+];
+---
+
+<section class="section" id="use">
+  <div class="container">
+    <header class="section-head">
+      <p class="eyebrow">use</p>
+      <h2>One pipeline, four ways in.</h2>
+      <p>
+        The server, the CLI, the Rust crate and the Ruby gems all run the same decode → resize →
+        encode path, so a number measured on one holds for the others.
+      </p>
+    </header>
+    <div class="grid">
+      {
+        modes.map((m) => (
+          <article class="card">
+            <p class="tag mono">{m.tag}</p>
+            <h3>{m.title}</h3>
+            <p class="body">{m.body}</p>
+            <CodeCard code={m.code} lang={m.lang} />
+          </article>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-6);
+  }
+  article {
+    display: grid;
+    grid-template-rows: auto auto 1fr auto;
+    gap: var(--space-3);
+    padding: var(--space-6);
+    min-width: 0;
+  }
+  .tag {
+    justify-self: start;
+    font-size: 0.72rem;
+    padding: 2px var(--space-2);
+    border-radius: var(--radius-sm);
+    background: var(--brand-soft);
+    color: var(--brand-strong);
+  }
+  h3 {
+    font-size: var(--step-1);
+  }
+  .body {
+    color: var(--text-muted);
+    font-size: var(--step--1);
+  }
+  @media (max-width: 860px) {
+    .grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

@@ -1,0 +1,81 @@
+---
+import { proofs } from "../data/bench";
+---
+
+<section class="proofs" aria-label="Headline measurements">
+  <div class="container grid">
+    {
+      proofs.map((p) => (
+        <a class="proof" href={p.source}>
+          <p class="figure">
+            <span class="num value">{p.value}</span>
+            <span class="unit mono">{p.unit}</span>
+          </p>
+          <p class="label">{p.label}</p>
+          <p class="versus mono">vs {p.versus}</p>
+          <p class="context mono">{p.context} ↗</p>
+        </a>
+      ))
+    }
+  </div>
+</section>
+
+<style>
+  .proofs {
+    border-block: 1px solid var(--line);
+    background: var(--bg-sunken);
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .proof {
+    display: grid;
+    gap: var(--space-1);
+    padding: var(--space-8) var(--space-6);
+    border-left: 1px solid var(--line);
+    color: inherit;
+    text-decoration: none;
+    transition: background-color 150ms;
+  }
+  .proof:last-child {
+    border-right: 1px solid var(--line);
+  }
+  .proof:hover {
+    background: var(--surface);
+  }
+  .figure {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+  }
+  .value {
+    font-size: var(--step-3);
+    font-weight: 700;
+    color: var(--brand);
+    letter-spacing: -0.03em;
+  }
+  .unit {
+    color: var(--brand-strong);
+    font-size: var(--step--1);
+  }
+  .label {
+    font-weight: 600;
+  }
+  .versus,
+  .context {
+    font-size: var(--step--1);
+    color: var(--text-muted);
+  }
+  .context {
+    color: var(--text-faint);
+  }
+  @media (max-width: 960px) {
+    .grid {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+    .proof {
+      border-bottom: 1px solid var(--line);
+    }
+  }
+</style>
