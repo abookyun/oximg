@@ -329,15 +329,30 @@ fn png_effort_accepts_zlib_style_levels() {
 /// of refusing to start.
 #[test]
 fn unknown_png_effort_warns_and_uses_the_default() {
-    let unset = resize_with_env("bad-effort-unset.png", &[]);
+    // The child inherits the runner's env, so the baseline must remove
+    // the knob explicitly or an ambient value would stand in for unset.
+    let run = |out: &std::path::Path, effort: Option<&str>| {
+        let mut cmd = bin();
+        cmd.args(["resize", &fixture("photo.jpg"), "400", "400"])
+            .arg(out)
+            .env_remove("OXIMG_PNG_EFFORT");
+        if let Some(v) = effort {
+            cmd.env("OXIMG_PNG_EFFORT", v);
+        }
+        cmd.output().expect("run oximg resize")
+    };
+    let base = tmp("bad-effort-unset.png");
+    let output = run(&base, None);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let unset = std::fs::read(&base).expect("read output");
+    std::fs::remove_file(&base).ok();
     for bad in ["10", "max", "High"] {
         let out = tmp("bad-effort.png");
-        let output = bin()
-            .args(["resize", &fixture("photo.jpg"), "400", "400"])
-            .arg(&out)
-            .env("OXIMG_PNG_EFFORT", bad)
-            .output()
-            .unwrap();
+        let output = run(&out, Some(bad));
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "{bad:?}: {stderr}");
         assert!(
