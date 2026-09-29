@@ -9,7 +9,8 @@
     "build": "astro build",
     "preview": "astro preview",
     "precheck": "node scripts/sync-docs.mjs",
-    "check": "astro check"
+    "check": "astro check",
+    "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
     "@astrojs/starlight": "^0.42.4",
@@ -18,6 +19,7 @@
     "astro": "^7.3.5"
   },
   "devDependencies": {
-    "github-slugger": "^2.0.0"
+    "github-slugger": "^2.0.0",
+    "wrangler": "^4.143.1"
   }
 }
