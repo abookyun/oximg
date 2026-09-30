@@ -664,20 +664,15 @@ pub(super) fn encode_jpegli(
     quality: f32,
     icc: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
-    let mut comp = jpegli::Compress::new(jpegli::ColorSpace::JCS_RGB);
-    comp.set_size(w, h);
-    comp.set_quality(quality);
     // cjpegli emits progressive by default; the libjpeg-compat layer does
-    // not. Progressive is worth several percent at these sizes.
-    if jpegli_progressive() {
-        comp.set_progressive_mode();
-    }
-    let mut started = comp.start_compress(Vec::with_capacity(64 * 1024))?;
+    // not. Progressive is worth several percent at these sizes; the scan
+    // script is oximg's own (see jpegli_enc.rs), not jpegli's level 2.
+    let mut enc = JpegliEncoder::new(w, h, quality, jpegli_progressive());
     if let Some(icc) = icc {
         for chunk in icc_app2_chunks(icc) {
-            started.write_marker(jpegli::Marker::APP(2), &chunk);
+            enc.write_marker(JPEG_APP2, &chunk);
         }
     }
-    started.write_scanlines(rgb)?;
-    Ok(started.finish()?)
+    enc.write_scanlines(rgb)?;
+    Ok(enc.finish())
 }

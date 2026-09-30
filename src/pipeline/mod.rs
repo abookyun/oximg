@@ -1642,6 +1642,7 @@ mod fuse;
 mod gcs;
 mod gif;
 mod jpeg;
+mod jpegli_enc;
 mod resolved;
 #[cfg(test)]
 mod tests;
@@ -1658,4 +1659,5 @@ use gif::*;
 pub use jpeg::decode_and_resize;
 #[cfg_attr(not(test), allow(unused_imports))] // tests.rs reaches these via super::*
 use jpeg::*;
+use jpegli_enc::{JPEG_APP2, JpegliEncoder};
 use resolved::Resolved;
