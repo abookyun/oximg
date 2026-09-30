@@ -68,6 +68,34 @@ impl RowKernel for Neon {
             }
         }
     }
+    fn half_u8() -> bool {
+        std::arch::is_aarch64_feature_detected!("fp16")
+            && std::arch::is_aarch64_feature_detected!("fhm")
+    }
+    unsafe fn horiz_x3_batch_half(
+        stage: &[u16],
+        row_stride: usize,
+        n: usize,
+        src_w: usize,
+        w: &Windows,
+        ring: &mut [f32],
+        plane: usize,
+        slots: &[usize; 4],
+        dst_w: usize,
+    ) {
+        let c = w.coeffs_f16();
+        unsafe {
+            match n {
+                0 => {}
+                2 => horiz_rows_x3_half::<2>(
+                    stage, row_stride, src_w, w, c, ring, plane, slots, dst_w,
+                ),
+                _ => horiz_rows_x3_half::<1>(
+                    stage, row_stride, src_w, w, c, ring, plane, slots, dst_w,
+                ),
+            }
+        }
+    }
     unsafe fn horiz_x4(
         stage: &[f32],
         w: &Windows,
@@ -275,6 +303,135 @@ unsafe fn horiz_rows_x3<const R: usize>(
     }
 }
 
+/// FMLAL (`HIGH` = false: lanes 0..4) or FMLAL2 (lanes 4..8): widening
+/// f16 multiply-accumulate into f32. Inline asm rather than
+/// `vfmlalq_{low,high}_f16`, which (with the f16 vector types) need Rust
+/// 1.94, past the crate's MSRV.
+#[inline(always)]
+// SAFETY: requires FHM (the caller's target features).
+unsafe fn fmlal<const HIGH: bool>(
+    acc: std::arch::aarch64::float32x4_t,
+    a: std::arch::aarch64::uint16x8_t,
+    b: std::arch::aarch64::uint16x8_t,
+) -> std::arch::aarch64::float32x4_t {
+    let mut acc = acc;
+    unsafe {
+        if HIGH {
+            std::arch::asm!(
+                "fmlal2 {acc:v}.4s, {a:v}.4h, {b:v}.4h",
+                acc = inout(vreg) acc, a = in(vreg) a, b = in(vreg) b,
+                options(pure, nomem, nostack, preserves_flags),
+            );
+        } else {
+            std::arch::asm!(
+                "fmlal {acc:v}.4s, {a:v}.4h, {b:v}.4h",
+                acc = inout(vreg) acc, a = in(vreg) a, b = in(vreg) b,
+                options(pure, nomem, nostack, preserves_flags),
+            );
+        }
+    }
+    acc
+}
+
+/// [`dot3_rows`] over f16 samples and coefficients: 8-tap blocks, each
+/// split into FMLAL (low four lanes) and FMLAL2 (high four) products
+/// accumulated in f32, then the two halves added.
+#[inline(always)]
+// SAFETY: requires NEON, FP16 and FHM; as `dot3_rows` with 8-tap blocks
+// (`padded` = size rounded up to 8, still `<= w.stride`) and `cf` laid
+// out like `w.coeffs`.
+unsafe fn dot3_rows_half<const R: usize>(
+    ins: &[[*const u16; 3]; R],
+    w: &Windows,
+    cf: &[u16],
+    o: usize,
+) -> [[std::arch::aarch64::float32x4_t; 3]; R] {
+    unsafe {
+        use std::arch::aarch64::*;
+        let start = *w.starts.get_unchecked(o);
+        let padded = w.sizes.get_unchecked(o).div_ceil(8) * 8;
+        let cp = cf.as_ptr().add(o * w.stride);
+        let mut lo = [[vdupq_n_f32(0.0); 3]; R];
+        let mut hi = [[vdupq_n_f32(0.0); 3]; R];
+        let mut k = 0usize;
+        while k < padded {
+            let c = vld1q_u16(cp.add(k));
+            for r in 0..R {
+                for ch in 0..3 {
+                    let v = vld1q_u16(ins[r][ch].add(start + k));
+                    lo[r][ch] = fmlal::<false>(lo[r][ch], v, c);
+                    hi[r][ch] = fmlal::<true>(hi[r][ch], v, c);
+                }
+            }
+            k += 8;
+        }
+        for r in 0..R {
+            for ch in 0..3 {
+                lo[r][ch] = vaddq_f32(lo[r][ch], hi[r][ch]);
+            }
+        }
+        lo
+    }
+}
+
+/// [`horiz_rows_x3`] over f16-staged rows: the same four-output
+/// reduction, then the 1/65536 staging scale multiplied back out
+/// (a power of two, so exact).
+#[target_feature(enable = "neon,fp16,fhm")]
+#[allow(clippy::too_many_arguments)]
+// SAFETY: requires NEON, FP16 and FHM. As `horiz_rows_x3`, in u16 units:
+// `stage` must hold (R - 1) * row_stride + 3 * src_w + w.stride readable
+// u16, and `cf.len() >= w.coeffs.len()`.
+unsafe fn horiz_rows_x3_half<const R: usize>(
+    stage: &[u16],
+    row_stride: usize,
+    src_w: usize,
+    w: &Windows,
+    cf: &[u16],
+    ring: &mut [f32],
+    plane: usize,
+    slots: &[usize; 4],
+    dst_w: usize,
+) {
+    assert!(ring.len() >= 3 * plane);
+    assert!(slots[..R].iter().all(|&s| s + dst_w <= plane));
+    assert!(cf.len() >= w.coeffs.len());
+    const SCALE: f32 = 65536.0;
+    unsafe {
+        use std::arch::aarch64::*;
+        let ins: [[*const u16; 3]; R] = std::array::from_fn(|r| {
+            let p = stage.as_ptr().add(r * row_stride);
+            [p, p.add(src_w), p.add(2 * src_w)]
+        });
+        let base = ring.as_mut_ptr();
+        let mut ox = 0usize;
+        while ox + 4 <= dst_w {
+            let a0 = dot3_rows_half::<R>(&ins, w, cf, ox);
+            let a1 = dot3_rows_half::<R>(&ins, w, cf, ox + 1);
+            let a2 = dot3_rows_half::<R>(&ins, w, cf, ox + 2);
+            let a3 = dot3_rows_half::<R>(&ins, w, cf, ox + 3);
+            for r in 0..R {
+                for ch in 0..3 {
+                    let s = vpaddq_f32(
+                        vpaddq_f32(a0[r][ch], a1[r][ch]),
+                        vpaddq_f32(a2[r][ch], a3[r][ch]),
+                    );
+                    vst1q_f32(base.add(ch * plane + slots[r] + ox), vmulq_n_f32(s, SCALE));
+                }
+            }
+            ox += 4;
+        }
+        for ox in ox..dst_w {
+            let a = dot3_rows_half::<R>(&ins, w, cf, ox);
+            for (row, &slot) in a.iter().zip(slots) {
+                for (ch, v) in row.iter().enumerate() {
+                    *base.add(ch * plane + slot + ox) = vaddvq_f32(*v) * SCALE;
+                }
+            }
+        }
+    }
+}
+
 /// One horizontal row, 4 channels, reading the interleaved f32 staged
 /// row: each pixel is a natural f32x4 lane group; four taps share one
 /// coefficient vector via lane-indexed FMA (same sequence as before).
@@ -467,6 +624,29 @@ mod tests {
     #[test]
     fn streaming_with_trailing_rows_matches_full_frame() {
         testkit::assert_streaming_with_trailing_rows::<Neon>();
+    }
+
+    #[test]
+    fn portable_f16_rounding_matches_hardware() {
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        for _ in 0..1_000_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            // Exponents from deep subnormal to overflow, any fraction.
+            let bits = (x as u32 & 0x807f_ffff) | ((90 + (x >> 32) as u32 % 60) << 23);
+            let v = f32::from_bits(bits);
+            let h: f32;
+            // SAFETY: scalar FCVT to half is baseline aarch64 FP; writing
+            // `h0` zeroes the rest of the register, so the f32 view's low
+            // 16 bits are the half.
+            unsafe {
+                std::arch::asm!("fcvt {h:h}, {v:s}", h = lateout(vreg) h, v = in(vreg) v,
+                    options(pure, nomem, nostack, preserves_flags));
+            }
+            let hw = h.to_bits() as u16;
+            assert_eq!(crate::resize_kernel::f32_to_f16(v), hw, "{v:e}");
+        }
     }
 
     #[test]

@@ -15,7 +15,10 @@
 //! accumulation applies taps in ascending order. Streamed emission
 //! performs the same operations in the same per-value order as the
 //! full-frame driver, so their outputs are bit-identical (asserted by
-//! tests per arch).
+//! tests per arch). The one deliberate exception is a u8 stream on a
+//! kernel with [`RowKernel::half_u8`]: its horizontal pass reads f16
+//! samples and taps (f32 accumulation), within one 8-bit level of the
+//! f32 result; the scheduling guarantees above still hold within it.
 
 use anyhow::{Result, ensure};
 use std::sync::Arc;
@@ -54,6 +57,11 @@ pub(crate) struct Windows {
     /// f32 coefficients, `stride` apart per output pixel, zero-padded
     /// past each window's size.
     pub(crate) coeffs: Vec<f32>,
+    /// `coeffs` as IEEE half-precision bits, built on first use by the
+    /// half-precision horizontal pass (see [`Windows::coeffs_f16`]).
+    // Only the NEON kernel runs that pass.
+    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+    coeffs_h: std::sync::OnceLock<Vec<u16>>,
 }
 
 impl Windows {
@@ -108,8 +116,95 @@ impl Windows {
             starts,
             sizes,
             coeffs,
+            coeffs_h: std::sync::OnceLock::new(),
         }
     }
+
+    /// The coefficients rounded to f16, same layout as `coeffs`. Plain
+    /// rounding lets a window's sum (the DC gain) drift by up to ~1e-4,
+    /// several u16 steps on a flat bright area, so each window is
+    /// rounded largest tap first, carrying the error so far into the
+    /// next: what is left over is under half an ulp of the smallest tap.
+    #[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+    pub(crate) fn coeffs_f16(&self) -> &[u16] {
+        self.coeffs_h.get_or_init(|| {
+            let mut out = vec![0u16; self.coeffs.len()];
+            let mut order = Vec::with_capacity(self.window_size);
+            for (o, &n) in self.sizes.iter().enumerate() {
+                let (want, taps) = (
+                    &self.coeffs[o * self.stride..][..n],
+                    &mut out[o * self.stride..][..n],
+                );
+                order.clear();
+                order.extend(0..n);
+                order.sort_by(|&a, &b| want[b].abs().total_cmp(&want[a].abs()));
+                let mut carry = 0f64;
+                for &k in &order {
+                    let v = want[k] as f64 + carry;
+                    taps[k] = f32_to_f16(v as f32);
+                    carry = v - f16_to_f32(taps[k]) as f64;
+                }
+            }
+            out
+        })
+    }
+}
+
+/// f32 -> IEEE binary16 bits, round to nearest even (what the NEON
+/// `FCVTN` conversion does), with overflow to infinity. Portable so the
+/// coefficient tables need no FP16 hardware to build.
+pub(crate) fn f32_to_f16(x: f32) -> u16 {
+    let b = x.to_bits();
+    let sign = ((b >> 16) & 0x8000) as u16;
+    let exp = ((b >> 23) & 0xff) as i32;
+    let man = b & 0x7f_ffff;
+    if exp == 0xff {
+        return sign | 0x7c00 | if man != 0 { 0x200 } else { 0 };
+    }
+    let e = exp - 127 + 15;
+    if e >= 0x1f {
+        return sign | 0x7c00;
+    }
+    // Normal results keep 10 of the 23 fraction bits; subnormal ones
+    // (e <= 0) are the 24-bit significand shifted down to units of 2^-24.
+    let (q, shift) = if e > 0 {
+        (((e as u32) << 10) | (man >> 13), 13)
+    } else if e < -10 {
+        return sign;
+    } else {
+        let shift = (14 - e) as u32;
+        ((man | 0x80_0000) >> shift, shift)
+    };
+    let full = if e > 0 { man } else { man | 0x80_0000 };
+    let rem = full & ((1 << shift) - 1);
+    let half = 1 << (shift - 1);
+    // A carry out of the fraction bumps the exponent, which is the
+    // correctly rounded result (up to infinity).
+    let q = if rem > half || (rem == half && q & 1 == 1) {
+        q + 1
+    } else {
+        q
+    };
+    sign | q as u16
+}
+
+/// IEEE binary16 bits -> f32 (exact).
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+pub(crate) fn f16_to_f32(h: u16) -> f32 {
+    let sign = ((h & 0x8000) as u32) << 16;
+    let exp = ((h >> 10) & 0x1f) as u32;
+    let man = (h & 0x3ff) as u32;
+    let bits = match exp {
+        0 if man == 0 => sign,
+        0 => {
+            // Subnormal: man * 2^-24, renormalized.
+            let lz = man.leading_zeros() - 21;
+            sign | ((113 - lz) << 23) | ((man << lz) & 0x3ff) << 13
+        }
+        0x1f => sign | 0x7f80_0000 | man << 13,
+        _ => sign | (exp + 112) << 23 | man << 13,
+    };
+    f32::from_bits(bits)
 }
 
 thread_local! {
@@ -149,6 +244,18 @@ struct Scratch {
     outrow: Vec<u16>,
 }
 
+/// The f32 batch buffer viewed as u16 for f16 staging.
+fn as_u16(v: &[f32]) -> &[u16] {
+    // SAFETY: same allocation, `len * 2` u16; f32 alignment exceeds u16's
+    // and every bit pattern is a valid u16.
+    unsafe { std::slice::from_raw_parts(v.as_ptr().cast(), v.len() * 2) }
+}
+
+fn as_u16_mut(v: &mut [f32]) -> &mut [u16] {
+    // SAFETY: as in `as_u16`, with the unique borrow carried over.
+    unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr().cast(), v.len() * 2) }
+}
+
 fn grow(buf: &mut Vec<f32>, len: usize) {
     if buf.len() < len {
         buf.resize(len, 0.0);
@@ -182,6 +289,42 @@ pub(crate) trait RowKernel {
     // [`stage_x3_u8_words`].
     unsafe fn stage_x3_u8(row: &[u8], lut: &[f32; 256], stage: &mut [f32], w: usize) {
         unsafe { stage_x3_u8_words(row, lut, stage, w, Self::STAGE3_FLOATS_PER_PIXEL == 4) }
+    }
+    /// Whether this CPU runs u8 streams at half precision: rows staged
+    /// as planar f16 and the horizontal pass fed f16 samples and
+    /// coefficients, accumulating in f32. That halves the pass's loads,
+    /// which bound it. The rounding (2^-11 relative, on samples and
+    /// coefficients) is far below one 8-bit output step, which is all
+    /// a u8 source feeds; u16 streams always stay f32.
+    fn half_u8() -> bool {
+        false
+    }
+    /// Stage one u8 RGB row as three planar f16 rows (`stage[0..w]`,
+    /// `[w..2w]`, `[2w..3w]`) through `lut`, which holds f16 bits.
+    // SAFETY: caller must have verified `Self::half_u8()` and pass
+    // `row.len() >= 3 * w` and `stage.len() >= 3 * w`.
+    unsafe fn stage_x3_u8_half(row: &[u8], lut: &[u16; 256], stage: &mut [u16], w: usize) {
+        unsafe { stage_x3_u8_words(row, lut, stage, w, false) }
+    }
+    /// Half-precision counterpart of [`RowKernel::horiz_x3_batch`] over
+    /// rows staged by [`RowKernel::stage_x3_u8_half`] (at 1/65536 scale,
+    /// which the pass multiplies back out), with `w.coeffs_f16()` taps.
+    #[allow(clippy::too_many_arguments)]
+    // SAFETY: caller must have verified `Self::half_u8()`; per row i < n,
+    // `stage[i * row_stride..]` holds (src_w + w.stride) * 3 u16 of finite
+    // f16 values, `slots[i] + dst_w <= plane` and `ring.len() >= 3 * plane`.
+    unsafe fn horiz_x3_batch_half(
+        _stage: &[u16],
+        _row_stride: usize,
+        _n: usize,
+        _src_w: usize,
+        _w: &Windows,
+        _ring: &mut [f32],
+        _plane: usize,
+        _slots: &[usize; 4],
+        _dst_w: usize,
+    ) {
+        unreachable!("half_u8() is false for this kernel")
     }
     /// Convert one u16 RGBA row to f32, keeping the interleaved layout.
     // SAFETY: caller must have verified `Self::detect()` and pass
@@ -283,9 +426,10 @@ pub(crate) trait RowKernel {
     }
 }
 
-/// Portable u8 RGB -> f32 staging through `lut`, planar or (`rgbx`)
-/// interleaved with a zero fourth lane: the body of
-/// [`RowKernel::stage_x3_u8`] for kernels without a faster lookup.
+/// Portable u8 RGB staging through `lut` (f32 values, or f16 bits for
+/// the half-precision path), planar or (`rgbx`) interleaved with a zero
+/// fourth lane: the body of [`RowKernel::stage_x3_u8`] and
+/// [`RowKernel::stage_x3_u8_half`] for kernels without a faster lookup.
 //
 // SAFETY: caller must pass `row.len() >= 3 * w` and `stage.len() >= w * 4`
 // (`rgbx`) or `>= w * 3` (planar). The `get_unchecked` indices are bounded
@@ -297,10 +441,10 @@ pub(crate) trait RowKernel {
 // save is the byte loads, so four pixels' bytes come in as one u64 and one
 // u32 and are split in registers (-22% on an M2 Max, -7% on Zen 4).
 #[inline(always)]
-pub(crate) unsafe fn stage_x3_u8_words(
+pub(crate) unsafe fn stage_x3_u8_words<T: Copy + Default>(
     row: &[u8],
-    lut: &[f32; 256],
-    stage: &mut [f32],
+    lut: &[T; 256],
+    stage: &mut [T],
     w: usize,
     rgbx: bool,
 ) {
@@ -332,7 +476,7 @@ pub(crate) unsafe fn stage_x3_u8_words(
                     o[0] = *lut.get_unchecked(v[3 * k]);
                     o[1] = *lut.get_unchecked(v[3 * k + 1]);
                     o[2] = *lut.get_unchecked(v[3 * k + 2]);
-                    o[3] = 0.0;
+                    o[3] = T::default();
                 }
                 x0 += 4;
             }
@@ -340,7 +484,7 @@ pub(crate) unsafe fn stage_x3_u8_words(
                 *stage.get_unchecked_mut(x * 4) = lut[*row.get_unchecked(x * 3) as usize];
                 *stage.get_unchecked_mut(x * 4 + 1) = lut[*row.get_unchecked(x * 3 + 1) as usize];
                 *stage.get_unchecked_mut(x * 4 + 2) = lut[*row.get_unchecked(x * 3 + 2) as usize];
-                *stage.get_unchecked_mut(x * 4 + 3) = 0.0;
+                *stage.get_unchecked_mut(x * 4 + 3) = T::default();
             }
         } else {
             while x0 + 4 <= w {
@@ -387,6 +531,11 @@ pub(crate) struct StreamResize<K: RowKernel> {
     pending: usize,
     /// f32s between consecutive staged rows in the batch buffer.
     stage_row_stride: usize,
+    /// Rows are staged as f16 ([`RowKernel::half_u8`]); decided by the
+    /// first row, since a stream is fed u8 or u16 rows, never both.
+    half: bool,
+    /// The stream's u8 LUT as f16 bits at 1/65536 scale (half mode).
+    lut_h: [u16; 256],
     oy: usize,
     scratch: Scratch,
     _k: std::marker::PhantomData<K>,
@@ -458,6 +607,8 @@ impl<K: RowKernel> StreamResize<K> {
             next_row: 0,
             pending: 0,
             stage_row_stride,
+            half: false,
+            lut_h: [0; 256],
             oy: 0,
             scratch,
             _k: std::marker::PhantomData,
@@ -485,6 +636,7 @@ impl<K: RowKernel> StreamResize<K> {
     /// window is completed by this source row, in ascending `oy` order.
     pub(crate) fn push_row(&mut self, row: &[u16], emit: impl FnMut(usize, &[u16])) {
         assert!(row.len() >= self.src_w * self.channels, "short source row");
+        assert!(!self.half, "u16 row pushed into a u8 stream");
         if self.next_row >= self.last_needed {
             self.next_row += 1;
             return; // trailing rows influence nothing
@@ -513,7 +665,9 @@ impl<K: RowKernel> StreamResize<K> {
     /// Push the next source row as interleaved u8 RGB, staging through a
     /// u8 -> f32 lookup table (3-channel streams only). Values are
     /// bit-identical to applying the equivalent u16 LUT and calling
-    /// [`StreamResize::push_row`].
+    /// [`StreamResize::push_row`], except on kernels that run u8 streams
+    /// at half precision ([`RowKernel::half_u8`]), where they agree to
+    /// one 8-bit sRGB level.
     pub(crate) fn push_row_u8(
         &mut self,
         row: &[u8],
@@ -526,18 +680,43 @@ impl<K: RowKernel> StreamResize<K> {
             self.next_row += 1;
             return; // trailing rows influence nothing
         }
-        let base = self.pending * self.stage_row_stride;
-        let px = K::STAGE3_FLOATS_PER_PIXEL;
-        // SAFETY: as in push_row.
-        unsafe {
-            K::stage_x3_u8(
-                row,
-                lut,
-                &mut self.scratch.stage[base..base + self.src_w * px],
-                self.src_w,
-            );
+        if self.next_row == 0 && K::half_u8() {
+            self.half = true;
+            // f16 tops out at 65504, below the u16 range; the power-of-two
+            // scale is exact and the horizontal pass undoes it.
+            self.lut_h = std::array::from_fn(|i| f32_to_f16(lut[i] / 65536.0));
+        }
+        if self.half {
+            let n = self.half_row_stride();
+            let w = self.src_w;
+            let stage = &mut as_u16_mut(&mut self.scratch.stage)[self.pending * n..][..n];
+            // SAFETY: half_u8() held when `half` was set; the row slice is
+            // `3 * (w + stride) >= 3 * w` long.
+            unsafe { K::stage_x3_u8_half(row, &self.lut_h, &mut stage[..3 * w], w) };
+            // The padded tap-blocks read past the last plane: keep those
+            // lanes finite (f32 leftovers read as f16 can be NaN, and a
+            // zero coefficient does not cancel a NaN).
+            stage[3 * w..].fill(0);
+        } else {
+            let base = self.pending * self.stage_row_stride;
+            let px = K::STAGE3_FLOATS_PER_PIXEL;
+            // SAFETY: as in push_row.
+            unsafe {
+                K::stage_x3_u8(
+                    row,
+                    lut,
+                    &mut self.scratch.stage[base..base + self.src_w * px],
+                    self.src_w,
+                );
+            }
         }
         self.after_stage(emit);
+    }
+
+    /// u16s between consecutive f16-staged rows: three planes plus the
+    /// tap-block slack, inside the f32 batch buffer's first half.
+    fn half_row_stride(&self) -> usize {
+        (self.src_w + self.wh.stride) * 3
     }
 
     /// Shared continuation after a row lands in the batch buffer: flush
@@ -608,11 +787,24 @@ impl<K: RowKernel> StreamResize<K> {
         for (i, slot) in slots.iter_mut().enumerate().take(self.pending) {
             *slot = ((first + i) % self.cap) * self.dst_w;
         }
+        let half_stride = self.half_row_stride();
         let s = &mut self.scratch;
         // SAFETY: constructor verified K::detect(); slice lengths include
         // the zero-coefficient slack the padded tap-blocks may read.
         unsafe {
-            if self.channels == 3 {
+            if self.half {
+                K::horiz_x3_batch_half(
+                    &as_u16(&s.stage)[..half_stride * self.pending],
+                    half_stride,
+                    self.pending,
+                    self.src_w,
+                    &self.wh,
+                    &mut s.ring[..],
+                    self.plane,
+                    &slots,
+                    self.dst_w,
+                );
+            } else if self.channels == 3 {
                 K::horiz_x3_batch(
                     &s.stage[..self.stage_row_stride * self.pending],
                     self.stage_row_stride,
@@ -941,7 +1133,37 @@ pub(crate) mod testkit {
                     via_u16[oy * dw * 3..(oy + 1) * dw * 3].copy_from_slice(out)
                 });
             }
-            assert_eq!(via_u8, via_u16, "{sw}x{sh}->{dw}x{dh} u8 staging");
+            if !K::half_u8() {
+                assert_eq!(via_u8, via_u16, "{sw}x{sh}->{dw}x{dh} u8 staging");
+                continue;
+            }
+            // Half precision: judged where a u8 stream lands, 8-bit sRGB.
+            let enc = |v: u16| {
+                let l = v as f64 / 65535.0;
+                let c = if l <= 0.0031308 {
+                    l * 12.92
+                } else {
+                    1.055 * l.powf(1.0 / 2.4) - 0.055
+                };
+                (c * 255.0).round() as i32
+            };
+            let (mut worst16, mut worst8, mut off8) = (0u16, 0i32, 0usize);
+            for (&x, &y) in via_u8.iter().zip(&via_u16) {
+                worst16 = worst16.max(x.abs_diff(y));
+                let d = (enc(x) - enc(y)).abs();
+                worst8 = worst8.max(d);
+                off8 += (d != 0) as usize;
+            }
+            // Measured on an M2 Max: worst 34 u16, 1 level, <= 1.3% off.
+            let label = format!("{sw}x{sh}->{dw}x{dh} half-precision u8 staging");
+            assert!(worst16 <= 48, "{label}: worst u16 diff {worst16}");
+            assert!(worst8 <= 1, "{label}: worst 8-bit diff {worst8}");
+            let allowed = (via_u8.len() / 50).max(1);
+            assert!(
+                off8 <= allowed,
+                "{label}: {off8} of {} off by a level",
+                via_u8.len()
+            );
         }
     }
 
@@ -1107,6 +1329,67 @@ pub(crate) mod testkit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn f16_conversion_round_trips_and_ties_to_even() {
+        for h in 0..0x7c00u16 {
+            for h in [h, h | 0x8000] {
+                assert_eq!(f32_to_f16(f16_to_f32(h)), h, "{h:#06x}");
+            }
+            if h == 0x7bff {
+                continue; // the next value up is infinity
+            }
+            // The midpoint to the next value (exact in f32) goes to the
+            // even neighbor; anything above it goes up.
+            let (a, b) = (f16_to_f32(h) as f64, f16_to_f32(h + 1) as f64);
+            let mid = ((a + b) / 2.0) as f32;
+            let even = if h & 1 == 0 { h } else { h + 1 };
+            assert_eq!(f32_to_f16(mid), even, "tie above {h:#06x}");
+            assert_eq!(
+                f32_to_f16(f32::from_bits(mid.to_bits() + 1)),
+                h + 1,
+                "above tie {h:#06x}"
+            );
+        }
+        assert_eq!(f32_to_f16(65520.0), 0x7c00, "rounds to infinity");
+        assert_eq!(
+            f32_to_f16(2f32.powi(-26)),
+            0,
+            "below half the smallest subnormal"
+        );
+    }
+
+    #[test]
+    fn f16_coefficients_keep_unit_dc_gain() {
+        for (i, o) in [
+            (2040, 512),
+            (2040, 683),
+            (1356, 340),
+            (333, 100),
+            (50, 120),
+            (17, 5),
+            (7, 4),
+        ] {
+            let w = Windows::new(i, o);
+            let h = w.coeffs_f16();
+            for x in 0..o {
+                let f32_sum: f64 = w.coeffs[x * w.stride..][..w.sizes[x]]
+                    .iter()
+                    .map(|&c| c as f64)
+                    .sum();
+                let taps = &h[x * w.stride..(x + 1) * w.stride];
+                let sum: f64 = taps.iter().map(|&t| f16_to_f32(t) as f64).sum();
+                assert!(
+                    (sum - f32_sum).abs() <= 2f64.powi(-13),
+                    "{i}->{o} window {x}: {sum}"
+                );
+                assert!(
+                    taps[w.sizes[x]..].iter().all(|&t| t == 0),
+                    "{i}->{o} padding"
+                );
+            }
+        }
+    }
 
     #[test]
     fn ring_capacity_invariant_holds_for_all_small_dimensions() {
