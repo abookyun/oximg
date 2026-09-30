@@ -23,6 +23,9 @@ use std::ptr;
 /// The APP2 marker code, which carries ICC profile chunks.
 pub(super) const JPEG_APP2: c_int = ffi::JPEG_APP0 as c_int + 2;
 
+/// Rows per `jpegli_write_scanlines` call, as the `jpegli` crate batched.
+const ROW_BATCH: usize = 16;
+
 /// One scan: components, spectral band, successive-approximation bits.
 const fn scan(comps: &[c_int], ss: c_int, se: c_int) -> ffi::jpegli_scan_info {
     let mut component_index = [0; 4];
@@ -180,20 +183,40 @@ impl JpegliEncoder {
         }
     }
 
-    /// Write whole RGB rows (`rows.len()` a multiple of `3 * w`).
+    /// Write whole RGB rows (`rows.len()` a multiple of `3 * w`), up to
+    /// [`ROW_BATCH`] per call into jpegli.
     pub(super) fn write_scanlines(&mut self, rows: &[u8]) -> std::io::Result<()> {
         let stride = self.cinfo.image_width as usize * 3;
         debug_assert_eq!(rows.len() % stride, 0);
-        for row in rows.chunks_exact(stride) {
-            let ptrs = [row.as_ptr()];
-            // SAFETY: started encoder, one row of `stride` bytes that
-            // jpegli only reads.
-            let n = unsafe { ffi::jpegli_write_scanlines(&mut self.cinfo, ptrs.as_ptr(), 1) };
-            if n != 1 {
-                return Err(std::io::ErrorKind::UnexpectedEof.into());
+        let mut ptrs = [ptr::null(); ROW_BATCH];
+        let mut pending = rows.chunks_exact(stride);
+        loop {
+            let mut n = 0;
+            for (p, row) in ptrs.iter_mut().zip(&mut pending) {
+                *p = row.as_ptr();
+                n += 1;
+            }
+            if n == 0 {
+                return Ok(());
+            }
+            let mut done = 0;
+            while done < n {
+                // SAFETY: started encoder; `ptrs[done..n]` point at rows of
+                // `stride` bytes that jpegli only reads.
+                let wrote = unsafe {
+                    ffi::jpegli_write_scanlines(
+                        &mut self.cinfo,
+                        ptrs[done..].as_ptr(),
+                        (n - done) as ffi::JDIMENSION,
+                    )
+                } as usize;
+                // Zero only once the image already holds every row.
+                if wrote == 0 {
+                    return Err(std::io::ErrorKind::UnexpectedEof.into());
+                }
+                done += wrote;
             }
         }
-        Ok(())
     }
 
     /// Finish the image and return the JPEG bytes.
@@ -234,18 +257,21 @@ mod tests {
         out
     }
 
-    /// Marker codes in order, walking segment lengths and skipping
-    /// entropy-coded data (stuffed 0xFF00 and RSTn are not markers).
-    fn markers(jpeg: &[u8]) -> Vec<u8> {
+    /// Marker segments in order as (code, payload), walking segment
+    /// lengths and skipping entropy-coded data (stuffed 0xFF00 and RSTn
+    /// are not markers).
+    fn segments(jpeg: &[u8]) -> Vec<(u8, &[u8])> {
         let mut out = Vec::new();
         let mut i = 2;
         while i + 1 < jpeg.len() {
             let m = jpeg[i + 1];
-            out.push(m);
             if m == 0xD9 {
+                out.push((m, &jpeg[..0]));
                 break;
             }
-            i += 2 + usize::from(u16::from_be_bytes([jpeg[i + 2], jpeg[i + 3]]));
+            let len = usize::from(u16::from_be_bytes([jpeg[i + 2], jpeg[i + 3]]));
+            out.push((m, &jpeg[i + 4..i + 2 + len]));
+            i += 2 + len;
             if m == 0xDA {
                 while !(jpeg[i] == 0xFF
                     && jpeg[i + 1] != 0
@@ -281,14 +307,58 @@ mod tests {
         assert_ne!(prog, base);
         assert!(decode(&prog) == decode(&base), "scan script changed pixels");
 
-        let m = markers(&prog);
-        assert!(m.contains(&0xC2), "not progressive: {m:x?}");
-        assert_eq!(m.iter().filter(|&&c| c == 0xDA).count(), SCAN_SCRIPT.len());
-        assert!(m.contains(&0xE2), "APP2 missing: {m:x?}");
-        let m = markers(&base);
+        let seg = segments(&prog);
+        let codes: Vec<u8> = seg.iter().map(|s| s.0).collect();
+        assert!(codes.contains(&0xE2), "APP2 missing: {codes:x?}");
+        // SOF2 lists (component id, sampling, table) triples after
+        // precision, height, width and the component count.
+        let sof = seg.iter().find(|s| s.0 == 0xC2).expect("not progressive").1;
+        let ids: Vec<u8> = sof[6..].chunks(3).map(|c| c[0]).collect();
+        // Each SOS as (component indices, Ss, Se, Ah, Al): SCAN_SCRIPT,
+        // spelled out so a change to it has to change this too.
+        let scans: Vec<(Vec<usize>, u8, u8, u8, u8)> = seg
+            .iter()
+            .filter(|s| s.0 == 0xDA)
+            .map(|(_, p)| {
+                let ns = usize::from(p[0]);
+                let comps = (0..ns)
+                    .map(|k| ids.iter().position(|&id| id == p[1 + 2 * k]).unwrap())
+                    .collect();
+                let t = &p[1 + 2 * ns..];
+                (comps, t[0], t[1], t[2] >> 4, t[2] & 15)
+            })
+            .collect();
+        let want: Vec<(Vec<usize>, u8, u8, u8, u8)> = vec![
+            (vec![0, 1, 2], 0, 0, 0, 0),
+            (vec![0], 1, 2, 0, 0),
+            (vec![0], 3, 10, 0, 0),
+            (vec![0], 11, 63, 0, 0),
+            (vec![1], 1, 2, 0, 0),
+            (vec![1], 3, 63, 0, 0),
+            (vec![2], 1, 2, 0, 0),
+            (vec![2], 3, 63, 0, 0),
+        ];
+        assert_eq!(scans, want);
+
+        let seg = segments(&base);
         // jpegli's sequential output is SOF1 (extended), not SOF0.
-        assert!(m.contains(&0xC1), "not sequential: {m:x?}");
-        assert_eq!(m.iter().filter(|&&c| c == 0xDA).count(), 1);
+        assert!(seg.iter().any(|s| s.0 == 0xC1), "not sequential");
+        assert_eq!(seg.iter().filter(|s| s.0 == 0xDA).count(), 1);
+    }
+
+    /// Batching must not depend on how the caller slices the rows: the
+    /// whole frame at once (serial path) and one row at a time (fused
+    /// path) produce the same file.
+    #[test]
+    fn write_granularity_does_not_change_bytes() {
+        let (px, w, h) = frame();
+        let whole = encode(&px, w, h, true);
+        let mut enc = JpegliEncoder::new(w, h, 85.0, true);
+        enc.write_marker(JPEG_APP2, b"not an icc profile");
+        for row in px.chunks_exact(w * 3) {
+            enc.write_scanlines(row).unwrap();
+        }
+        assert!(enc.finish() == whole);
     }
 
     #[test]
