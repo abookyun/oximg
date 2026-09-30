@@ -637,7 +637,10 @@ mod tests {
             let bits = (x as u32 & 0x807f_ffff) | ((90 + (x >> 32) as u32 % 60) << 23);
             let v = f32::from_bits(bits);
             let h: f32;
-            // SAFETY: scalar FCVT to half is baseline aarch64 FP; writing
+            // SAFETY: scalar FCVT between single and half is baseline
+            // ARMv8.0 FP (FEAT_FP16 adds half *arithmetic*, not this
+            // conversion), so no runtime check is needed; it also
+            // assembles here without an fp16 target feature. Writing
             // `h0` zeroes the rest of the register, so the f32 view's low
             // 16 bits are the half.
             unsafe {

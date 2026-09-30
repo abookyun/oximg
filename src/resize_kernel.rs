@@ -1154,11 +1154,16 @@ pub(crate) mod testkit {
                 worst8 = worst8.max(d);
                 off8 += (d != 0) as usize;
             }
-            // Measured on an M2 Max: worst 34 u16, 1 level, <= 1.3% off.
+            // Measured on an M2 Max: worst 26 u16, 1 level, at most 1.02%
+            // of samples off (640x480 -> 512x384: 0.92%) beyond the
+            // one-sample floor the tiny shapes need. FMLAL is IEEE with a
+            // fixed order, so these are the same on any FEAT_FHM core;
+            // the bounds (32, 1.25%) only leave room for coefficient-table
+            // tweaks.
             let label = format!("{sw}x{sh}->{dw}x{dh} half-precision u8 staging");
-            assert!(worst16 <= 48, "{label}: worst u16 diff {worst16}");
+            assert!(worst16 <= 32, "{label}: worst u16 diff {worst16}");
             assert!(worst8 <= 1, "{label}: worst 8-bit diff {worst8}");
-            let allowed = (via_u8.len() / 50).max(1);
+            let allowed = (via_u8.len() / 80).max(1);
             assert!(
                 off8 <= allowed,
                 "{label}: {off8} of {} off by a level",

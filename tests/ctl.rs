@@ -812,3 +812,89 @@ fn serve_prints_ready_json_and_reaps_the_child() {
         "oximg child {oximg_pid} still running after wrapper exit"
     );
 }
+
+/// Subsampled chroma is replicated (libjpeg's merged upsampler) when the
+/// resize reduces and triangle-filtered at 1:1. A 4:2:0 source whose
+/// chroma alternates at its own Nyquist rate (constant luma, Cb +-40 per
+/// chroma column) separates the two: the triangle filter maps it to
+/// exactly half the amplitude, replication keeps all of it, and a mild
+/// Lanczos reduction passes that frequency almost untouched.
+#[test]
+fn jpeg_chroma_is_replicated_when_reducing_and_filtered_at_one_to_one() {
+    let (w, h) = (256usize, 32usize);
+    // YCbCr (128, 128 +- 40, 128) in RGB; 2-pixel runs so the encoder's
+    // 2x2 box downsample lands exactly on +-40.
+    let px: Vec<u8> = (0..w * h)
+        .flat_map(|i| {
+            if (i % w) / 2 % 2 == 0 {
+                [128, 114, 199]
+            } else {
+                [128, 142, 57]
+            }
+        })
+        .collect();
+    let mut comp = mozjpeg::Compress::new(mozjpeg::ColorSpace::JCS_RGB);
+    comp.set_size(w, h);
+    comp.set_quality(100.0);
+    let mut started = comp.start_compress(Vec::new()).unwrap();
+    started.write_scanlines(&px).unwrap();
+    let jpg = started.finish().unwrap();
+
+    let dir = std::env::temp_dir().join(format!("oximg-ctl-chroma-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("chroma.jpg"), &jpg).unwrap();
+    let get = |path: &str, tag: &str| -> (usize, Vec<u8>) {
+        let out = dir.join(format!("{tag}.png"));
+        let (code, v) = run(&[
+            "--images-dir",
+            dir.to_str().unwrap(),
+            "get",
+            path,
+            "--expect",
+            "200",
+            "--write",
+            out.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "{v}");
+        let mut r = png::Decoder::new(std::io::Cursor::new(std::fs::read(&out).unwrap()))
+            .read_info()
+            .unwrap();
+        let mut buf = vec![0; r.output_buffer_size().unwrap()];
+        let info = r.next_frame(&mut buf).unwrap();
+        assert_eq!(info.color_type, png::ColorType::Rgb, "{path}");
+        buf.truncate(info.buffer_size());
+        (info.width as usize, buf)
+    };
+    // Mean |B - mean B| along the middle row, away from the edges.
+    let amplitude = |ow: usize, rgb: &[u8]| -> f64 {
+        let row = &rgb[rgb.len() / 2 / (ow * 3) * ow * 3..][..ow * 3];
+        let b: Vec<f64> = row[8 * 3..(ow - 8) * 3]
+            .iter()
+            .skip(2)
+            .step_by(3)
+            .map(|&v| v as f64)
+            .collect();
+        let mean = b.iter().sum::<f64>() / b.len() as f64;
+        b.iter().map(|v| (v - mean).abs()).sum::<f64>() / b.len() as f64
+    };
+
+    let (w11, same) = get("/resize/256/32/chroma.jpg@png", "same");
+    let (wr, reduced) = get("/resize/224/28/chroma.jpg@png", "reduced");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!((w11, wr), (256, 224));
+
+    // 1:1 is the plain libjpeg decode, triangle filter included.
+    let mut dec = mozjpeg::Decompress::new_mem(&jpg).unwrap().rgb().unwrap();
+    let fancy: Vec<u8> = dec.read_scanlines().unwrap();
+    assert!(
+        same == fancy,
+        "1:1 must equal libjpeg's default (fancy) decode"
+    );
+
+    let (a11, ar) = (amplitude(w11, &same), amplitude(wr, &reduced));
+    assert!(
+        ar > 1.5 * a11,
+        "reduced chroma amplitude {ar:.1} vs 1:1 {a11:.1}: expected replication (~2x)"
+    );
+}
