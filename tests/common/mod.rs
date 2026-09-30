@@ -236,6 +236,43 @@ pub fn jpeg_icc(b: &[u8]) -> Option<Vec<u8>> {
     (!out.is_empty()).then_some(out)
 }
 
+/// One JPEG scan as (component indices, Ss, Se, Ah, Al).
+pub type Scan = (Vec<usize>, u8, u8, u8, u8);
+
+/// A JPEG's SOF marker code and its scans, walked independently of the
+/// encoder: SOS component ids are mapped back to their index in the SOF
+/// component list, and entropy-coded data is skipped up to the next
+/// real marker (stuffed 0xFF00 and RSTn are not).
+pub fn jpeg_scans(b: &[u8]) -> (u8, Vec<Scan>) {
+    let (mut sof, mut ids, mut scans) = (0, Vec::new(), Vec::new());
+    let mut i = 2;
+    while i + 4 <= b.len() && b[i + 1] != 0xD9 {
+        let m = b[i + 1];
+        let len = u16::from_be_bytes([b[i + 2], b[i + 3]]) as usize;
+        let body = &b[i + 4..i + 2 + len];
+        i += 2 + len;
+        match m {
+            0xC0..=0xC3 => {
+                sof = m;
+                ids = body[6..].chunks(3).map(|c| c[0]).collect();
+            }
+            0xDA => {
+                let ns = body[0] as usize;
+                let comps = (0..ns)
+                    .map(|k| ids.iter().position(|&id| id == body[1 + 2 * k]).unwrap())
+                    .collect();
+                let t = &body[1 + 2 * ns..];
+                scans.push((comps, t[0], t[1], t[2] >> 4, t[2] & 15));
+                while !(b[i] == 0xFF && b[i + 1] != 0 && !(0xD0..=0xD7).contains(&b[i + 1])) {
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    (sof, scans)
+}
+
 /// Read the iCCP profile from a PNG via the png crate.
 pub fn png_icc(b: &[u8]) -> Option<Vec<u8>> {
     let r = png::Decoder::new(std::io::Cursor::new(b))
