@@ -25,6 +25,11 @@ HTTP interface without notice.
   to place a buffer. Output is bit-identical. On DIV2K (Zen 4) server
   cycles per request drop 4% at fit 1024 and 3% at 512; neutral on
   Apple M2.
+- **The x86 horizontal resize pass stores four pixels at a time**:
+  results are transposed into one vector store per color plane instead
+  of three scalar stores per pixel. Output is bit-identical. On DIV2K
+  (Zen 4) server cycles per request drop 2.5% at fit 1024 and 0.8% at
+  512.
 - **An unknown `OXIMG_PNG_EFFORT` no longer refuses to boot** ([#46]).
   Like `OXIMG_LOG` since 0.12.0, it now warns on stderr and encodes as
   if unset, where it used to exit 2: effort trades encode time against
