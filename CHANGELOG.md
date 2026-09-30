@@ -25,9 +25,11 @@ HTTP interface without notice.
   to place a buffer. Output is bit-identical. On DIV2K (Zen 4) server
   cycles per request drop 4% at fit 1024 and 3% at 512; neutral on
   Apple M2.
-- **The x86 horizontal resize pass stores four pixels at a time**:
+- **The AVX2 horizontal resize pass for RGB stores four pixels at a
+  time** (x86 CPUs without the Intel AVX-512 path, such as AMD Zen):
   results are transposed into one vector store per color plane instead
-  of three scalar stores per pixel. Output is bit-identical. On DIV2K
+  of three scalar stores per pixel. The AVX-512 and RGBA paths are
+  unchanged. Output is bit-identical. On DIV2K
   (Zen 4) server cycles per request drop 2.5% at fit 1024 and 0.8% at
   512.
 - **An unknown `OXIMG_PNG_EFFORT` no longer refuses to boot** ([#46]).
