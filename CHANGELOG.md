@@ -20,6 +20,11 @@ HTTP interface without notice.
   request drops 15% at fit 1024, 11% at 512 and 3% at 256, for files
   +0.69%, +0.43% and -0.03% larger. The library now links `jpegli-sys`
   directly instead of the `jpegli` crate.
+- **The resize's work buffers are cache-line aligned**, so the SIMD
+  loads stop straddling two cache lines wherever the allocator happened
+  to place a buffer. Output is bit-identical. On DIV2K (Zen 4) server
+  cycles per request drop 4% at fit 1024 and 3% at 512; neutral on
+  Apple M2.
 - **An unknown `OXIMG_PNG_EFFORT` no longer refuses to boot** ([#46]).
   Like `OXIMG_LOG` since 0.12.0, it now warns on stderr and encodes as
   if unset, where it used to exit 2: effort trades encode time against
