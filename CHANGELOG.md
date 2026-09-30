@@ -17,7 +17,7 @@ HTTP interface without notice.
   refinement scans. Decoded pixels are unchanged — a scan script only
   reorders the same coefficients — but the bytes differ, so anything
   that caches responses by content hash turns over once. On DIV2K (Zen 4) server CPU per
-  request drops 15% at fit 1024, 8% at 512 and 3% at 256, for files
+  request drops 15% at fit 1024, 11% at 512 and 3% at 256, for files
   +0.69%, +0.43% and -0.03% larger. The library now links `jpegli-sys`
   directly instead of the `jpegli` crate.
 - **An unknown `OXIMG_PNG_EFFORT` no longer refuses to boot** ([#46]).

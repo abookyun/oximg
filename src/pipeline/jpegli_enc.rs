@@ -9,7 +9,7 @@
 //! only splits the spectrum. A scan script is a lossless reordering of
 //! the same quantized coefficients, so decoded pixels are unchanged.
 //! Measured on DIV2K (Zen 4), server CPU per request against level 2:
-//! -15% at fit 1024, -8% at 512, -3% at 256, for files +0.69%, +0.43%
+//! -15% at fit 1024, -11% at 512, -3% at 256, for files +0.69%, +0.43%
 //! and -0.03% larger.
 //!
 //! Errors unwind out of the C code as panics, like the mozjpeg and
