@@ -67,14 +67,14 @@ impl RowKernel for Avx2 {
     }
     unsafe fn horiz_x3(
         stage: &[f32],
-        _src_w: usize,
+        src_w: usize,
         w: &Windows,
         ring: &mut [f32],
         plane: usize,
         slot: usize,
         dst_w: usize,
     ) {
-        unsafe { horiz_rows_x3::<1>(stage, 0, w, ring, plane, &[slot, 0, 0, 0], dst_w) }
+        unsafe { Self::horiz_x3_batch(stage, 0, 1, src_w, w, ring, plane, &[slot, 0, 0, 0], dst_w) }
     }
     unsafe fn horiz_x4(
         stage: &[f32],
@@ -107,6 +107,15 @@ impl RowKernel for Avx2 {
         dst_w: usize,
     ) {
         unsafe {
+            if wide_horiz() {
+                return match n {
+                    0 => {}
+                    4 => horiz_rows_x3_512::<4>(stage, row_stride, w, ring, plane, slots, dst_w),
+                    3 => horiz_rows_x3_512::<3>(stage, row_stride, w, ring, plane, slots, dst_w),
+                    2 => horiz_rows_x3_512::<2>(stage, row_stride, w, ring, plane, slots, dst_w),
+                    _ => horiz_rows_x3_512::<1>(stage, row_stride, w, ring, plane, slots, dst_w),
+                };
+            }
             // An empty batch is a no-op, as in the default body.
             match n {
                 0 => {}
@@ -185,6 +194,28 @@ unsafe fn stage_row_x3(row: &[u16], stage: &mut [f32], w: usize) {
             x += 1;
         }
     }
+}
+
+/// AVX-512F (Skylake-SP / Zen 4 and later); std caches the CPUID result.
+fn avx512f_detected() -> bool {
+    std::arch::is_x86_feature_detected!("avx512f")
+}
+
+/// Whether the 3-channel horizontal pass runs on 512-bit vectors: only on
+/// Intel. Measured on the 2040 -> 512/683/256 bench: Sapphire Rapids
+/// (c7i) gains 5/2/11% and Granite Rapids (c8i) 4/1/12%, while Zen 4,
+/// which splits each 512-bit op in two, loses 6-10%. Zen 5 has
+/// full-width units but is unmeasured.
+fn wide_horiz() -> bool {
+    static WIDE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *WIDE.get_or_init(|| {
+        // SAFETY: CPUID leaf 0 exists on every x86-64 CPU. (Newer toolchains make
+        // `__cpuid` safe; the block keeps the MSRV building.)
+        #[allow(unused_unsafe)]
+        let v = unsafe { std::arch::x86_64::__cpuid(0) };
+        let intel = (v.ebx, v.edx, v.ecx) == (0x756e_6547, 0x4965_6e69, 0x6c65_746e);
+        intel && avx512f_detected()
+    })
 }
 
 /// AVX-512 VBMI (Ice Lake / Zen 4 and later) turns the u8 staging lookup
@@ -400,6 +431,59 @@ unsafe fn horiz_rows_x3<const N: usize>(
                 );
                 let mut out = [0f32; 4];
                 _mm_storeu_ps(out.as_mut_ptr(), acc);
+                ring[slots[r] + ox] = out[0];
+                ring[plane + slots[r] + ox] = out[1];
+                ring[2 * plane + slots[r] + ox] = out[2];
+            }
+        }
+    }
+}
+
+/// [`horiz_rows_x3`] on 512-bit vectors: one load covers the four pixels
+/// of a tap block and one FMA applies all four taps, where AVX2 splits
+/// them across two accumulators (taps 0-1, taps 2-3). Every lane sees the
+/// same FMA sequence as there, and the final reduction is the same
+/// `(tap0 + tap1) + (tap2 + tap3)`, so the output is bit-identical.
+#[target_feature(enable = "avx512f")]
+// SAFETY: requires AVX-512F. Loads cover the same pixels
+// [start, start + padded) of each row r < N as `horiz_rows_x3` (one 16-f32
+// load instead of two 8-f32 loads), under the same row contract.
+unsafe fn horiz_rows_x3_512<const N: usize>(
+    stage: &[f32],
+    row_stride: usize,
+    w: &Windows,
+    ring: &mut [f32],
+    plane: usize,
+    slots: &[usize; 4],
+    dst_w: usize,
+) {
+    unsafe {
+        use std::arch::x86_64::*;
+        let idx = _mm512_setr_epi32(0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3);
+        for ox in 0..dst_w {
+            let start = w.starts[ox];
+            let padded = w.sizes[ox].div_ceil(4) * 4;
+            let coeffs = &w.coeffs[ox * w.stride..ox * w.stride + padded];
+
+            let mut acc = [_mm512_setzero_ps(); N];
+            let mut k = 0usize;
+            while k < padded {
+                let c4 = _mm512_castps128_ps512(_mm_loadu_ps(coeffs.as_ptr().add(k)));
+                let c = _mm512_permutexvar_ps(idx, c4);
+                for (r, a) in acc.iter_mut().enumerate() {
+                    let base = stage.as_ptr().add(r * row_stride + (start + k) * 4);
+                    *a = _mm512_fmadd_ps(_mm512_loadu_ps(base), c, *a);
+                }
+                k += 4;
+            }
+            for r in 0..N {
+                let g0 = _mm512_castps512_ps128(acc[r]);
+                let g1 = _mm512_extractf32x4_ps::<1>(acc[r]);
+                let g2 = _mm512_extractf32x4_ps::<2>(acc[r]);
+                let g3 = _mm512_extractf32x4_ps::<3>(acc[r]);
+                let s = _mm_add_ps(_mm_add_ps(g0, g1), _mm_add_ps(g2, g3));
+                let mut out = [0f32; 4];
+                _mm_storeu_ps(out.as_mut_ptr(), s);
                 ring[slots[r] + ox] = out[0];
                 ring[plane + slots[r] + ox] = out[1];
                 ring[2 * plane + slots[r] + ox] = out[2];
@@ -701,6 +785,96 @@ mod tests {
             return;
         }
         testkit::assert_horiz_batch_matches_single::<Avx2>();
+    }
+
+    /// Staged RGBX rows of xorshift u16 values with the kernel's slack.
+    fn rgbx_rows(sw: usize, rows: usize, w: &Windows) -> (Vec<f32>, usize) {
+        let rs = (sw + w.stride) * 4;
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut stage = vec![0f32; rows * rs];
+        for y in 0..rows {
+            for i in 0..sw {
+                for c in 0..3 {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    stage[y * rs + i * 4 + c] = (x % 65536) as f32;
+                }
+            }
+        }
+        (stage, rs)
+    }
+
+    #[test]
+    fn horiz_512_matches_avx2_bit_for_bit() {
+        if !detected() || !avx512f_detected() {
+            eprintln!("skipping: host lacks avx512f");
+            return;
+        }
+        for (sw, dw) in [
+            (2040usize, 512usize),
+            (2040, 683),
+            (333, 100),
+            (50, 120),
+            (17, 5),
+            (7, 4),
+            (1, 1),
+        ] {
+            let w = Windows::new(sw, dw);
+            let (stage, rs) = rgbx_rows(sw, 4, &w);
+            let slots: [usize; 4] = std::array::from_fn(|i| i * dw);
+            let plane = 4 * dw;
+            let (mut a, mut b) = (vec![0f32; 3 * plane], vec![0f32; 3 * plane]);
+            // SAFETY: AVX2+FMA and AVX-512F checked above; four rows staged
+            // with the kernel's slack.
+            unsafe {
+                horiz_rows_x3::<4>(&stage, rs, &w, &mut a, plane, &slots, dw);
+                horiz_rows_x3_512::<4>(&stage, rs, &w, &mut b, plane, &slots, dw);
+            }
+            let (ab, bb): (Vec<u32>, Vec<u32>) = (
+                a.iter().map(|v| v.to_bits()).collect(),
+                b.iter().map(|v| v.to_bits()).collect(),
+            );
+            assert_eq!(ab, bb, "{sw}->{dw}");
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn horiz_512_bench() {
+        if !detected() || !avx512f_detected() {
+            return;
+        }
+        for (sw, dw) in [(2040usize, 512usize), (2040, 683), (2040, 256)] {
+            let rows = 1356;
+            let w = Windows::new(sw, dw);
+            let (stage, rs) = rgbx_rows(sw, rows, &w);
+            let slots: [usize; 4] = std::array::from_fn(|i| i * dw);
+            let plane = 4 * dw;
+            let mut ring = vec![0f32; 3 * plane];
+            for wide in [false, true] {
+                let mut best = f64::MAX;
+                for _ in 0..15 {
+                    let t = std::time::Instant::now();
+                    for y in (0..rows).step_by(4) {
+                        let s = std::hint::black_box(&stage[y * rs..]);
+                        // SAFETY: features checked above; rows y..y + 4 staged.
+                        unsafe {
+                            if wide {
+                                horiz_rows_x3_512::<4>(s, rs, &w, &mut ring, plane, &slots, dw)
+                            } else {
+                                horiz_rows_x3::<4>(s, rs, &w, &mut ring, plane, &slots, dw)
+                            }
+                        }
+                    }
+                    best = best.min(t.elapsed().as_secs_f64() * 1e3);
+                }
+                println!(
+                    "{sw}->{dw} {}: {best:.3} ms",
+                    if wide { "avx512" } else { "avx2" }
+                );
+            }
+        }
     }
 
     #[test]
