@@ -1069,6 +1069,7 @@ dependencies = [
  "gif",
  "hmac",
  "jpegli",
+ "jpegli-sys",
  "libwebp-sys",
  "mimalloc",
  "moxcms",

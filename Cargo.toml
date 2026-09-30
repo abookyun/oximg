@@ -27,7 +27,9 @@ mozjpeg = "0.10"
 fast_image_resize = "5"
 anyhow = "1"
 mimalloc = { version = "0.1.52", optional = true }
-jpegli = "0.1.0"
+# The libjpeg-style API directly: the `jpegli` crate cannot set a
+# progressive scan script (see src/pipeline/jpegli_enc.rs).
+jpegli-sys = "0.1.0"
 # Already in the tree via axum's default `json` feature; declared here so
 # the gs:// source path can parse token responses without hand-rolling JSON.
 serde_json = { version = "1", optional = true }
@@ -51,6 +53,8 @@ quantette = { version = "0.6", default-features = false }
 ureq = "3.3.0"
 # oximg-ctl prints one JSON object per command; the ctl suite parses it.
 serde_json = "1"
+# The decode_bench example's jpegli decoder.
+jpegli = "0.1.0"
 
 [profile.release]
 lto = true

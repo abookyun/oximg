@@ -12,6 +12,14 @@ HTTP interface without notice.
 
 ### Changed
 
+- **Progressive jpegli output uses oximg's own scan script**: DC, then
+  AC split into spectral bands, with no successive-approximation
+  refinement scans. Decoded pixels are unchanged — a scan script only
+  reorders the same coefficients — but the bytes differ, so anything
+  that caches responses by content hash turns over once. On DIV2K (Zen 4) server CPU per
+  request drops 15% at fit 1024, 8% at 512 and 3% at 256, for files
+  +0.69%, +0.43% and -0.03% larger. The library now links `jpegli-sys`
+  directly instead of the `jpegli` crate.
 - **An unknown `OXIMG_PNG_EFFORT` no longer refuses to boot** ([#46]).
   Like `OXIMG_LOG` since 0.12.0, it now warns on stderr and encodes as
   if unset, where it used to exit 2: effort trades encode time against

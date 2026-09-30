@@ -189,20 +189,14 @@ pub(super) fn fused_resize_encode<R: std::io::BufRead>(
             let back = back_lut();
             let mut row8 = vec![0u8; dst_w * 3];
 
-            let mut comp = jpegli::Compress::new(jpegli::ColorSpace::JCS_RGB);
-            comp.set_size(dst_w, dst_h);
-            comp.set_quality(quality);
             // Mirrors encode_jpegli (including the progressive knob).
-            if jpegli_progressive() {
-                comp.set_progressive_mode();
-            }
-            let mut enc = comp.start_compress(Vec::with_capacity(64 * 1024))?;
+            let mut enc = JpegliEncoder::new(dst_w, dst_h, quality, jpegli_progressive());
             // Same chunker, same position as encode_jpegli: the profile
             // precedes the scanlines, so fused output stays
             // byte-identical to the serial encoder.
             if let Some(icc) = icc {
                 for chunk in icc_app2_chunks(icc) {
-                    enc.write_marker(jpegli::Marker::APP(2), &chunk);
+                    enc.write_marker(JPEG_APP2, &chunk);
                 }
             }
 
@@ -227,9 +221,7 @@ pub(super) fn fused_resize_encode<R: std::io::BufRead>(
                 resizer.rows_emitted() == dst_h,
                 "decode ended before the image was complete"
             );
-            enc.finish()
-                .context("fused encode finish failed")
-                .context(ServerFault)
+            Ok(enc.finish())
         })?;
         Ok(out.map(|(decode_ms, bytes)| (bytes, decode_ms)))
     }
