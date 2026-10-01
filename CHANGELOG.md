@@ -61,8 +61,10 @@ HTTP interface without notice.
   two-row group into a spare buffer and copies a row out; with room
   for the group it writes straight into the destination. Output is
   bit-identical. On DIV2K (Zen 4) at fit 512, server time per request
-  drops about 4% at full decode; unchanged with `OXIMG_DCT_MARGIN`
-  set and on a 7360x4912 source. The decoder now runs through an
+  drops about 4% at full decode. It is unchanged in two measured
+  cases: `OXIMG_DCT_MARGIN=1.7`, which decodes these sources at half
+  size where there is no spare row to copy, and a 7360x4912 source.
+  The decoder now runs through an
   in-tree wrapper over `mozjpeg-sys` (`src/pipeline/jpeg_dec.rs`); the
   `mozjpeg` crate remains for the `PRESET=fast|small` encoders.
 - **An unknown `OXIMG_PNG_EFFORT` no longer refuses to boot** ([#46]).
