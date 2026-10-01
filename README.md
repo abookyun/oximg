@@ -45,9 +45,11 @@ light at measurably higher output quality (see
   across the resample — the properties behind the SSIMULACRA2 scores in
   [Benchmarks](#benchmarks). Shrink-on-load is available
   (`OXIMG_DCT_MARGIN`) and off by default: it buys decode time with
-  quality, and libjpeg's reduced IDCT charges erratically for it — 13.4
-  SSIMULACRA2 points on a 5.3x downscale, for the same output size and
-  the same bytes.
+  quality. Against a lossless ground truth (100 DIV2K photographs,
+  linear-light reference), full decode scores best at every ratio from
+  2x to 14x, and the 3/8
+  scale the old default picked at 5.3x costs 6.4 SSIMULACRA2 points on
+  average, for the same output size and the same bytes.
 - **Performance as architecture, not flags**: per-arch row-streaming
   SIMD resize kernels (AVX2 on x86-64, NEON on aarch64, both verified
   against an f64 reference), JPEG decode fused with resize+encode on a
@@ -607,7 +609,7 @@ which makes it `OXIMG_MAX_ANIM_WORK`, not the canvas, that bounds it.
 | `OXIMG_RESIZE_BACKEND` | `kernel` | `fir` selects the portable fast_image_resize convolution instead of the platform SIMD kernel |
 | `OXIMG_OVERLAP` | `auto` | JPEG decode fused with resize+encode on a second thread (~-20% single-request latency); `auto` fuses while `2 x active requests <= visible CPUs`. Bytes are identical either way |
 | `OXIMG_PAR` | `1` | Resize threads per request |
-| `OXIMG_DCT_MARGIN` | unset | Decode-size headroom over the target: shrink-on-load, off by default. It is a **speed** knob. libjpeg's reduced IDCT is erratic per scale, so the cost is not graded: on a 5.3x downscale the 1.7 that used to be the default selects libjpeg's 3/8 scale, which measured 13.4 SSIMULACRA2 points below a full decode for the same output size and the same bytes, while 5/8 on the same image was optimal — and no single value avoids the bad scales at every ratio ([dct_sweep.py](bench/quality/dct_sweep.py)). Set it to trade quality for decode time on large sources. The **buffered** paths ignore the default and keep 1.7 — CMYK/YCCK JPEG and WebP stage a whole frame at the decode size, so there the shrink caps peak RSS (WebP 21.7 MB against 133.9 MB full-size) rather than costing throughput; an explicit value still applies to them |
+| `OXIMG_DCT_MARGIN` | unset | Decode-size headroom over the target: shrink-on-load, off by default. It is a **speed** knob. Scored against a lossless ground truth (100 DIV2K photographs, linear-light Lanczos reference, [dct_sweep.py](bench/quality/dct_sweep.py)), full decode is the best cell at every ratio from 2x to 14x. On a 5.3x downscale the 1.7 that used to be the default selects libjpeg's 3/8 scale: 6.4 SSIMULACRA2 points below a full decode on average, 42 on the worst image, for the same output size and the same bytes. The 1/2 scale costs 7.1 points at 2x and 2.7 at 4x. Only 6/8 stays within 0.5 at every ratio where it is reachable. Against an sRGB-space reference the 1/4 and 1/2 scales score higher than a full decode instead, so the reference decides that comparison ([#60](https://github.com/oximg/oximg/issues/60)). Set it to trade quality for decode time on large sources. The **buffered** paths ignore the default and keep 1.7 — CMYK/YCCK JPEG and WebP stage a whole frame at the decode size, so there the shrink caps peak RSS (WebP 21.7 MB against 133.9 MB full-size) rather than costing throughput; an explicit value still applies to them |
 | `OXIMG_WEBP_DECODE_THREADS` | `1` | `0` disables libwebp's two-thread decode pipelining |
 | `OXIMG_AVIF_DECODE_THREADS` | arch-dependent | dav1d workers: 2 on x86-64 (SMT absorbs the second thread), 1 on aarch64 |
 | `OXIMG_TIMING` | unset | Print per-stage timing lines to stderr |

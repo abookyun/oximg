@@ -246,22 +246,6 @@ fn fit_dims(src_w: usize, src_h: usize, max_w: u32, max_h: u32) -> (usize, usize
     )
 }
 
-/// Pick the smallest num (num/8 DCT scaling) whose decoded size stays at
-/// or above target size x margin. libjpeg's scaled size is
-/// ceil(dim * num / 8). `None` — the default — decodes at full size.
-///
-/// Shrink-on-load only ever costs quality, so it is off unless asked
-/// for. The old default (1.7) was chosen believing that ~2x of headroom
-/// let Lanczos recover what the DCT truncation dropped; a sweep of
-/// every reachable numerator over the quality corpus
-/// (bench/quality/dct_sweep.py) says otherwise. Full decode is the best
-/// cell or within 0.04 of it at every ratio measured, the penalty is
-/// erratic rather than graded — 3/8 measured 13.4 SSIMULACRA2 points
-/// below full decode at 5.3x while 5/8 on the same image was optimal —
-/// and no single margin dodges the bad scales everywhere: 3.0 fixes
-/// 5.3x and is worse than 1.7 at 4x. ImageMagick reproduces the same
-/// dips through its own jpeg:size hint, so this is libjpeg's reduced
-/// IDCT rather than anything here.
 /// The margin the *buffered* decode paths keep when the knob is unset.
 ///
 /// Where a whole frame is staged at the decode size — CMYK/YCCK JPEG,
@@ -276,6 +260,23 @@ fn fit_dims(src_w: usize, src_h: usize, max_w: u32, max_h: u32) -> (usize, usize
 /// such price and so defaults to no shrink at all.
 pub(crate) const BUFFERED_DCT_MARGIN: f64 = 1.7;
 
+/// Pick the smallest num (num/8 DCT scaling) whose decoded size stays at
+/// or above target size x margin. libjpeg's scaled size is
+/// ceil(dim * num / 8). `None` — the default — decodes at full size.
+///
+/// Against the linear-light reference the resize is built around,
+/// shrink-on-load only ever costs quality, so it is off unless asked
+/// for (an sRGB reference favors 1/4 and 1/2 instead; see issue #60).
+/// The old default (1.7) was chosen believing that ~2x of headroom
+/// let Lanczos recover what the DCT truncation dropped; a sweep of
+/// every reachable numerator against a lossless ground truth
+/// (bench/quality/dct_sweep.py, 100 DIV2K photographs, linear-light
+/// reference) says otherwise. Full decode is the best cell at every
+/// ratio from 2x to 14x, and only 6/8 stays within 0.5 SSIMULACRA2 of
+/// it at every ratio it reaches. 1/2 costs 7.1 points at 2x and 2.7 at
+/// 4x; 3/8, what 1.7 picks at 5.3x, costs 6.4. libjpeg's reduced IDCTs
+/// average in gamma space, which is what the linear-light resize
+/// exists to avoid.
 fn dct_scale_num(
     src_w: usize,
     src_h: usize,
