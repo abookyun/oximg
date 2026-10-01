@@ -24,6 +24,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "signal
 # connection instead of churning a pool.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"], optional = true }
 mozjpeg = "0.10"
+# The libjpeg API directly for decoding (src/pipeline/jpeg_dec.rs): the
+# crate above hides the decompress struct. Same build the crate links.
+mozjpeg-sys = "2.2"
 fast_image_resize = "5"
 anyhow = "1"
 mimalloc = { version = "0.1.52", optional = true }
@@ -59,8 +62,8 @@ jpegli = "0.1.0"
 [profile.release]
 lto = true
 codegen-units = 1
-# Note: panic = "abort" must NOT be set; the mozjpeg crate relies on
-# unwinding to handle libjpeg errors.
+# Note: panic = "abort" must NOT be set; the libjpeg error handlers (the
+# mozjpeg crate's and src/pipeline/jpeg_dec.rs) rely on unwinding.
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 pic-scale = "0.7"

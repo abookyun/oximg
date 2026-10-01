@@ -14,7 +14,7 @@ pub fn decode_and_resize(
     parallel: usize,
 ) -> Result<(Vec<u8>, usize, usize), super::Error> {
     // Unwind-guarded end to end: libjpeg reports fatal errors by
-    // unwinding out of mozjpeg's C error handler, at the header parse
+    // unwinding out of the decoder's C error handler, at the header parse
     // or any later stage (see panic_guard).
     crate::panic_guard::catch_unwind_as_error("JPEG decode", || {
         decode_and_resize_inner(jpeg, max_w, max_h, parallel)
@@ -203,7 +203,7 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
         // that is actually about to happen.
         let num = dct_scale_num(src_w, src_h, dst_w, dst_h, margin) as usize;
         let (dec_w, dec_h) = ((src_w * num).div_ceil(8), (src_h * num).div_ceil(8));
-        let comps = dec.components().len().max(1) as u64;
+        let comps = dec.num_components().max(1) as u64;
         let channels = if buffered { 4 } else { 3 };
         let mut cost = if buffered {
             // Staged whole (4-channel CMYK) and fed to the full-frame
@@ -236,7 +236,7 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
     let cs = dec.color_space();
     if matches!(cs, ColorSpace::JCS_CMYK | ColorSpace::JCS_YCCK) {
         let mut started = dec
-            .to_colorspace(ColorSpace::JCS_CMYK)
+            .start(ColorSpace::JCS_CMYK)
             .context("decode start failed")?;
         let (dec_w, dec_h) = (started.width(), started.height());
         scratch_u8(&mut s.chunk8, dec_w * dec_h * 4);

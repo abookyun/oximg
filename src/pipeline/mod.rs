@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use fast_image_resize::images::Image;
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
-use mozjpeg::{ColorSpace, Compress, Decompress};
+use jpeg_dec::{ColorSpace, Decompress};
+use mozjpeg::Compress;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -500,8 +501,8 @@ fn probe_inner(bytes: &[u8]) -> Result<(ImageFormat, usize, usize)> {
     let format = ImageFormat::sniff(&header).context("unsupported image format")?;
     match format {
         ImageFormat::Jpeg => {
-            // mozjpeg reports fatal libjpeg errors by unwinding out of
-            // its C error handler, so a malformed header is a panic,
+            // The decoder reports fatal libjpeg errors by unwinding out
+            // of its C error handler, so a malformed header is a panic,
             // not an Err — caught here so it classifies as undecodable
             // input (422) instead of taking the request, or under
             // panic=abort the process, down. Found by fuzzing: a
@@ -709,7 +710,7 @@ fn process_reader<R: std::io::BufRead>(
             // The whole JPEG decode is unwind-guarded, not just the
             // header parse: libjpeg signals fatal errors (bogus
             // Huffman tables, corrupt scan data) by unwinding out of
-            // mozjpeg's C error handler at whichever stage hits them,
+            // the decoder's C error handler at whichever stage hits them,
             // and every one of them is undecodable client input.
             ImageFormat::Jpeg => crate::panic_guard::catch_unwind_as_error("JPEG decode", || {
                 jpeg::process_jpeg(s, reader, target, p)
@@ -1646,6 +1647,7 @@ mod fuse;
 mod gcs;
 mod gif;
 mod jpeg;
+mod jpeg_dec;
 mod jpegli_enc;
 mod resolved;
 #[cfg(test)]
