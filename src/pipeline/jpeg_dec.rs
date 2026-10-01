@@ -37,6 +37,11 @@ pub(crate) struct Decompress<R> {
     src: *mut Source<R>,
 }
 
+/// The most rows handed to one `jpeg_read_scanlines` call: one iMCU
+/// row of 4:2:0 output at full scale (2 x 8). libjpeg may return fewer
+/// per call; the loop asks again.
+const ROWS_PER_CALL: usize = 16;
+
 /// A decoder past `jpeg_start_decompress`: output dimensions are
 /// final and scanlines can be read.
 pub(crate) struct DecompressStarted<R> {
@@ -156,6 +161,11 @@ impl<R> DecompressStarted<R> {
     /// Fill `dest` with whole output rows, returning it. `dest` must
     /// hold a whole number of rows; reading past the last row is an
     /// `UnexpectedEof` error.
+    ///
+    /// Rows are requested up to [`ROWS_PER_CALL`] at a time. Asked for
+    /// a single row, libjpeg's merged upsampler decodes its two-row
+    /// group into a spare buffer and copies a row out per call; handed
+    /// room for the group, it writes into `dest` directly.
     pub(crate) fn read_scanlines_into<'d>(
         &mut self,
         dest: &'d mut [u8],
@@ -171,17 +181,26 @@ impl<R> DecompressStarted<R> {
                 ),
             ));
         }
-        for row in dest.chunks_exact_mut(line) {
+        let rows = dest.len() / line;
+        let base = dest.as_mut_ptr();
+        let mut ptrs = [ptr::null_mut::<ffi::JSAMPLE>(); ROWS_PER_CALL];
+        let mut done = 0;
+        while done < rows {
             if cinfo.output_scanline >= cinfo.output_height {
                 return Err(io::ErrorKind::UnexpectedEof.into());
             }
-            let mut row_ptr = row.as_mut_ptr();
-            // SAFETY: one row pointer to `line` writable bytes, which is
-            // exactly one output scanline.
-            let read = unsafe { ffi::jpeg_read_scanlines(cinfo, &mut row_ptr, 1) };
+            let want = (rows - done).min(ROWS_PER_CALL);
+            for (i, p) in ptrs[..want].iter_mut().enumerate() {
+                // SAFETY: done + i < rows, so the row lies inside dest.
+                *p = unsafe { base.add((done + i) * line) };
+            }
+            // SAFETY: `want` pointers to disjoint `line`-byte rows of
+            // dest; libjpeg writes at most `want` rows.
+            let read = unsafe { ffi::jpeg_read_scanlines(cinfo, ptrs.as_mut_ptr(), want as _) };
             if read == 0 {
                 return Err(io::ErrorKind::UnexpectedEof.into());
             }
+            done += read as usize;
         }
         Ok(dest)
     }
@@ -532,6 +551,38 @@ mod tests {
             matches!(ours(&cases[0].1, rgb), Outcome::Unwind(ref m) if m.contains("libjpeg fatal error: ")),
             "a corrupt scan unwinds with libjpeg's message"
         );
+    }
+
+    #[test]
+    fn rows_per_call_never_changes_the_pixels() {
+        // Requests that split, match and span libjpeg's row groups,
+        // under both upsamplers (merged when fancy is off).
+        for (name, jpeg) in generated() {
+            for scale in [8, 4] {
+                for fancy in [true, false] {
+                    let decode = |rows: usize| {
+                        let mut dec = Decompress::new_mem(&jpeg).unwrap();
+                        dec.scale(scale);
+                        dec.do_fancy_upsampling(fancy);
+                        let mut started = dec.rgb().unwrap();
+                        let (w, h) = (started.width(), started.height());
+                        let mut px = vec![0u8; w * h * 3];
+                        for chunk in px.chunks_mut(w * 3 * rows) {
+                            started.read_scanlines_into(chunk).unwrap();
+                        }
+                        started.finish().unwrap();
+                        px
+                    };
+                    let one = decode(1);
+                    for rows in [2, 3, 15, 16, 17, 1000] {
+                        assert!(
+                            decode(rows) == one,
+                            "{name} scale={scale} fancy={fancy} rows={rows}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
