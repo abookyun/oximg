@@ -14,6 +14,9 @@ Lenient exceptions (the process still boots):
 - `GCE_METADATA_HOST` is read when fetching or refreshing the metadata
   token (including the startup credential probe), not snapshotted into
   `Config`
+- `GLIBC_TUNABLES` is glibc's, not ours: the server only checks whether
+  it names a `glibc.malloc.*` tunable, and if so leaves the allocator
+  alone
 
 Validated booleans are `0`/`1` only. Long form: [README Configuration](../../README.md#configuration).
 Pipeline knobs are pinned to that README **and this file** by
@@ -37,6 +40,7 @@ Pass extras to a spawned server with `oximg-ctl --env KEY=VAL …`.
 | `OXIMG_SOURCE_BASE_URL` | unset | `https://…` or `gs://bucket[/prefix]` |
 | `OXIMG_GCS_ENDPOINT` | GCS default | Emulator / PSC; read per `gs://` request, not fail-closed at boot |
 | `GCE_METADATA_HOST` | Google metadata | GCS auth emulator / PSC; read when fetching or refreshing the metadata token (including the startup credential probe) |
+| `GLIBC_TUNABLES` | unset | Any `glibc.malloc.*` entry turns off the server's malloc pins (`mmap_threshold` 32 MiB, `trim_threshold` 64 MiB, `arena_max` 2; Linux glibc, no `mimalloc`) |
 | `OXIMG_AUTO_FORMAT` | unset | `avif,webp` preference list |
 | `QUALITY` | `80` | JPEG quality (process-wide) |
 | `PRESET` | `jpegli` | `fast` / `small` select mozjpeg |
