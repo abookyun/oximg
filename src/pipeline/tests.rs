@@ -711,8 +711,9 @@ fn dct_scale_picks_smallest_sufficient() {
 }
 
 /// The default: no margin means no shrink-on-load, whatever the
-/// reduction. Shrink only ever costs quality (bench/quality/
-/// dct_sweep.py), so it is opt-in — and 5.3x, where the old 1.7
+/// reduction. Against the linear-light reference, shrink only ever
+/// costs quality (bench/quality/dct_sweep.py), so it is opt-in — and
+/// 5.3x, where the old 1.7
 /// default selected 3/8, is the ratio this pins.
 #[test]
 fn no_margin_decodes_at_full_size() {

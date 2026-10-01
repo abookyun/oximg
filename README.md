@@ -45,8 +45,9 @@ light at measurably higher output quality (see
   across the resample — the properties behind the SSIMULACRA2 scores in
   [Benchmarks](#benchmarks). Shrink-on-load is available
   (`OXIMG_DCT_MARGIN`) and off by default: it buys decode time with
-  quality. Against a lossless ground truth (100 DIV2K photographs),
-  full decode scores best at every ratio from 2x to 14x, and the 3/8
+  quality. Against a lossless ground truth (100 DIV2K photographs,
+  linear-light reference), full decode scores best at every ratio from
+  2x to 14x, and the 3/8
   scale the old default picked at 5.3x costs 6.4 SSIMULACRA2 points on
   average, for the same output size and the same bytes.
 - **Performance as architecture, not flags**: per-arch row-streaming

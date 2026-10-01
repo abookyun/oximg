@@ -264,8 +264,10 @@ pub(crate) const BUFFERED_DCT_MARGIN: f64 = 1.7;
 /// or above target size x margin. libjpeg's scaled size is
 /// ceil(dim * num / 8). `None` — the default — decodes at full size.
 ///
-/// Shrink-on-load only ever costs quality, so it is off unless asked
-/// for. The old default (1.7) was chosen believing that ~2x of headroom
+/// Against the linear-light reference the resize is built around,
+/// shrink-on-load only ever costs quality, so it is off unless asked
+/// for (an sRGB reference favors 1/4 and 1/2 instead; see issue #60).
+/// The old default (1.7) was chosen believing that ~2x of headroom
 /// let Lanczos recover what the DCT truncation dropped; a sweep of
 /// every reachable numerator against a lossless ground truth
 /// (bench/quality/dct_sweep.py, 100 DIV2K photographs, linear-light

@@ -37,6 +37,7 @@ Needs `magick` and `ssimulacra2` on PATH.
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -125,7 +126,7 @@ def run_cell(job):
     w, h = dims(out)
     scores = {}
     for kind, args in (("lin", ["-colorspace", "RGB"]), ("srgb", [])):
-        ref = pathlib.Path(a["refdir"]) / f"{a['stem']}-{w}x{h}-{kind}.png"
+        ref = pathlib.Path(a["refdir"]) / f"{a['tag']}-{w}x{h}-{kind}.png"
         if not ref.exists():
             tmp = ref.with_suffix(f".{os.getpid()}.png")
             back = ["-colorspace", "sRGB"] if kind == "lin" else []
@@ -166,12 +167,17 @@ def main():
         (work / sub).mkdir(parents=True, exist_ok=True)
     ratios = [float(r) for r in args.ratios.split(",")]
 
+    # Cached sources and references are keyed by the truth's content,
+    # not its name: a rerun over changed truths, or another corpus with
+    # the same file names, must not reuse the previous run's pixels.
+    tags = [hashlib.sha256(t.read_bytes()).hexdigest()[:16] for t in truths]
     with ProcessPoolExecutor(args.jobs) as pool:
         served = list(pool.map(make_source, [
-            (t, work / "src" / f"{t.stem}-q{args.src_quality}.jpg", args.src_quality) for t in truths
+            (t, work / "src" / f"{tag}-q{args.src_quality}.jpg", args.src_quality)
+            for t, tag in zip(truths, tags)
         ]))
         jobs, skipped = [], {}
-        for truth, src in zip(truths, served):
+        for truth, tag, src in zip(truths, tags, served):
             src_w, src_h = dims(src)
             for ratio in ratios:
                 target = round(src_w / ratio)
@@ -183,10 +189,10 @@ def main():
                         continue
                     jobs.append({
                         "bin": args.bin, "src": str(src), "truth": str(truth),
-                        "stem": truth.stem, "ratio": ratio, "k": k, "margin": m,
+                        "stem": truth.stem, "tag": tag, "ratio": ratio, "k": k, "margin": m,
                         "target": target, "quality": args.quality,
                         "expect_decoded": (-(-src_w * k // 8), -(-src_h * k // 8)),
-                        "out": str(work / "out" / f"{truth.stem}-{ratio}-{k}.jpg"),
+                        "out": str(work / "out" / f"{tag}-{ratio}-{k}.jpg"),
                         "refdir": str(work / "ref"),
                     })
         print(f"{len(jobs)} cells over {len(truths)} images", file=sys.stderr)
