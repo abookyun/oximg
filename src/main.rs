@@ -182,6 +182,51 @@ mod cli;
 mod metrics;
 mod options;
 
+/// Keep a request's large buffers in the heap between requests.
+///
+/// glibc serves allocations above `M_MMAP_THRESHOLD` (128 KiB at start)
+/// with a fresh `mmap`, and returns a heap top above `M_TRIM_THRESHOLD`
+/// to the kernel on free. A request's decode, resize and encode buffers
+/// straddle both lines, so requests faulted their working set back in:
+/// on DIV2K fit 512 (Zen 4), ~350 minor faults and 2.2 Mcyc of kernel
+/// time per request one at a time, and still ~200 per request under
+/// concurrency. glibc raises both thresholds after freeing a large
+/// mapped chunk, but only from the sizes it happens to see, so whether
+/// a process kept its pages depended on its allocation history.
+///
+/// Pinning the thresholds makes reuse deterministic. 32 MiB is glibc's
+/// own ceiling for the dynamic mmap threshold, so a large source keeps
+/// the behaviour it already got by accident; a 4 MiB pin measured worse
+/// there (666 faults per 7360x4912 request against 0.2). Without a cap
+/// on the arena count, each thread's arena would then keep its own high
+/// water mark: +24-37% peak RSS under 16-24 concurrent requests. Two
+/// arenas keep peak RSS where it was. What a burst leaves resident is
+/// no longer handed back afterwards; the peak is the budget either way.
+///
+/// An operator who sets any `glibc.malloc.*` tunable keeps full
+/// control: then nothing is pinned here.
+#[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc")))]
+fn pin_glibc_malloc() {
+    if std::env::var("GLIBC_TUNABLES").is_ok_and(|v| v.contains("glibc.malloc.")) {
+        return;
+    }
+    use std::ffi::c_int;
+    unsafe extern "C" {
+        fn mallopt(param: c_int, value: c_int) -> c_int;
+    }
+    // <malloc.h>
+    const M_TRIM_THRESHOLD: c_int = -1;
+    const M_MMAP_THRESHOLD: c_int = -3;
+    const M_ARENA_MAX: c_int = -8;
+    // SAFETY: mallopt only adjusts allocator parameters, and this runs
+    // before the runtime starts any thread.
+    unsafe {
+        mallopt(M_MMAP_THRESHOLD, 32 << 20);
+        mallopt(M_TRIM_THRESHOLD, 64 << 20);
+        mallopt(M_ARENA_MAX, 2);
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     // Minimal, dependency-free subcommand dispatch. `serve` is the
     // default — bare `oximg` keeps every existing deployment and the
@@ -218,6 +263,8 @@ fn main() -> anyhow::Result<()> {
         eprintln!("oximg: fatal: {e}");
         std::process::exit(2);
     }
+    #[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc")))]
+    pin_glibc_malloc();
     // CPU permits: OXIMG_WORKERS pins the count explicitly; unset
     // follows what the container observes — which is the right answer
     // nearly everywhere, including quota-scheduled platforms (Cloud

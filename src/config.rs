@@ -179,6 +179,7 @@ const PROCESS: &[&str] = &[
     "QUALITY",
     "PRESET",
     "GCE_METADATA_HOST",
+    "GLIBC_TUNABLES",
 ];
 
 /// A knob as `validate` sees it: trimmed, and blank reads as unset.

@@ -40,6 +40,22 @@ HTTP interface without notice.
   On DIV2K (Zen 4) at fit 512, server instructions per request drop
   1.9–3.7% and cycles 0.3–0.8% at full decode, 2.7–3.0% with
   `OXIMG_DCT_MARGIN` set.
+- **The server pins glibc's allocator so requests reuse heap pages**
+  (Linux glibc builds without `mimalloc`). At startup, when no
+  `glibc.malloc.*` tunable is set, it pins `mmap_threshold` to 32 MiB,
+  `trim_threshold` to 64 MiB and `arena_max` to 2.
+  - **Before**: requests faulted their decode, resize and encode
+    buffers back in, by an amount that depended on the process's
+    allocation history: 8–340 minor faults per DIV2K fit-512 request
+    one at a time, and about 200 under concurrent load.
+  - **After**: under 1 fault per request one at a time, and about 15
+    at 2 concurrent requests on 2 vCPUs.
+  - **CPU** (Zen 4): server time per request drops up to 4.1%, most
+    where the faults were.
+  - **Memory**: peak RSS under 2–24 concurrent requests is unchanged.
+    What a burst leaves resident is no longer returned afterwards.
+    Setting any `glibc.malloc.*` tunable in `GLIBC_TUNABLES` turns the
+    pinning off.
 - **An unknown `OXIMG_PNG_EFFORT` no longer refuses to boot** ([#46]).
   Like `OXIMG_LOG` since 0.12.0, it now warns on stderr and encodes as
   if unset, where it used to exit 2: effort trades encode time against

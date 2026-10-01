@@ -3649,3 +3649,114 @@ fn burst_fetches_overlap_despite_one_cpu_permit() {
          fetches are serializing behind the CPU permit"
     );
 }
+
+/// Minor page faults the process has taken so far (/proc/<pid>/stat
+/// field 10, counted after the parenthesised command name).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn minor_faults(pid: u32) -> u64 {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let after_comm = &stat[stat.rfind(')').unwrap() + 2..];
+    after_comm.split(' ').nth(7).unwrap().parse().unwrap()
+}
+
+/// Mean minor faults per warm request, one request at a time, for a
+/// remote JPEG large enough that the source buffer and the decode,
+/// resize and encode buffers all exceed glibc's stock 128 KiB mmap
+/// threshold. The origin serves the same bytes under every name, so
+/// each request is a distinct URL and nothing coalesces.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn faults_per_request(envs: &[(&str, String)]) -> f64 {
+    // DIV2K-sized, with photo-like gradients and mild noise.
+    let (w, h) = (2040, 1356);
+    let mut seed = 0x2545F491u32;
+    let mut px = Vec::with_capacity(w * h * 3);
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..3 {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                px.push((x * 170 / w + y * 50 / h + c * 5 + (seed >> 28) as usize) as u8);
+            }
+        }
+    }
+    let jpeg = std::sync::Arc::new(common::jpeg_with_markers(&px, w, h, &[]));
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin_port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut buf = [0u8; 2048];
+            let _ = std::io::Read::read(&mut stream, &mut buf);
+            use std::io::Write;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                jpeg.len()
+            );
+            let _ = stream.write_all(&jpeg);
+        }
+    });
+    let mut all = envs.to_vec();
+    all.push((
+        "OXIMG_SOURCE_BASE_URL",
+        format!("http://127.0.0.1:{origin_port}"),
+    ));
+    // One permit, so the same blocking thread serves every request and
+    // no new thread's stack shows up in the count.
+    all.push(("OXIMG_WORKERS", "1".to_string()));
+    let s = Server::start(&all);
+    let get = |i: usize| assert_eq!(s.status_of(&format!("/resize/512/512/p{i}.jpg")), 200);
+    (0..5).for_each(get);
+    let before = minor_faults(s.child.id());
+    let n = 30;
+    (5..5 + n).for_each(get);
+    (minor_faults(s.child.id()) - before) as f64 / n as f64
+}
+
+#[test]
+#[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc")))]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "70 DIV2K-sized requests; CI runs it under --release"
+)]
+fn warm_requests_do_not_fault_their_buffers_back_in() {
+    // Measured on Zen 4 / glibc 2.44 (4 KiB pages): 0.5-17 faults per
+    // warm request with the pinned allocator, 120-135 with glibc's
+    // dynamic thresholds. The bound leaves room for the kernel's socket
+    // pages. A count is an upper bound for larger pages, which take
+    // fewer faults to touch the same bytes.
+    //
+    // Set empty rather than inherited: a glibc.malloc.* tunable in the
+    // test's own environment would turn the pins off.
+    let pinned = faults_per_request(&[("GLIBC_TUNABLES", String::new())]);
+    assert!(
+        pinned < 40.0,
+        "{pinned:.1} minor faults per warm request: the glibc malloc pins are not applied"
+    );
+    // An operator's own glibc.malloc tunable wins. Restating the stock
+    // 128 KiB mmap threshold (which also turns off glibc's dynamic
+    // raise) makes every large buffer a fresh mapping again: ~1550
+    // faults, ~6 MiB, per request. Compared in bytes, so the bound
+    // holds whatever the page size.
+    let operator = faults_per_request(&[(
+        "GLIBC_TUNABLES",
+        "glibc.malloc.mmap_threshold=131072".to_string(),
+    )]);
+    let faulted_kib = operator * page_size() as f64 / 1024.0;
+    assert!(
+        faulted_kib > 1600.0,
+        "GLIBC_TUNABLES was overridden: {faulted_kib:.0} KiB faulted per request \
+         ({operator:.1} faults) vs {pinned:.1} faults pinned"
+    );
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn page_size() -> usize {
+    unsafe extern "C" {
+        fn sysconf(name: std::ffi::c_int) -> std::ffi::c_long;
+    }
+    const SC_PAGESIZE: std::ffi::c_int = 30; // <unistd.h>, Linux
+    // SAFETY: sysconf reads a constant system parameter.
+    let size = unsafe { sysconf(SC_PAGESIZE) };
+    assert!(size > 0, "sysconf(_SC_PAGESIZE) failed");
+    size as usize
+}
