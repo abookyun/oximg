@@ -21,8 +21,9 @@ oximg-ctl get /resize/100/100/tiny.jpg    # stays 40×30
 - Resize in linear light on 16-bit samples, Lanczos3. `OXIMG_RESIZE=srgb` disables.
 - Alpha is premultiplied before the resample, unpremultiplied after.
 - JPEG sources decode at full size by default. `OXIMG_DCT_MARGIN` is a
-  **speed** knob: libjpeg's 3/8 IDCT measured 13.4 SSIMULACRA2 points
-  below full decode on a 5.3× downscale, same bytes. Off unless asked.
+  **speed** knob: against a lossless ground truth, libjpeg's 3/8 scale
+  costs 6.4 SSIMULACRA2 points on a 5.3× downscale, same bytes, and
+  full decode is best at every ratio from 2× to 14×. Off unless asked.
 - SIMD kernels (AVX2 / NEON) are verified against an f64 reference.
   Both architectures are production code; CI runs both.
 

@@ -73,7 +73,33 @@ HTTP interface without notice.
   file size and never changes what is produced, so a typo such as `10`
   should not be a crash loop. The other PNG knobs stay fatal.
 
+### Fixed
+
+- **`bench/quality/dct_sweep.py` measured some cells at the wrong DCT
+  scale and against a biased reference.** The data behind 0.11.0's
+  shrink-on-load change came from this script, and two things were
+  wrong with it:
+  - It chose the margin from the width alone. `dct_scale_num` needs
+    both dimensions, so a cell labelled k could decode at k+1
+    (2000x1334 into 500: "k=4" was a 5/8 decode). The margin now comes
+    from both dimensions, and every run asserts the decoded size that
+    `OXIMG_TIMING` reports.
+  - Its reference was a resize of the served JPEG, which builds one
+    decoder's choices into the yardstick. It now encodes the served
+    JPEG from a lossless PNG truth and scores against that truth,
+    under both a linear-light and an sRGB reference, paired per image
+    against the full decode.
+
+  The rerun on 100 DIV2K photographs supports the 0.11.0 default:
+  against the linear-light reference, full decode is the best cell at
+  every ratio from 2x to 14x. The numbers quoted beside
+  `OXIMG_DCT_MARGIN` are replaced with the rerun's: 3/8 at 5.3x costs
+  6.4 SSIMULACRA2 points, not 13.4. Against the sRGB reference, the
+  1/4 and 1/2 scales score above the full decode, so which reference
+  to trust is still open ([#60]).
+
 [#46]: https://github.com/oximg/oximg/issues/46
+[#60]: https://github.com/oximg/oximg/issues/60
 
 ## [0.12.0] - 2026-09-29
 

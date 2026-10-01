@@ -712,8 +712,8 @@ fn dct_scale_picks_smallest_sufficient() {
 
 /// The default: no margin means no shrink-on-load, whatever the
 /// reduction. Shrink only ever costs quality (bench/quality/
-/// dct_sweep.py), so it is opt-in — and the ratio that used to select
-/// the worst scale of all, 5.3x, is the one this pins.
+/// dct_sweep.py), so it is opt-in — and 5.3x, where the old 1.7
+/// default selected 3/8, is the ratio this pins.
 #[test]
 fn no_margin_decodes_at_full_size() {
     assert_eq!(dct_scale_num(4000, 2667, 750, 500, None), 8);
