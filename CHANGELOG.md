@@ -32,6 +32,14 @@ HTTP interface without notice.
   unchanged. Output is bit-identical. On DIV2K
   (Zen 4) server cycles per request drop 2.5% at fit 1024 and 0.8% at
   512.
+- **Remote and in-memory sources reach the decoder without a copy**:
+  `pipeline::process` hands the caller's slice to the decoder directly
+  instead of copying it through an 8 KiB `BufReader`, so libjpeg's
+  Huffman decoder always has the whole remaining source buffered.
+  Local files (`process_path`) still stream. Output is bit-identical.
+  On DIV2K (Zen 4) at fit 512, server instructions per request drop
+  1.9–3.7% and cycles 0.3–0.8% at full decode, 2.7–3.0% with
+  `OXIMG_DCT_MARGIN` set.
 - **An unknown `OXIMG_PNG_EFFORT` no longer refuses to boot** ([#46]).
   Like `OXIMG_LOG` since 0.12.0, it now warns on stderr and encodes as
   if unset, where it used to exit 2: effort trades encode time against

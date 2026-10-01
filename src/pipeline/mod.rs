@@ -644,8 +644,12 @@ fn probe_animation_inner(bytes: &[u8]) -> Result<Option<Animation>> {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn process(bytes: &[u8], p: &Params) -> Result<(Vec<u8>, ImageFormat), Error> {
-    process_reader(std::io::Cursor::new(bytes), p, bytes.len())
-        .map_err(|e| Error::classify(e, false))
+    // The slice is its own `BufRead`: every `fill_buf` hands the
+    // decoder all of the remaining source, with no copy. libjpeg's
+    // Huffman fast path needs a few KB buffered past the cursor, so
+    // an 8 KiB `BufReader` here sent part of every refill down the
+    // slow path.
+    process_reader(bytes, p, bytes.len()).map_err(|e| Error::classify(e, false))
 }
 
 /// Sniff the source format, then resize + re-encode in the target
@@ -662,7 +666,7 @@ pub fn process(bytes: &[u8], p: &Params) -> Result<(Vec<u8>, ImageFormat), Error
 /// decoded-bytes estimate: a buffered remote source is exactly as
 /// resident as `srcbuf`, and omitting it would under-estimate in the
 /// direction that gets a container OOM-killed (issue #22).
-fn process_reader<R: std::io::Read>(
+fn process_reader<R: std::io::BufRead>(
     mut reader: R,
     p: &Params,
     held_source_bytes: usize,
@@ -695,7 +699,7 @@ fn process_reader<R: std::io::Read>(
         target != ImageFormat::Gif,
         "GIF output is not supported (GIF is a decode-only format here)"
     );
-    let reader = std::io::BufReader::new(std::io::Read::chain(&header[..], reader));
+    let reader = std::io::Read::chain(&header[..], reader);
 
     let _active = ActiveGuard::enter();
     SCRATCH.with(|s| {
@@ -730,7 +734,7 @@ fn process_reader<R: std::io::Read>(
 pub fn process_path(path: &std::path::Path, p: &Params) -> Result<(Vec<u8>, ImageFormat), Error> {
     let inner = || -> Result<(Vec<u8>, ImageFormat)> {
         let file = std::fs::File::open(path).context("open source")?;
-        process_reader(file, p, 0)
+        process_reader(std::io::BufReader::new(file), p, 0)
     };
     inner().map_err(|e| Error::classify(e, false))
 }
