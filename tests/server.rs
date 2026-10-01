@@ -3719,10 +3719,15 @@ fn faults_per_request(envs: &[(&str, String)]) -> f64 {
     ignore = "70 DIV2K-sized requests; CI runs it under --release"
 )]
 fn warm_requests_do_not_fault_their_buffers_back_in() {
-    // Measured on Zen 4 / glibc 2.44: 0.5-17 faults per warm request
-    // with the pinned allocator, 120-135 with glibc's dynamic
-    // thresholds. The bound leaves room for the kernel's socket pages.
-    let pinned = faults_per_request(&[]);
+    // Measured on Zen 4 / glibc 2.44 (4 KiB pages): 0.5-17 faults per
+    // warm request with the pinned allocator, 120-135 with glibc's
+    // dynamic thresholds. The bound leaves room for the kernel's socket
+    // pages. A count is an upper bound for larger pages, which take
+    // fewer faults to touch the same bytes.
+    //
+    // Set empty rather than inherited: a glibc.malloc.* tunable in the
+    // test's own environment would turn the pins off.
+    let pinned = faults_per_request(&[("GLIBC_TUNABLES", String::new())]);
     assert!(
         pinned < 40.0,
         "{pinned:.1} minor faults per warm request: the glibc malloc pins are not applied"
@@ -3730,13 +3735,28 @@ fn warm_requests_do_not_fault_their_buffers_back_in() {
     // An operator's own glibc.malloc tunable wins. Restating the stock
     // 128 KiB mmap threshold (which also turns off glibc's dynamic
     // raise) makes every large buffer a fresh mapping again: ~1550
-    // faults per request.
+    // faults, ~6 MiB, per request. Compared in bytes, so the bound
+    // holds whatever the page size.
     let operator = faults_per_request(&[(
         "GLIBC_TUNABLES",
         "glibc.malloc.mmap_threshold=131072".to_string(),
     )]);
+    let faulted_kib = operator * page_size() as f64 / 1024.0;
     assert!(
-        operator > 400.0,
-        "GLIBC_TUNABLES was overridden: {operator:.1} faults per request vs {pinned:.1} pinned"
+        faulted_kib > 1600.0,
+        "GLIBC_TUNABLES was overridden: {faulted_kib:.0} KiB faulted per request \
+         ({operator:.1} faults) vs {pinned:.1} faults pinned"
     );
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn page_size() -> usize {
+    unsafe extern "C" {
+        fn sysconf(name: std::ffi::c_int) -> std::ffi::c_long;
+    }
+    const SC_PAGESIZE: std::ffi::c_int = 30; // <unistd.h>, Linux
+    // SAFETY: sysconf reads a constant system parameter.
+    let size = unsafe { sysconf(SC_PAGESIZE) };
+    assert!(size > 0, "sysconf(_SC_PAGESIZE) failed");
+    size as usize
 }
