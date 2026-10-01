@@ -140,9 +140,8 @@ pub(crate) struct JpegMeta {
     pub(crate) icc: Option<Vec<u8>>,
     /// SOF2 seen: libjpeg will buffer whole-image coefficients for this
     /// source, which dominates its memory cost and is invisible to any
-    /// pixel- or byte-count cap (issue #17). mozjpeg's `Decompress`
-    /// keeps `cinfo` private, so the marker walk this scanner already
-    /// does is where the flag comes from.
+    /// pixel- or byte-count cap (issue #17). The marker walk this
+    /// scanner already does is where the flag comes from.
     pub(crate) progressive: bool,
 }
 

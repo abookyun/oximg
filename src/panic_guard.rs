@@ -1,12 +1,12 @@
 //! Unwind guards for decoders that panic on malformed input.
 //!
 //! Two upstream paths turn attacker-supplied bytes into panics rather
-//! than errors: avif-parse's internal parser-state assertions, and
-//! mozjpeg's error handler, which reports fatal libjpeg errors by
-//! unwinding through its `extern "C-unwind"` callback (the crate's
-//! documented default — `Decompress`'s `Drop` calls
-//! `jpeg_destroy_decompress`, so the C state is released on the way
-//! out). Malformed input must surface as a classified error, never a
+//! than errors: avif-parse's internal parser-state assertions, and the
+//! libjpeg error handler (`pipeline/jpeg_dec.rs`, and the mozjpeg
+//! crate's on the encode side), which reports fatal libjpeg errors by
+//! unwinding through its `extern "C-unwind"` callback (`Decompress`'s
+//! `Drop` calls `jpeg_destroy_decompress`, so the C state is released
+//! on the way out). Malformed input must surface as a classified error, never a
 //! crash: under `panic = "abort"` an uncaught one takes the process
 //! down, and even unwinding it would fail the request as a panic
 //! (HTTP 500) instead of the 422 it is.

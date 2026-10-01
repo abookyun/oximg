@@ -602,7 +602,7 @@ fn cmyk_and_ycck_sources_decode_to_naive_rgb() {
         let jpeg = make_cmyk_jpeg(64, 48, ycck);
         let (rgb, w, h) = decode_and_resize(&jpeg, 64, 48, 1).unwrap();
         assert_eq!((w, h), (64, 48), "ycck={ycck}");
-        let dec = Decompress::new_mem(&jpeg).unwrap();
+        let dec = mozjpeg::Decompress::new_mem(&jpeg).unwrap();
         assert_eq!(
             dec.color_space(),
             if ycck {
@@ -635,7 +635,7 @@ fn cmyk_and_ycck_sources_decode_to_naive_rgb() {
 fn assert_cmyk_matches_reference(jpeg: &[u8], box_px: u32, parallel: usize) {
     let (got, w, h) = decode_and_resize(jpeg, box_px, box_px, parallel).unwrap();
 
-    let mut dec = Decompress::new_mem(jpeg).unwrap();
+    let mut dec = mozjpeg::Decompress::new_mem(jpeg).unwrap();
     let (src_w, src_h) = dec.size();
     // Mirrors the pipeline's own choice: these fixtures are CMYK, the
     // buffered arm, which keeps shrink-on-load by default because

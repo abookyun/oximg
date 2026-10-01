@@ -49,7 +49,7 @@ impl FuseChunks {
 /// (the fused pipeline's floor) alongside the worker's value.
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 fn fused_decode_loop<R: std::io::BufRead, T: Send>(
-    started: &mut mozjpeg::decompress::DecompressStarted<R>,
+    started: &mut jpeg_dec::DecompressStarted<R>,
     dec_w: usize,
     dec_h: usize,
     runway: usize,
@@ -160,7 +160,7 @@ fn fused_decode_loop<R: std::io::BufRead, T: Send>(
     allow(unused_variables)
 )]
 pub(super) fn fused_resize_encode<R: std::io::BufRead>(
-    started: &mut mozjpeg::decompress::DecompressStarted<R>,
+    started: &mut jpeg_dec::DecompressStarted<R>,
     dec_w: usize,
     dec_h: usize,
     dst_w: usize,
@@ -244,7 +244,7 @@ pub(super) fn fused_resize_encode<R: std::io::BufRead>(
 )]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn fused_resize_pixels<R: std::io::BufRead, T: Send>(
-    started: &mut mozjpeg::decompress::DecompressStarted<R>,
+    started: &mut jpeg_dec::DecompressStarted<R>,
     dec_w: usize,
     dec_h: usize,
     dst_w: usize,
@@ -316,7 +316,7 @@ pub(super) fn fused_resize_pixels<R: std::io::BufRead, T: Send>(
 )]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn fused_resize_yuv<R: std::io::BufRead>(
-    started: &mut mozjpeg::decompress::DecompressStarted<R>,
+    started: &mut jpeg_dec::DecompressStarted<R>,
     dec_w: usize,
     dec_h: usize,
     dst_w: usize,
