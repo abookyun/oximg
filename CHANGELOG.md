@@ -56,6 +56,15 @@ HTTP interface without notice.
     What a burst leaves resident is no longer returned afterwards.
     Setting any `glibc.malloc.*` tunable in `GLIBC_TUNABLES` turns the
     pinning off.
+- **JPEG decoding asks libjpeg for up to 16 rows per call** instead of
+  one. Asked for a single row, libjpeg's merged upsampler decodes its
+  two-row group into a spare buffer and copies a row out; with room
+  for the group it writes straight into the destination. Output is
+  bit-identical. On DIV2K (Zen 4) at fit 512, server time per request
+  drops about 4% at full decode; unchanged with `OXIMG_DCT_MARGIN`
+  set and on a 7360x4912 source. The decoder now runs through an
+  in-tree wrapper over `mozjpeg-sys` (`src/pipeline/jpeg_dec.rs`); the
+  `mozjpeg` crate remains for the `PRESET=fast|small` encoders.
 - **An unknown `OXIMG_PNG_EFFORT` no longer refuses to boot** ([#46]).
   Like `OXIMG_LOG` since 0.12.0, it now warns on stderr and encodes as
   if unset, where it used to exit 2: effort trades encode time against
