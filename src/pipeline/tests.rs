@@ -1061,3 +1061,88 @@ fn interior_mean(png_bytes: &[u8]) -> f64 {
     }
     sum as f64 / n as f64
 }
+
+/// Sources across every decoder entry point: baseline, progressive,
+/// CMYK and ICC-carrying JPEGs (the header pre-scan re-chains its
+/// bytes in front of the stream), plus each other source format.
+const SOURCE_FIXTURES: &[&str] = &[
+    "photo.jpg",
+    "tiny.jpg",
+    "cmyk_prog.jpg",
+    "cmyk_icc.jpg",
+    "rgb.png",
+    "interlaced.png",
+    "photo.webp",
+    "still.gif",
+    "anim.gif",
+    #[cfg(feature = "avif")]
+    "photo.avif",
+];
+
+fn read_fixture(name: &str) -> Vec<u8> {
+    let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+#[test]
+fn in_memory_and_streaming_sources_encode_identically() {
+    // `process` hands the decoder the caller's slice directly, while
+    // `process_path` streams the file through a `BufReader`. How the
+    // source is buffered must never reach the output bytes.
+    let p = Params {
+        max_width: 64,
+        max_height: 64,
+        ..Params::default()
+    };
+    let dir = std::env::temp_dir().join(format!("oximg-srcbuf-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for name in SOURCE_FIXTURES {
+        let bytes = read_fixture(name);
+        let path = dir.join(name);
+        std::fs::write(&path, &bytes).unwrap();
+        let mem = process(&bytes, &p).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let file = process_path(&path, &p).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(mem.1, file.1, "{name}: output format");
+        assert!(
+            mem.0 == file.0,
+            "{name}: in-memory and streaming bytes differ"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn jpeg_decode_is_independent_of_reader_chunking() {
+    // libjpeg refills from whatever `fill_buf` returns, and the header
+    // pre-scan consumes the same reader first. A reader that yields one
+    // byte (or seven) at a time must decode to the same bytes as the
+    // whole-slice reader `process` uses.
+    let p = Params {
+        max_width: 64,
+        max_height: 64,
+        ..Params::default()
+    };
+    for name in SOURCE_FIXTURES.iter().filter(|n| n.ends_with(".jpg")) {
+        let bytes = read_fixture(name);
+        let whole = process(&bytes, &p).unwrap_or_else(|e| panic!("{name}: {e}"));
+        for cap in [1, 7] {
+            let r = std::io::BufReader::with_capacity(cap, &bytes[..]);
+            let chunked = process_reader(r, &p, bytes.len())
+                .unwrap_or_else(|e| panic!("{name} at {cap}-byte reads: {e}"));
+            assert!(
+                whole.0 == chunked.0,
+                "{name}: {cap}-byte reads changed the output"
+            );
+        }
+    }
+}
+
+#[test]
+fn truncated_in_memory_source_is_still_too_short() {
+    // The slice reader must keep the 12-byte sniff's failure mode.
+    let e = process(&[0xFF, 0xD8, 0xFF], &Params::default()).unwrap_err();
+    assert!(
+        format!("{e:#}").contains("source too short"),
+        "unexpected error: {e:#}"
+    );
+}
