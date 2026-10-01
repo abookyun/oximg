@@ -10,8 +10,59 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-01
+
+A JPEG CPU release ([#64]). 0.11.0 turned shrink-on-load off for
+quality, and since then the JPEG→JPEG cell had run behind imgproxy.
+This release keeps the full decode and wins the time back elsewhere.
+
+On imgproxy's benchmark shape (100 DIV2K photographs, fit 512 q80, k6),
+measured on a Ryzen 7 8745HS against imgproxy 4.0.17. Servers ran on
+one SMT pair (c7i.large analogue) or two physical cores (c7g.large
+analogue). Each cell is the mean of 3 rounds at 2 VUs and 2 rounds at
+8 VUs:
+
+| | one SMT pair, 2 VUs | one SMT pair, 8 VUs | two cores, 2 VUs | two cores, 8 VUs |
+|---|---|---|---|---|
+| 0.12.0 | 92.5 req/s | 94.0 | 127.7 | 135.2 |
+| **0.13.0** | **124.0** | **127.4** | **170.3** | **184.5** |
+| imgproxy 4.0.17 | 115.4 | 117.2 | 153.8 | 163.0 |
+
+That is 33-37% over 0.12.0 and 7-13% ahead of imgproxy. Scored against
+a linear-light reference, the output is also better: SSIMULACRA2 76.2
+against imgproxy's 64.0. Server CPU per request is 25-27%
+below 0.12.0.
+
+JPEG output bytes change, so caches keyed by content hash turn over
+once. The scan script below reorders coefficients, and the chroma and
+NEON changes alter pixels. Library and HTTP APIs are unchanged.
+
 ### Changed
 
+- **Subsampled chroma is replicated instead of triangle-filtered when
+  the resize reduces** ([#53]). libjpeg-turbo's merged upsampler takes
+  over, and the resampler's own low-pass does the interpolating that
+  the triangle pass did ahead of it. Pixels change. Against a
+  linear-light ground truth (DIV2K, 4:2:0 and 4:2:2) SSIMULACRA2 rises
+  0.2-0.6 from 1.13x to 8x at q92 and up to 0.18 at q75. 1:1 output
+  keeps the triangle filter, which is 0.02-0.16 better there. CPU per
+  request: -2.8% on Apple M2, -1.0% on Zen 4.
+- **The NEON horizontal resize pass runs on f16 for 8-bit sources**
+  ([#53]; every JPEG, on CPUs with FP16 and FHM). It accumulates in
+  f32, which halves the load-bound pass's loads. Pixels change by at
+  most one 8-bit level on at most 1.3% of samples. SSIMULACRA2 against
+  a linear-light ground truth moves by under 0.01 on average and under
+  0.06 per image. CPU per request on Apple M2: -4.6%. x86 output is
+  unchanged.
+- **8-bit RGB staging uses AVX-512 VBMI byte tables where available**
+  ([#51]), and **the NEON RGB horizontal pass processes two rows per
+  coefficient load**. Both are bit-identical. Server CPU per request
+  on Zen 4 at fit 512: -8%. The NEON horizontal pass alone: -13% to
+  -30% on Apple M2.
+- **The RGB horizontal resize pass runs on AVX-512 on Intel CPUs**
+  ([#54]). It is bit-identical. Server CPU per request on Granite
+  Rapids (c8i) at fit 512: -0.7%. It stays off on AMD Zen 4, which
+  splits 512-bit operations and measured 6-10% slower with it.
 - **Progressive jpegli output uses oximg's own scan script**: DC, then
   AC split into spectral bands, with no successive-approximation
   refinement scans. Decoded pixels are unchanged — a scan script only
@@ -99,6 +150,10 @@ HTTP interface without notice.
   to trust is still open ([#60]).
 
 [#46]: https://github.com/oximg/oximg/issues/46
+[#64]: https://github.com/oximg/oximg/issues/64
+[#51]: https://github.com/oximg/oximg/pull/51
+[#53]: https://github.com/oximg/oximg/pull/53
+[#54]: https://github.com/oximg/oximg/pull/54
 [#60]: https://github.com/oximg/oximg/issues/60
 
 ## [0.12.0] - 2026-09-29
@@ -1572,7 +1627,8 @@ did, in any output format.
   concurrency pinned to the core count — published to crates.io via
   Trusted Publishing.
 
-[unreleased]: https://github.com/oximg/oximg/compare/v0.12.0...HEAD
+[unreleased]: https://github.com/oximg/oximg/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/oximg/oximg/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/oximg/oximg/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/oximg/oximg/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/oximg/oximg/compare/v0.10.0...v0.10.1
