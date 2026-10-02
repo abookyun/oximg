@@ -650,9 +650,9 @@ pub(super) fn icc_app2_chunks(icc: &[u8]) -> impl Iterator<Item = Vec<u8>> + '_ 
 
 /// jpegli encode via its libjpeg-compatible API (symbols are
 /// `jpegli_`-prefixed, so it links alongside mozjpeg without conflicts).
-/// OXIMG_JPEG_PROGRESSIVE=0 selects baseline jpegli: a few percent
-/// larger output, but the entropy pass at finish_compress shrinks,
-/// which is the fused path's only serial tail.
+/// Baseline by default (issue #61): with adaptive quantization off it
+/// is 7-8% less server CPU than progressive at DIV2K fit 512, for
+/// about 6% more bytes. OXIMG_JPEG_PROGRESSIVE=1 selects progressive.
 pub(super) fn jpegli_progressive() -> bool {
     crate::config::config().jpegli_progressive
 }
@@ -664,9 +664,8 @@ pub(super) fn encode_jpegli(
     quality: f32,
     icc: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
-    // cjpegli emits progressive by default; the libjpeg-compat layer does
-    // not. Progressive is worth several percent at these sizes; the scan
-    // script is oximg's own (see jpegli_enc.rs), not jpegli's level 2.
+    // Progressive, when asked for, uses oximg's own scan script (see
+    // jpegli_enc.rs), not jpegli's level 2.
     let mut enc = JpegliEncoder::new(w, h, quality, jpegli_progressive());
     if let Some(icc) = icc {
         for chunk in icc_app2_chunks(icc) {
