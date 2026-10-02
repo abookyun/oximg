@@ -10,6 +10,31 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+### Changed
+
+- **Large reductions of 4:2:0 and grayscale JPEGs decode luma at half
+  size, averaged in linear light** ([#60]). This applies only when
+  `OXIMG_DCT_MARGIN` is unset and the half-size decode still leaves at
+  least 1.9x for the resampler, a reduction of about 3.8x or more, such
+  as a 2040-wide photo into 512.
+  - **What changes:** luma runs the full 8x8 IDCT a full decode runs,
+    and each 2x2 is averaged through the sRGB transfer function.
+    libjpeg's own reduced IDCT averages in gamma space. Chroma, which
+    4:2:0 stores at half size, decodes at its stored resolution.
+    Smaller reductions, 4:2:2 and 4:4:4 sources, CMYK, and anything
+    with a margin set decode exactly as before.
+  - **Quality:** against a lossless ground truth (100 DIV2K
+    photographs, q92 4:2:0, linear-light reference, `dct_sweep.py`),
+    the cost is 0.34 SSIMULACRA2 at 3.98x and 0.32 at 4x, with no
+    image below -1.0. From 5.3x up it is within ±0.1. libjpeg's own
+    1/2 costs 2.7 there, and 24 on its worst image. 4:2:2 and 4:4:4
+    are excluded because measured there it cost 0.94 and 0.69, with
+    worst images at -6.6 and -4.1.
+  - **CPU:** server time per request at fit 512 on DIV2K drops 11-14%
+    on Zen 4 and about 12% on Apple M2.
+  - Output bytes change for the affected requests.
+    `OXIMG_LINEAR_SHRINK=0` restores the full decode.
+
 ## [0.13.0] - 2026-10-01
 
 A JPEG CPU release ([#64]). 0.11.0 turned shrink-on-load off for

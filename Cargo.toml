@@ -13,6 +13,11 @@ repository = "https://github.com/oximg/oximg"
 keywords = ["image", "jpeg", "resize", "compression", "server"]
 categories = ["multimedia::images", "web-programming::http-server"]
 
+[build-dependencies]
+# Compiles src/pipeline/linear_shrink.c; already in the tree via every
+# -sys crate here.
+cc = "1"
+
 [dependencies]
 avif-parse = { version = "2", optional = true }
 avif-serialize = { version = "0.8", optional = true }

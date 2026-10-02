@@ -152,6 +152,7 @@ mod tests {
             auto_rotate: true,
             icc_passthrough: true,
             dct_margin: None,
+            linear_shrink: true,
             jpegli_progressive: true,
             flatten_bg: [255, 255, 255],
             png_compression: None,

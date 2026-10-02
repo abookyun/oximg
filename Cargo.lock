@@ -1064,6 +1064,7 @@ dependencies = [
  "avif-parse",
  "avif-serialize",
  "axum",
+ "cc",
  "dav1d-sys",
  "fast_image_resize",
  "gif",

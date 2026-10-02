@@ -20,7 +20,10 @@ oximg-ctl get /resize/100/100/tiny.jpg    # stays 40×30
 
 - Resize in linear light on 16-bit samples, Lanczos3. `OXIMG_RESIZE=srgb` disables.
 - Alpha is premultiplied before the resample, unpremultiplied after.
-- JPEG sources decode at full size by default. `OXIMG_DCT_MARGIN` is a
+- JPEG sources decode at full size by default, except that 4:2:0 and
+  grayscale sources reduced ~3.8× or more decode luma at 1/2 through a
+  linear-light 2×2 average of the full IDCT (`OXIMG_LINEAR_SHRINK`;
+  0.3 SSIMULACRA2 at 4×, ~0 from 5.3×). `OXIMG_DCT_MARGIN` is a
   **speed** knob: against a lossless ground truth and a linear-light
   reference, libjpeg's 3/8 scale costs 6.4 SSIMULACRA2 points on a 5.3×
   downscale, same bytes, and full decode is best at every ratio from
