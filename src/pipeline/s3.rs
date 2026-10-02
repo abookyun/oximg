@@ -15,6 +15,8 @@ use hmac::Mac;
 use hmac::digest::KeyInit;
 use sha2::{Digest, Sha256};
 
+use super::{SourceRejected, UpstreamFault};
+
 type HmacSha256 = hmac::Hmac<Sha256>;
 
 /// SHA-256 of an empty body. Every request this module signs is a GET,
@@ -286,6 +288,176 @@ fn percent_decode(encoded: &str) -> Vec<u8> {
             i += 1;
         }
     }
+    out
+}
+
+/// Error `<Code>` values that are the requester's fault: the key is
+/// not a valid object name. Each store has its own code for this (AWS,
+/// R2, MinIO, in that order). The local key-length check usually
+/// answers before the store can.
+const REQUESTER_CODES: &[&str] = &[
+    "KeyTooLongError",
+    "InvalidObjectName",
+    "XMinioInvalidObjectName",
+];
+
+/// Map an error answer to the crate's error shapes. We read the
+/// `<Code>` because the status alone is not enough. The stores also use
+/// 400 for faults in our own settings, such as a wrong region or a
+/// malformed access key (`MEASURED` in the tests lists what each store
+/// sends). So a 4xx is a deployment fault unless the code says the key
+/// is at fault.
+///
+/// - A 404 is an absent object: a 404 to the client. The exception is
+///   404 `NoSuchBucket`, a deployment fault.
+/// - 400/414 with a code from `REQUESTER_CODES`, or with no code, is
+///   the store refusing an impossible key: the requester's fault, as in
+///   `gs://` (#13).
+/// - Any other 4xx, and any redirect, is a deployment fault. On AWS, a
+///   key without `s3:ListBucket` gets 403 for a missing object, and the
+///   code cannot tell that apart from a real permission problem.
+/// - 429 (after the retry) and 5xx are upstream faults.
+///
+/// Deployment faults use `PermissionDenied`, which classifies as
+/// `SourceUnreadable` (HTTP 500).
+fn status_error(status: reqwest::StatusCode, code: Option<&str>, bucket: &str) -> anyhow::Error {
+    let answer = match code {
+        Some(code) => format!("{status} {code}"),
+        None => status.to_string(),
+    };
+    let deployment = |hint: String| {
+        anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("object store answered {answer}: {hint}"),
+        ))
+    };
+    let requester =
+        || anyhow::anyhow!("object store rejected the key ({answer})").context(SourceRejected);
+    let upstream = || {
+        anyhow::anyhow!("object store answered {answer}")
+            .context("fetch s3 object")
+            .context(UpstreamFault)
+    };
+    match (status.as_u16(), code) {
+        (404, Some("NoSuchBucket")) => {
+            deployment(format!("bucket {bucket:?} does not exist at this endpoint"))
+        }
+        (404, _) => anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "object not found in bucket",
+        )),
+        (400 | 414, None) => requester(),
+        (400 | 414, Some(code)) if REQUESTER_CODES.contains(&code) => requester(),
+        _ if status.is_redirection() => {
+            deployment("check AWS_REGION and OXIMG_S3_ENDPOINT (redirects are not followed)".into())
+        }
+        (429, _) => upstream(),
+        (400..=499, _) => deployment(deployment_hint(status.as_u16(), code, bucket)),
+        _ => upstream(),
+    }
+}
+
+/// What an operator should check, by error code.
+fn deployment_hint(status: u16, code: Option<&str>, bucket: &str) -> String {
+    match code {
+        Some("ExpiredToken") => "AWS_SESSION_TOKEN has expired. Temporary keys are not \
+                                 refreshed, so restart with new keys"
+            .into(),
+        Some("RequestTimeTooSkewed") => {
+            "this host's clock is more than 15 minutes off. Check its time sync".into()
+        }
+        Some(
+            "AuthorizationHeaderMalformed"
+            | "InvalidRegionName"
+            | "InvalidArgument"
+            | "InvalidAccessKeyId"
+            | "SignatureDoesNotMatch"
+            | "InvalidToken",
+        ) => "check AWS_REGION, OXIMG_S3_ENDPOINT and the access keys".into(),
+        _ if matches!(status, 401 | 403) => format!(
+            "access to bucket {bucket:?} denied (check that the bucket exists, and that the key \
+             has s3:GetObject, and s3:ListBucket so that a missing object answers 404)"
+        ),
+        _ => "the store refused the request. This is not the requester's fault".into(),
+    }
+}
+
+/// The parts of an S3 error body we use.
+#[derive(Default)]
+struct ErrorBody {
+    code: Option<String>,
+    message: Option<String>,
+}
+
+/// Error bodies are a few hundred bytes. We stop reading after this
+/// many, so a broken store cannot make us buffer a large body.
+const ERROR_BODY_LIMIT: usize = 16 * 1024;
+
+async fn read_error_body(mut resp: reqwest::Response) -> ErrorBody {
+    let mut body = Vec::new();
+    while body.len() < ERROR_BODY_LIMIT
+        && let Ok(Some(chunk)) = resp.chunk().await
+    {
+        body.extend_from_slice(&chunk);
+    }
+    parse_error_body(&body)
+}
+
+/// Read `<Code>` and `<Message>` from an S3 error body. These two
+/// elements never nest, so a plain search is enough, and we need no XML
+/// crate. Both values end up in logs, so we only keep
+/// printable ASCII, and the code must look like a code.
+fn parse_error_body(body: &[u8]) -> ErrorBody {
+    let text = String::from_utf8_lossy(body);
+    let element = |name: &str| -> Option<String> {
+        let open = format!("<{name}>");
+        let start = text.find(&open)? + open.len();
+        let end = start + text[start..].find(&format!("</{name}>"))?;
+        Some(unescape_xml(&text[start..end]))
+    };
+    let code = element("Code").filter(|c| {
+        !c.is_empty() && c.len() <= 64 && c.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.')
+    });
+    let message = element("Message").map(|m| {
+        m.chars()
+            .filter(|c| c.is_ascii_graphic() || *c == ' ')
+            .take(300)
+            .collect()
+    });
+    ErrorBody { code, message }
+}
+
+/// Replace the five predefined XML entities and the numeric form that
+/// stores use for `'` (MinIO sends `&#39;`). Other `&` sequences stay as
+/// they are.
+fn unescape_xml(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        let entity = [
+            ("&lt;", '<'),
+            ("&gt;", '>'),
+            ("&amp;", '&'),
+            ("&quot;", '"'),
+            ("&apos;", '\''),
+            ("&#39;", '\''),
+        ]
+        .into_iter()
+        .find(|(name, _)| rest.starts_with(name));
+        match entity {
+            Some((name, ch)) => {
+                out.push(ch);
+                rest = &rest[name.len()..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
     out
 }
 
@@ -588,11 +760,115 @@ mod tests {
     }
 
     #[test]
+    fn error_body_code_and_message() {
+        let body = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error><Code>NoSuchKey</Code>\
+            <Message>The specified key does not exist.</Message><Key>x.jpg</Key></Error>";
+        let parsed = parse_error_body(body);
+        assert_eq!(parsed.code.as_deref(), Some("NoSuchKey"));
+        assert_eq!(
+            parsed.message.as_deref(),
+            Some("The specified key does not exist.")
+        );
+        // A code that does not look like a code is dropped, so a broken
+        // store cannot put arbitrary text in our logs through it.
+        let odd = parse_error_body(b"<Error><Code>a\nb</Code></Error>");
+        assert_eq!(odd.code, None);
+        assert_eq!(parse_error_body(b"").code, None);
+    }
+
+    #[test]
+    fn xml_entities_are_unescaped() {
+        assert_eq!(
+            unescape_xml("expecting &#39;us-east-1&#39;"),
+            "expecting 'us-east-1'"
+        );
+        assert_eq!(
+            unescape_xml("a &lt;b&gt; &amp; &quot;c&quot;"),
+            "a <b> & \"c\""
+        );
+        assert_eq!(unescape_xml("50% &unknown; &"), "50% &unknown; &");
+        let body = b"<Error><Code>X</Code><Message>it&apos;s</Message></Error>";
+        assert_eq!(parse_error_body(body).message.as_deref(), Some("it's"));
+    }
+
+    #[test]
     fn ip_literal_hosts() {
         assert!(is_ip_literal("127.0.0.1:9000"));
         assert!(is_ip_literal("10.0.0.5"));
         assert!(is_ip_literal("[::1]:9000"));
         assert!(!is_ip_literal("s3.us-east-1.amazonaws.com"));
         assert!(!is_ip_literal("minio.internal:9000"));
+    }
+
+    fn kind_of(status: u16, code: Option<&str>) -> crate::pipeline::ErrorKind {
+        let status = reqwest::StatusCode::from_u16(status).unwrap();
+        crate::pipeline::Error::classify(status_error(status, code, "pics"), true).kind()
+    }
+
+    /// What AWS S3, Cloudflare R2 and MinIO answered to signed requests
+    /// (curl --aws-sigv4, 2026-09-29 to 10-01), one row per store where
+    /// they differ. The same fault comes back as 400 from one store and
+    /// 403 from another, so the status alone cannot say whose fault it
+    /// is. The `<Code>` can.
+    #[rustfmt::skip]
+    const MEASURED: &[(&str, &str, u16, &str, crate::pipeline::ErrorKind)] = {
+        use crate::pipeline::ErrorKind::*;
+        &[
+            ("missing key",                   "all three",  404, "NoSuchKey",                    SourceNotFound),
+            ("missing key, no s3:ListBucket", "AWS",        403, "AccessDenied",                 SourceUnreadable),
+            ("missing bucket",                "AWS, MinIO", 404, "NoSuchBucket",                 SourceUnreadable),
+            ("missing bucket",                "R2",         403, "AccessDenied",                 SourceUnreadable),
+            ("wrong region",                  "AWS, MinIO", 400, "AuthorizationHeaderMalformed", SourceUnreadable),
+            ("wrong region",                  "R2",         400, "InvalidRegionName",            SourceUnreadable),
+            ("malformed access key",          "AWS, MinIO", 403, "InvalidAccessKeyId",           SourceUnreadable),
+            ("malformed access key",          "R2",         400, "InvalidArgument",              SourceUnreadable),
+            ("wrong secret",                  "all three",  403, "SignatureDoesNotMatch",        SourceUnreadable),
+            ("1029-byte key",                 "AWS",        400, "KeyTooLongError",              SourceRejected),
+            ("1029-byte key",                 "R2",         400, "InvalidObjectName",            SourceRejected),
+            ("1029-byte key",                 "MinIO",      400, "XMinioInvalidObjectName",      SourceRejected),
+        ]
+    };
+
+    /// Codes from the S3 error code list that we could not cause on the
+    /// three stores.
+    #[rustfmt::skip]
+    const FROM_THE_LIST: &[(&str, u16, &str, crate::pipeline::ErrorKind)] = {
+        use crate::pipeline::ErrorKind::*;
+        &[
+            ("expired session token",        400, "ExpiredToken",         SourceUnreadable),
+            ("clock skew",                   403, "RequestTimeTooSkewed", SourceUnreadable),
+            ("SSE-C object without its key", 400, "InvalidRequest",       SourceUnreadable),
+            ("throttling",                   503, "SlowDown",             Upstream),
+        ]
+    };
+
+    #[test]
+    fn statuses_map_by_code() {
+        for &(case, store, status, code, want) in MEASURED {
+            assert_eq!(kind_of(status, Some(code)), want, "{case} on {store}");
+        }
+        for &(case, status, code, want) in FROM_THE_LIST {
+            assert_eq!(kind_of(status, Some(code)), want, "{case}");
+        }
+        use crate::pipeline::ErrorKind::*;
+        // Without a code, the status decides, as in gs://.
+        assert_eq!(kind_of(404, None), SourceNotFound);
+        assert_eq!(kind_of(400, None), SourceRejected);
+        assert_eq!(kind_of(414, None), SourceRejected);
+        assert_eq!(kind_of(429, None), Upstream);
+        assert_eq!(kind_of(500, None), Upstream);
+        // Redirects are not followed: the region or endpoint is wrong.
+        assert_eq!(kind_of(301, Some("PermanentRedirect")), SourceUnreadable);
+        assert_eq!(kind_of(307, None), SourceUnreadable);
+    }
+
+    #[test]
+    fn deployment_hints_name_the_cause() {
+        assert!(deployment_hint(400, Some("ExpiredToken"), "b").contains("restart"));
+        assert!(deployment_hint(403, Some("RequestTimeTooSkewed"), "b").contains("clock"));
+        assert!(deployment_hint(403, Some("SignatureDoesNotMatch"), "b").contains("AWS_REGION"));
+        let denied = deployment_hint(403, Some("AccessDenied"), "b");
+        assert!(denied.contains("s3:ListBucket") && denied.contains("bucket exists"));
+        assert!(deployment_hint(400, Some("InvalidRequest"), "b").contains("not the requester"));
     }
 }
