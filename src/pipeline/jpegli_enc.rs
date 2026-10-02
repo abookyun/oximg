@@ -107,50 +107,6 @@ impl Dest {
     }
 }
 
-/// Requested quality -> the jpegli quality that, with adaptive
-/// quantization off, scores the same SSIMULACRA2 as jpegli with it on
-/// did at the requested quality (oximg 0.13 and earlier). Without the
-/// mapping, turning AQ off would raise both quality and size at every
-/// q: q80 went from 44.3 to 55.8 KB per DIV2K image at fit 512.
-///
-/// Calibrated on that cell (100 DIV2K photographs, q92 4:2:0 sources,
-/// linear-light reference) by interpolating the AQ-off curve at each
-/// AQ-on score. Linear between points; below 30 it follows the line
-/// to (1, 1), where no AQ-on data was taken.
-const QUALITY_MAP: [(f32, f32); 13] = [
-    (1.0, 1.0),
-    (30.0, 23.0),
-    (40.0, 26.5),
-    (50.0, 32.1),
-    (60.0, 44.7),
-    (65.0, 50.4),
-    (70.0, 57.2),
-    (75.0, 63.3),
-    (80.0, 70.2),
-    (85.0, 77.2),
-    (90.0, 84.7),
-    (95.0, 92.4),
-    (100.0, 100.0),
-];
-
-fn jpegli_quality(quality: f32) -> c_int {
-    let q = quality.clamp(1.0, 100.0);
-    let i = QUALITY_MAP
-        .partition_point(|&(from, _)| from < q)
-        .clamp(1, QUALITY_MAP.len() - 1);
-    let ((q0, j0), (q1, j1)) = (QUALITY_MAP[i - 1], QUALITY_MAP[i]);
-    (j0 + (j1 - j0) * (q - q0) / (q1 - q0)).round() as c_int
-}
-
-unsafe extern "C-unwind" {
-    /// In jpegli's encode.h but not in jpegli-sys's bindings; the symbol
-    /// is in the static library jpegli-sys links.
-    fn jpegli_enable_adaptive_quantization(
-        cinfo: &mut ffi::jpegli_compress_struct,
-        value: ffi::boolean,
-    );
-}
-
 extern "C-unwind" fn silence_message(_cinfo: &mut ffi::jpegli_common_struct, _level: c_int) {}
 
 /// Only the message code: the binding types `format_message`'s output
@@ -207,11 +163,7 @@ impl JpegliEncoder {
             ffi::jpegli_set_defaults(&mut enc.cinfo);
             enc.cinfo.image_width = w as ffi::JDIMENSION;
             enc.cinfo.image_height = h as ffi::JDIMENSION;
-            ffi::jpegli_set_quality(&mut enc.cinfo, jpegli_quality(quality), 0);
-            // Adaptive quantization off (issue #61). Together with
-            // sequential output it is the cheap configuration, and
-            // `jpegli_quality` keeps each q at its previous quality.
-            jpegli_enable_adaptive_quantization(&mut enc.cinfo, 0);
+            ffi::jpegli_set_quality(&mut enc.cinfo, quality as c_int, 0);
             if progressive {
                 debug_assert_eq!(enc.cinfo.num_components, 3);
                 enc.cinfo.scan_info = SCAN_SCRIPT.as_ptr();
@@ -418,22 +370,5 @@ mod tests {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| enc.finish()));
         let msg = *r.unwrap_err().downcast::<String>().unwrap();
         assert!(msg.starts_with("jpegli fatal error"), "{msg}");
-    }
-
-    #[test]
-    fn quality_map_is_monotone_and_hits_its_points() {
-        // The calibration points themselves, rounded.
-        for (q, want) in [(1.0, 1), (30.0, 23), (80.0, 70), (90.0, 85), (100.0, 100)] {
-            assert_eq!(jpegli_quality(q), want, "q{q}");
-        }
-        // Clamped outside 1..=100, never decreasing inside.
-        assert_eq!(jpegli_quality(-5.0), 1);
-        assert_eq!(jpegli_quality(250.0), 100);
-        let mut last = 0;
-        for q in 1..=100 {
-            let j = jpegli_quality(q as f32);
-            assert!(j >= last && (1..=100).contains(&j), "q{q} -> {j}");
-            last = j;
-        }
     }
 }

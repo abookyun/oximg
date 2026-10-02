@@ -34,35 +34,6 @@ HTTP interface without notice.
     on Zen 4 and about 12% on Apple M2.
   - Output bytes change for the affected requests.
     `OXIMG_LINEAR_SHRINK=0` restores the full decode.
-- **jpegli output is sequential, with adaptive quantization off, and the
-  quality scale is remapped to keep each q's quality** ([#61]).
-  - **Why the remap:** with AQ off, jpegli at the same q is both
-    larger and better: at q80, 44.3 KB per DIV2K image at fit 512
-    became 55.8 KB, and the score went from 76.6 to 81.0. So the
-    requested quality now goes through a table to the jpegli quality
-    that scores what 0.13's AQ-on encoder scored at that q. For
-    example, q80 runs jpegli q70.
-  - **Calibration:** on DIV2K at fit 512 (q92 4:2:0 sources,
-    linear-light SSIMULACRA2), the remapped encoder matches within
-    0.17 points at q50, q70, q80 and q90.
-  - **Bytes:** +1.4% at q80 and -0.5% at q90. At low q AQ was worth
-    more: +4% at q70 and +11% at q50.
-  - **Other sizes and references:** away from the calibration cell,
-    q80 scores 0.66 lower than 0.13 at fit 1020 and 0.29 higher at fit
-    255. Against an sRGB reference instead, it scores 0.7-1.1 lower.
-  - **CPU:** server time per request at fit 512 drops 9.6% (h75) and
-    7.8% (q92) on Zen 4.
-  - **Progressive output** is now `OXIMG_JPEG_PROGRESSIVE=1`, still
-    with oximg's scan script. It gives the same pixels in about 6%
-    fewer bytes, for 7-9% more CPU.
-  - **Sequential means SOF1** (extended sequential), not baseline
-    SOF0. jpegli marks its sequential output that way even with 8-bit
-    tables and two Huffman tables per class, and
-    `OXIMG_JPEG_PROGRESSIVE=0` always produced it. Neither SOF1 nor
-    the progressive SOF2 that earlier releases emitted by default is
-    baseline, so a baseline-only decoder is no worse off than before.
-  - Every jpegli response changes bytes. `PRESET=fast|small` (mozjpeg)
-    is unchanged.
 
 ## [0.13.0] - 2026-10-01
 
@@ -209,7 +180,6 @@ NEON changes alter pixels. Library and HTTP APIs are unchanged.
 [#53]: https://github.com/oximg/oximg/pull/53
 [#54]: https://github.com/oximg/oximg/pull/54
 [#60]: https://github.com/oximg/oximg/issues/60
-[#61]: https://github.com/oximg/oximg/issues/61
 
 ## [0.12.0] - 2026-09-29
 
