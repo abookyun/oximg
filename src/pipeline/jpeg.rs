@@ -179,7 +179,29 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
         ColorSpace::JCS_CMYK | ColorSpace::JCS_YCCK
     );
     let margin = dct_margin().or_else(|| buffered.then_some(BUFFERED_DCT_MARGIN));
-    dec.scale(dct_scale_num(src_w, src_h, dst_w, dst_h, margin));
+    // With no margin asked for, a large enough reduction still decodes
+    // luma at 1/2 scale, but through the linear-light average of the
+    // full IDCT rather than libjpeg's gamma-space 4x4 (issue #60). Only
+    // for 4:2:0 and grayscale: there chroma keeps its stored
+    // resolution at half size. With 4:2:2 or 4:4:4 chroma, libjpeg's
+    // reduced chroma IDCT pairs badly with linear luma (4x mean -0.94
+    // and -0.69, worst images -6.6 and -4.1, against -0.33 for 4:2:0),
+    // so those decode at full size.
+    let shrink = margin.is_none()
+        && p.linear_light
+        && crate::config::config().linear_shrink
+        && matches!(
+            dec.color_space(),
+            ColorSpace::JCS_YCbCr | ColorSpace::JCS_GRAYSCALE
+        )
+        && dec.is_gray_or_420()
+        && linear_shrink_applies(src_w, src_h, dst_w, dst_h);
+    let num = if shrink {
+        4
+    } else {
+        dct_scale_num(src_w, src_h, dst_w, dst_h, margin)
+    } as usize;
+    dec.scale(num as u8);
 
     // The decoded-bytes estimate. Two things field validation caught
     // here (issue #17 follow-up), both worth naming:
@@ -198,10 +220,9 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
     //    arms (CMYK/YCCK) do materialize a frame, and progressive
     //    sources add coefficient arrays no output size reduces.
     {
-        // The same `margin` the scale was chosen with, not a second
-        // read of the knob: the estimate has to describe the decode
-        // that is actually about to happen.
-        let num = dct_scale_num(src_w, src_h, dst_w, dst_h, margin) as usize;
+        // The `num` the decoder was just given, not a second read of
+        // the knobs: the estimate has to describe the decode that is
+        // actually about to happen.
         let (dec_w, dec_h) = ((src_w * num).div_ceil(8), (src_h * num).div_ceil(8));
         let comps = dec.num_components().max(1) as u64;
         let channels = if buffered { 4 } else { 3 };
@@ -275,11 +296,16 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
     // q75, 4:2:0 and 4:2:2), replication is +0.2..+0.6 SSIMULACRA2
     // from 1.13x to 8x reduction and loses only at 1:1 (-0.16), which
     // keeps the triangle filter. It is also the cheaper decode.
-    let num = dct_scale_num(src_w, src_h, dst_w, dst_h, margin) as usize;
     if dst_w < (src_w * num).div_ceil(8) && dst_h < (src_h * num).div_ceil(8) {
         dec.do_fancy_upsampling(false);
     }
     let mut started = dec.rgb().context("decode start failed")?;
+    if shrink {
+        // Installs whenever luma decodes at 4/8 with the integer IDCT,
+        // which a scale of 4 on a YCbCr or grayscale source gives.
+        let installed = started.linear_shrink();
+        debug_assert!(installed, "linear shrink did not install");
+    }
     let (dec_w, dec_h) = (started.width(), started.height());
     let row_bytes = dec_w * 3;
     let linear = p.linear_light && (dec_w, dec_h) != (dst_w, dst_h);

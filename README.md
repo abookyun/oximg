@@ -44,13 +44,19 @@ AWS pending (see [Benchmarks](#benchmarks)).
   16-bit samples with Lanczos3, JPEG sources are decoded at full size
   so the whole reduction is the resampler's, and alpha is premultiplied
   across the resample — the properties behind the SSIMULACRA2 scores in
-  [Benchmarks](#benchmarks). Shrink-on-load is available
-  (`OXIMG_DCT_MARGIN`) and off by default: it buys decode time with
-  quality. Against a lossless ground truth (100 DIV2K photographs,
-  linear-light reference), full decode scores best at every ratio from
-  2x to 14x, and the 3/8
-  scale the old default picked at 5.3x costs 6.4 SSIMULACRA2 points on
-  average, for the same output size and the same bytes.
+  [Benchmarks](#benchmarks). The one exception is a reduction large
+  enough that a half-size decode of a 4:2:0 source still leaves 1.9x
+  for the resampler.
+  There luma decodes at 1/2 through a linear-light 2x2 average of the
+  full IDCT (`OXIMG_LINEAR_SHRINK`). That costs 0.3 SSIMULACRA2 at
+  4x and nothing measurable from 5.3x up, where libjpeg's own 1/2
+  costs 2.7. libjpeg's shrink-on-load (`OXIMG_DCT_MARGIN`) is
+  available and off by default: it buys decode time with quality.
+  Against a lossless ground truth (100 DIV2K photographs, linear-light
+  reference), full decode scores best at every ratio from 2x to 14x,
+  and the 3/8 scale the old default picked at 5.3x costs 6.4
+  SSIMULACRA2 points on average, for the same output size and the
+  same bytes.
 - **Performance as architecture, not flags**: per-arch row-streaming
   SIMD resize kernels (AVX2 on x86-64, NEON on aarch64, both verified
   against an f64 reference), JPEG decode fused with resize+encode on a
@@ -76,7 +82,7 @@ combines with any encode column:
 
 | Format | Decode | Encode |
 |---|---|---|
-| JPEG | baseline & progressive, grayscale; streaming, full-size decode (shrink-on-load opt-in) | jpegli progressive (default), mozjpeg profiles via `PRESET` |
+| JPEG | baseline & progressive, grayscale; streaming, full-size decode (4:2:0 luma at 1/2 in linear light from ~3.8x; libjpeg shrink-on-load opt-in) | jpegli progressive (default), mozjpeg profiles via `PRESET` |
 | PNG | palette / grayscale / 16-bit, normalized to RGB(A)8 | lossless RGB(A); opt-in palette quantization (`OXIMG_PNG_QUANTIZE`) |
 | WebP | lossy & lossless, alpha | lossy (`OXIMG_WEBP_QUALITY`, 75), alpha; output is scaled to fit WebP's 16383 px limit |
 | AVIF (`--features avif`) | dav1d: 8/10/12-bit, all subsamplings, alpha | SVT-AV1: 10-bit 4:2:0, tune=ssim, alpha as auxiliary image |
@@ -161,9 +167,12 @@ extraction entirely, so it also selects the naive conversion.
 ```
 source bytes (local file or HTTP origin)
   → format sniff → decode
-      JPEG: mozjpeg streaming decode at full size (shrink-on-load is
-            opt-in via OXIMG_DCT_MARGIN; CMYK/YCCK keep it at 1.7x,
-            where it caps a staged frame instead of costing quality)
+      JPEG: libjpeg-turbo streaming decode at full size; luma at 1/2
+            via a linear-light 2x2 average when that still leaves 1.9x
+            for the resampler (OXIMG_LINEAR_SHRINK). libjpeg's own
+            shrink-on-load is opt-in via OXIMG_DCT_MARGIN; CMYK/YCCK
+            keep it at 1.7x, where it caps a staged frame instead of
+            costing quality
       PNG:  png crate (palette/gray/16-bit normalized to RGB(A)8)
       WebP: libwebp
       AVIF: dav1d (8/10/12-bit, all subsamplings, alpha, bilinear chroma upsampling)
@@ -618,6 +627,7 @@ which makes it `OXIMG_MAX_ANIM_WORK`, not the canvas, that bounds it.
 | `OXIMG_OVERLAP` | `auto` | JPEG decode fused with resize+encode on a second thread (~-20% single-request latency); `auto` fuses while `2 x active requests <= visible CPUs`. Bytes are identical either way |
 | `OXIMG_PAR` | `1` | Resize threads per request |
 | `OXIMG_DCT_MARGIN` | unset | Decode-size headroom over the target: shrink-on-load, off by default. It is a **speed** knob. Scored against a lossless ground truth (100 DIV2K photographs, linear-light Lanczos reference, [dct_sweep.py](bench/quality/dct_sweep.py)), full decode is the best cell at every ratio from 2x to 14x. On a 5.3x downscale the 1.7 that used to be the default selects libjpeg's 3/8 scale: 6.4 SSIMULACRA2 points below a full decode on average, 42 on the worst image, for the same output size and the same bytes. The 1/2 scale costs 7.1 points at 2x and 2.7 at 4x. Only 6/8 stays within 0.5 at every ratio where it is reachable. Against an sRGB-space reference the 1/4 and 1/2 scales score higher than a full decode instead, so the reference decides that comparison ([#60](https://github.com/oximg/oximg/issues/60)). Set it to trade quality for decode time on large sources. The **buffered** paths ignore the default and keep 1.7 — CMYK/YCCK JPEG and WebP stage a whole frame at the decode size, so there the shrink caps peak RSS (WebP 21.7 MB against 133.9 MB full-size) rather than costing throughput; an explicit value still applies to them |
+| `OXIMG_LINEAR_SHRINK` | `1` | With `OXIMG_DCT_MARGIN` unset, a 4:2:0 or grayscale JPEG whose half-size decode still leaves 1.9x for the resampler decodes luma at 1/2 scale. That is a reduction of about 3.8x or more, e.g. a 2040-wide photo into 512. The decode keeps the full 8x8 IDCT a full decode runs and averages each 2x2 in linear light, instead of running libjpeg's gamma-space 4x4 IDCT. Against a lossless ground truth (100 DIV2K photographs, q92 4:2:0 sources, linear-light reference) it costs 0.3 SSIMULACRA2 on average at 4x (worst image -0.99) and nothing measurable from 5.3x up; libjpeg's own 1/2 costs 2.7 (worst 24). Server CPU per request at fit 512 drops 11-14% on Zen 4 and about 12% on Apple M2. Smaller reductions are untouched, and so are 4:2:2 and 4:4:4 sources: their reduced chroma pairs badly with linear luma (4x: -0.94 and -0.69 on average, worst images -6.6 and -4.1). `0` decodes at full size for every reduction |
 | `OXIMG_WEBP_DECODE_THREADS` | `1` | `0` disables libwebp's two-thread decode pipelining |
 | `OXIMG_AVIF_DECODE_THREADS` | arch-dependent | dav1d workers: 2 on x86-64 (SMT absorbs the second thread), 1 on aarch64 |
 | `OXIMG_TIMING` | unset | Print per-stage timing lines to stderr |

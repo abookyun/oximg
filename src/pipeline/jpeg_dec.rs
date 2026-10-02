@@ -42,6 +42,35 @@ pub(crate) struct Decompress<R> {
 /// per call; the loop asks again.
 const ROWS_PER_CALL: usize = 16;
 
+/// The linear shrink's transfer tables: 8-bit sRGB to 14-bit linear
+/// light, and 14-bit linear back to 8-bit sRGB, both rounded.
+fn shrink_luts() -> &'static ([u16; 256], Box<[u8; 16384]>) {
+    static LUTS: std::sync::OnceLock<([u16; 256], Box<[u8; 16384]>)> = std::sync::OnceLock::new();
+    LUTS.get_or_init(|| {
+        let mut to_linear = [0u16; 256];
+        for (v, out) in to_linear.iter_mut().enumerate() {
+            let s = v as f64 / 255.0;
+            let l = if s <= 0.04045 {
+                s / 12.92
+            } else {
+                ((s + 0.055) / 1.055).powf(2.4)
+            };
+            *out = (l * 16383.0 + 0.5) as u16;
+        }
+        let mut to_srgb = Box::new([0u8; 16384]);
+        for (v, out) in to_srgb.iter_mut().enumerate() {
+            let l = v as f64 / 16383.0;
+            let s = if l <= 0.0031308 {
+                l * 12.92
+            } else {
+                1.055 * l.powf(1.0 / 2.4) - 0.055
+            };
+            *out = ((s * 255.0 + 0.5) as i32).min(255) as u8;
+        }
+        (to_linear, to_srgb)
+    })
+}
+
 /// A decoder past `jpeg_start_decompress`: output dimensions are
 /// final and scanlines can be read.
 pub(crate) struct DecompressStarted<R> {
@@ -116,6 +145,22 @@ impl<R> Decompress<R> {
 
     pub(crate) fn num_components(&self) -> usize {
         self.cinfo.num_components.max(0) as usize
+    }
+
+    /// Grayscale, or three components with chroma subsampled 2x in both
+    /// directions (4:2:0): the layouts whose half-size decode leaves
+    /// chroma at its full stored resolution, so only luma is reduced.
+    pub(crate) fn is_gray_or_420(&self) -> bool {
+        // SAFETY: after jpeg_read_header, comp_info points at
+        // num_components entries.
+        let comps =
+            unsafe { std::slice::from_raw_parts(self.cinfo.comp_info, self.num_components()) };
+        let samp = |i: usize| (comps[i].h_samp_factor, comps[i].v_samp_factor);
+        match comps.len() {
+            1 => true,
+            3 => samp(0) == (2, 2) && samp(1) == (1, 1) && samp(2) == (1, 1),
+            _ => false,
+        }
     }
 
     /// DCT-domain scaling by `numerator / 8`.
@@ -203,6 +248,32 @@ impl<R> DecompressStarted<R> {
             done += read as usize;
         }
         Ok(dest)
+    }
+
+    /// Decode luma's 1/2 scale by averaging the full 8x8 IDCT in linear
+    /// light instead of running libjpeg's gamma-space 4x4 IDCT
+    /// (`linear_shrink.c`, issue #60). Returns false, leaving the
+    /// decoder as it was, unless luma is decoding at 4/8 with the
+    /// integer IDCT. Call before the first scanline is read.
+    pub(crate) fn linear_shrink(&mut self) -> bool {
+        unsafe extern "C-unwind" {
+            fn oximg_linear_shrink_install(
+                cinfo: &mut ffi::jpeg_decompress_struct,
+                to_linear: *const u16,
+                to_srgb: *const u8,
+            ) -> c_int;
+        }
+        if self.dec.cinfo.output_scanline != 0 {
+            return false;
+        }
+        let (to_linear, to_srgb) = shrink_luts();
+        // SAFETY: the tables are 'static and as long as the C side
+        // indexes (256 and 16384 entries); the hook state lives in the
+        // decoder's own image pool.
+        unsafe {
+            oximg_linear_shrink_install(&mut self.dec.cinfo, to_linear.as_ptr(), to_srgb.as_ptr())
+                != 0
+        }
     }
 
     pub(crate) fn finish(mut self) -> io::Result<()> {
@@ -582,6 +653,133 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Decode `jpeg` to YCbCr planes, interleaved, at `scale`/8, with or
+    /// without the linear shrink.
+    fn ycc(jpeg: &[u8], scale: u8, linear: bool) -> (usize, usize, Vec<u8>) {
+        let mut dec = Decompress::new_mem(jpeg).unwrap();
+        dec.scale(scale);
+        let mut started = dec.start(ColorSpace::JCS_YCbCr).unwrap();
+        if linear {
+            assert!(started.linear_shrink(), "must install at scale {scale}");
+        }
+        let (w, h) = (started.width(), started.height());
+        let mut px = vec![0u8; w * h * 3];
+        started.read_scanlines_into(&mut px).unwrap();
+        started.finish().unwrap();
+        (w, h, px)
+    }
+
+    /// A 4:2:0 source whose size is a whole number of MCUs, so every
+    /// output pixel's 2x2 lies inside the full-size image.
+    fn mcu_aligned() -> Vec<u8> {
+        let (w, h) = (320, 240);
+        let px: Vec<u8> = (0..w * h * 3)
+            .map(|i| ((i * 7 % 251) as u8).wrapping_add((i / (w * 3)) as u8))
+            .collect();
+        let mut c = mozjpeg::Compress::new(ColorSpace::JCS_RGB);
+        c.set_size(w, h);
+        c.set_quality(90.0);
+        let mut started = c.start_compress(Vec::new()).unwrap();
+        started.write_scanlines(&px).unwrap();
+        started.finish().unwrap()
+    }
+
+    #[test]
+    fn linear_shrink_is_the_linear_average_of_the_full_luma() {
+        // Luma at 1/2 must be exactly the full-size luma averaged 2x2
+        // through the transfer tables; chroma must be untouched.
+        let jpeg = mcu_aligned();
+        let (fw, fh, full) = ycc(&jpeg, 8, false);
+        let (w, h, half) = ycc(&jpeg, 4, true);
+        let (_, _, stock) = ycc(&jpeg, 4, false);
+        assert_eq!((w * 2, h * 2), (fw, fh));
+        let (to_linear, to_srgb) = shrink_luts();
+        let y = |x: usize, yy: usize| to_linear[full[(yy * fw + x) * 3] as usize] as u32;
+        for oy in 0..h {
+            for ox in 0..w {
+                let sum = y(2 * ox, 2 * oy)
+                    + y(2 * ox + 1, 2 * oy)
+                    + y(2 * ox, 2 * oy + 1)
+                    + y(2 * ox + 1, 2 * oy + 1);
+                let i = (oy * w + ox) * 3;
+                assert_eq!(half[i], to_srgb[(sum >> 2) as usize], "Y at {ox},{oy}");
+                assert_eq!(half[i + 1..i + 3], stock[i + 1..i + 3], "CbCr at {ox},{oy}");
+            }
+        }
+        assert!(half != stock, "the shrink must change luma");
+    }
+
+    #[test]
+    fn linear_shrink_on_grayscale_is_the_linear_average_of_the_full_decode() {
+        let (w, h) = (320, 240);
+        let px: Vec<u8> = (0..w * h)
+            .map(|i| ((i * 7 % 251) as u8).wrapping_add((i / w) as u8))
+            .collect();
+        let mut c = mozjpeg::Compress::new(ColorSpace::JCS_GRAYSCALE);
+        c.set_size(w, h);
+        c.set_quality(90.0);
+        let mut started = c.start_compress(Vec::new()).unwrap();
+        started.write_scanlines(&px).unwrap();
+        let jpeg = started.finish().unwrap();
+        let gray = |scale: u8, linear: bool| {
+            let mut dec = Decompress::new_mem(&jpeg).unwrap();
+            assert_eq!(dec.color_space(), ColorSpace::JCS_GRAYSCALE);
+            assert!(dec.is_gray_or_420());
+            dec.scale(scale);
+            let mut started = dec.start(ColorSpace::JCS_GRAYSCALE).unwrap();
+            if linear {
+                assert!(started.linear_shrink(), "must install on grayscale");
+            }
+            let (w, h) = (started.width(), started.height());
+            let mut out = vec![0u8; w * h];
+            started.read_scanlines_into(&mut out).unwrap();
+            started.finish().unwrap();
+            (w, h, out)
+        };
+        let (fw, _, full) = gray(8, false);
+        let (hw, hh, half) = gray(4, true);
+        assert_eq!((hw, hh), (w / 2, h / 2));
+        let (to_linear, to_srgb) = shrink_luts();
+        let at = |x: usize, y: usize| to_linear[full[y * fw + x] as usize] as u32;
+        for y in 0..hh {
+            for x in 0..hw {
+                let sum = at(2 * x, 2 * y)
+                    + at(2 * x + 1, 2 * y)
+                    + at(2 * x, 2 * y + 1)
+                    + at(2 * x + 1, 2 * y + 1);
+                assert_eq!(half[y * hw + x], to_srgb[(sum >> 2) as usize], "at {x},{y}");
+            }
+        }
+    }
+
+    #[test]
+    fn linear_shrink_installs_only_at_half_scale_before_reading() {
+        let jpeg = mcu_aligned();
+        for (scale, want) in [(8, false), (2, false), (4, true)] {
+            let mut dec = Decompress::new_mem(&jpeg).unwrap();
+            dec.scale(scale);
+            let mut started = dec.rgb().unwrap();
+            assert_eq!(started.linear_shrink(), want, "scale {scale}");
+        }
+        let mut dec = Decompress::new_mem(&jpeg).unwrap();
+        dec.scale(4);
+        let mut started = dec.rgb().unwrap();
+        let w = started.width();
+        started.read_scanlines_into(&mut vec![0u8; w * 3]).unwrap();
+        assert!(!started.linear_shrink(), "too late once a row is out");
+    }
+
+    #[test]
+    fn linear_shrink_decodes_ragged_and_progressive_sources() {
+        // Odd sizes end on partial blocks and MCUs; progressive sources
+        // reach the hook through the buffered coefficient path.
+        for (name, jpeg) in generated() {
+            let (w, h, px) = ycc(&jpeg, 4, true);
+            assert_eq!((w, h), (167, 109), "{name}");
+            assert_eq!(px.len(), w * h * 3);
         }
     }
 

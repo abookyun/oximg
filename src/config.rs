@@ -40,6 +40,11 @@ pub(crate) struct Config {
     /// dct_sweep.py, 100 DIV2K photographs). Set it to buy throughput
     /// back on large sources, knowing what it spends.
     pub dct_margin: Option<f64>,
+    /// OXIMG_LINEAR_SHRINK ("0" disables): with OXIMG_DCT_MARGIN unset,
+    /// a JPEG reduced 4x or more decodes luma at 1/2 scale through a
+    /// linear-light 2x2 average of the full IDCT (issue #60), leaving
+    /// at least 2x for the resampler.
+    pub linear_shrink: bool,
     /// OXIMG_JPEG_PROGRESSIVE ("0" selects baseline jpegli).
     pub jpegli_progressive: bool,
     /// OXIMG_FLATTEN_BG: alpha→JPEG flatten background, RRGGBB hex.
@@ -130,6 +135,7 @@ const KNOBS: &[&str] = &[
     "OXIMG_AUTO_ROTATE",
     "OXIMG_ICC",
     "OXIMG_DCT_MARGIN",
+    "OXIMG_LINEAR_SHRINK",
     "OXIMG_JPEG_PROGRESSIVE",
     "OXIMG_FLATTEN_BG",
     "OXIMG_PNG_EFFORT",
@@ -262,6 +268,7 @@ pub(crate) fn validate() -> Result<(), String> {
         "OXIMG_AUTO_ROTATE",
         "OXIMG_ICC",
         "OXIMG_JPEG_PROGRESSIVE",
+        "OXIMG_LINEAR_SHRINK",
         "OXIMG_WEBP_DECODE_THREADS",
         "OXIMG_PNG_QUANTIZE",
         "OXIMG_GIF_ANIMATION",
@@ -326,6 +333,7 @@ pub(crate) fn config() -> &'static Config {
         auto_rotate: var("OXIMG_AUTO_ROTATE").as_deref() != Some("0"),
         icc_passthrough: var("OXIMG_ICC").as_deref() != Some("0"),
         dct_margin: parsed("OXIMG_DCT_MARGIN"),
+        linear_shrink: var("OXIMG_LINEAR_SHRINK").as_deref() != Some("0"),
         jpegli_progressive: var("OXIMG_JPEG_PROGRESSIVE").as_deref() != Some("0"),
         flatten_bg: var("OXIMG_FLATTEN_BG")
             .and_then(|v| {
