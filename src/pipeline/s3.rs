@@ -161,6 +161,134 @@ fn canonical_header_value(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+struct Settings {
+    /// `http` or `https`.
+    scheme: String,
+    /// The endpoint's host, with the port only when it is not the
+    /// default one. This is what reqwest sends as `Host`, so it is also
+    /// what we sign.
+    host: String,
+    region: String,
+    /// `OXIMG_S3_PATH_STYLE`, when set.
+    path_style: Option<bool>,
+    /// Whether `OXIMG_S3_ENDPOINT` is set. A custom endpoint defaults to
+    /// path style.
+    custom_endpoint: bool,
+    credentials: Credentials,
+}
+
+impl Settings {
+    /// Path style puts the bucket in the path, virtual-host style in
+    /// the host name. Without `OXIMG_S3_PATH_STYLE`, a custom endpoint
+    /// uses path style, because MinIO only accepts that by default. On
+    /// AWS, a bucket name with a `.` also uses path style, as the AWS
+    /// SDKs do: `a.b.s3.<region>.amazonaws.com` is not covered by the
+    /// `*.s3.<region>.amazonaws.com` certificate, so TLS would fail.
+    fn path_style(&self, bucket: &str) -> bool {
+        self.path_style
+            .unwrap_or(self.custom_endpoint || bucket.contains('.'))
+    }
+}
+
+/// Split an endpoint URL into its scheme and its `Host` value. Only
+/// `scheme://host[:port]` is accepted: a path, a query or user info in
+/// the endpoint would change what we sign.
+fn parse_endpoint(raw: &str) -> Result<(String, String), String> {
+    let bad = |why: &str| format!("OXIMG_S3_ENDPOINT={raw:?} {why}");
+    let url = reqwest::Url::parse(raw).map_err(|e| bad(&format!("is not a URL ({e})")))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(bad("must be http:// or https://"));
+    }
+    if url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err(bad(
+            "must be scheme://host[:port], with nothing after the host",
+        ));
+    }
+    let host = url.host_str().ok_or_else(|| bad("has no host"))?;
+    let host = match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_string(),
+    };
+    Ok((url.scheme().to_string(), host))
+}
+
+/// True for an IPv4 or bracketed IPv6 host, with or without a port.
+fn is_ip_literal(host: &str) -> bool {
+    if host.starts_with('[') {
+        return true;
+    }
+    let name = host.rsplit_once(':').map_or(host, |(name, _)| name);
+    name.parse::<std::net::Ipv4Addr>().is_ok()
+}
+
+/// Where one object lives: the URL to fetch, the `Host` we sign, and
+/// the encoded path, which is both the URL path and the canonical URI.
+struct Target {
+    url: String,
+    host: String,
+    path: String,
+}
+
+impl Target {
+    fn new(s: &Settings, bucket: &str, raw_key: &[u8]) -> Self {
+        let key = uri_encode_path(raw_key);
+        let (host, path) = if s.path_style(bucket) {
+            (s.host.clone(), format!("/{bucket}/{key}"))
+        } else {
+            (format!("{bucket}.{}", s.host), format!("/{key}"))
+        };
+        Self {
+            url: format!("{}://{host}{path}", s.scheme),
+            host,
+            path,
+        }
+    }
+}
+
+/// S3 caps keys at 1024 bytes of UTF-8, the same as GCS. The store
+/// would reject a longer key, so we answer it locally, like `gs://`
+/// does (#13).
+const S3_MAX_KEY_BYTES: usize = 1024;
+
+/// True if a key has a `.` or `..` segment. reqwest parses the URL and
+/// removes such segments, so the path it sends would differ from the
+/// path we signed, and S3 would answer 403. The server already refuses
+/// these paths. A library caller could still pass one.
+fn has_dot_segment(raw_key: &[u8]) -> bool {
+    raw_key
+        .split(|b| *b == b'/')
+        .any(|segment| segment == b"." || segment == b"..")
+}
+
+/// Undo the caller's segment-wise percent-encoding. A `%` that does not
+/// start a valid escape stays as it is.
+fn percent_decode(encoded: &str) -> Vec<u8> {
+    let bytes = encoded.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(&[hi, lo]) = bytes.get(i + 1..i + 3)
+            && hi.is_ascii_hexdigit()
+            && lo.is_ascii_hexdigit()
+        {
+            // Two hex digits, so the value always fits in a byte.
+            let digit = |c: u8| (c as char).to_digit(16).unwrap_or(0) as u8;
+            out.push(digit(hi) << 4 | digit(lo));
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,5 +482,117 @@ mod tests {
         // Leap day, and the last second of a leap year.
         assert_eq!(amz_datetime(951_782_400), "20000229T000000Z");
         assert_eq!(amz_datetime(1_735_689_599), "20241231T235959Z");
+    }
+
+    fn settings_for(scheme: &str, host: &str, path_style: Option<bool>) -> Settings {
+        Settings {
+            scheme: scheme.into(),
+            host: host.into(),
+            region: "us-east-1".into(),
+            path_style,
+            custom_endpoint: false,
+            credentials: creds(None),
+        }
+    }
+
+    #[test]
+    fn target_path_and_virtual_host_style() {
+        let path = Target::new(
+            &settings_for("http", "127.0.0.1:9000", Some(true)),
+            "pics",
+            b"a/b c.jpg",
+        );
+        assert_eq!(path.url, "http://127.0.0.1:9000/pics/a/b%20c.jpg");
+        assert_eq!(path.host, "127.0.0.1:9000");
+        assert_eq!(path.path, "/pics/a/b%20c.jpg");
+
+        let vhost = Target::new(
+            &settings_for("https", "s3.ap-northeast-1.amazonaws.com", None),
+            "pics",
+            b"a/b c.jpg",
+        );
+        assert_eq!(
+            vhost.url,
+            "https://pics.s3.ap-northeast-1.amazonaws.com/a/b%20c.jpg"
+        );
+        assert_eq!(vhost.host, "pics.s3.ap-northeast-1.amazonaws.com");
+        assert_eq!(vhost.path, "/a/b%20c.jpg");
+
+        // On AWS, a dotted bucket falls back to path style, unless
+        // OXIMG_S3_PATH_STYLE says otherwise.
+        let aws = settings_for("https", "s3.us-east-1.amazonaws.com", None);
+        let dotted = Target::new(&aws, "img.example.com", b"x.jpg");
+        assert_eq!(
+            dotted.url,
+            "https://s3.us-east-1.amazonaws.com/img.example.com/x.jpg"
+        );
+        let forced = settings_for("https", "s3.us-east-1.amazonaws.com", Some(false));
+        assert_eq!(
+            Target::new(&forced, "img.example.com", b"x.jpg").host,
+            "img.example.com.s3.us-east-1.amazonaws.com"
+        );
+        // A custom endpoint defaults to path style.
+        let custom = Settings {
+            custom_endpoint: true,
+            ..settings_for("https", "minio.internal", None)
+        };
+        assert_eq!(Target::new(&custom, "pics", b"x.jpg").path, "/pics/x.jpg");
+    }
+
+    #[test]
+    fn dot_segments_are_found() {
+        assert!(has_dot_segment(b"a/../b.jpg"));
+        assert!(has_dot_segment(b"./b.jpg"));
+        assert!(has_dot_segment(b"a/.."));
+        assert!(!has_dot_segment(b"a/.b/c..jpg"));
+        assert!(!has_dot_segment(b"a//b.jpg"));
+    }
+
+    #[test]
+    fn endpoint_must_be_scheme_and_host() {
+        assert_eq!(
+            parse_endpoint("http://127.0.0.1:9000").unwrap(),
+            ("http".into(), "127.0.0.1:9000".into())
+        );
+        // A trailing slash is fine. A default port is dropped, because
+        // reqwest drops it from `Host` too.
+        assert_eq!(
+            parse_endpoint("https://example.r2.cloudflarestorage.com:443/").unwrap(),
+            ("https".into(), "example.r2.cloudflarestorage.com".into())
+        );
+        for bad in [
+            "s3.amazonaws.com",
+            "ftp://host",
+            "https://host/bucket",
+            "https://host/?x=1",
+            "https://user:pw@host",
+        ] {
+            assert!(parse_endpoint(bad).is_err(), "{bad} should be refused");
+        }
+    }
+
+    /// The caller's encoding is undone byte for byte, and SigV4's
+    /// encoding is applied on top. A lone `%` survives as a literal.
+    #[test]
+    fn caller_encoding_round_trips_to_sigv4() {
+        assert_eq!(percent_decode("a%20b%2Bc+d"), b"a b+c+d");
+        assert_eq!(percent_decode("%E4%B8%AD.jpg"), "\u{4e2d}.jpg".as_bytes());
+        assert_eq!(percent_decode("100%.jpg"), b"100%.jpg");
+        assert_eq!(percent_decode("bad%zzhex%4"), b"bad%zzhex%4");
+        // `from_str_radix` would read "+1" as a number. This must not.
+        assert_eq!(percent_decode("%+1"), b"%+1");
+        assert_eq!(
+            uri_encode_path(&percent_decode("plus+sign.jpg")),
+            "plus%2Bsign.jpg"
+        );
+    }
+
+    #[test]
+    fn ip_literal_hosts() {
+        assert!(is_ip_literal("127.0.0.1:9000"));
+        assert!(is_ip_literal("10.0.0.5"));
+        assert!(is_ip_literal("[::1]:9000"));
+        assert!(!is_ip_literal("s3.us-east-1.amazonaws.com"));
+        assert!(!is_ip_literal("minio.internal:9000"));
     }
 }
