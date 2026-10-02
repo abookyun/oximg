@@ -713,6 +713,49 @@ mod tests {
     }
 
     #[test]
+    fn linear_shrink_on_grayscale_is_the_linear_average_of_the_full_decode() {
+        let (w, h) = (320, 240);
+        let px: Vec<u8> = (0..w * h)
+            .map(|i| ((i * 7 % 251) as u8).wrapping_add((i / w) as u8))
+            .collect();
+        let mut c = mozjpeg::Compress::new(ColorSpace::JCS_GRAYSCALE);
+        c.set_size(w, h);
+        c.set_quality(90.0);
+        let mut started = c.start_compress(Vec::new()).unwrap();
+        started.write_scanlines(&px).unwrap();
+        let jpeg = started.finish().unwrap();
+        let gray = |scale: u8, linear: bool| {
+            let mut dec = Decompress::new_mem(&jpeg).unwrap();
+            assert_eq!(dec.color_space(), ColorSpace::JCS_GRAYSCALE);
+            assert!(dec.is_gray_or_420());
+            dec.scale(scale);
+            let mut started = dec.start(ColorSpace::JCS_GRAYSCALE).unwrap();
+            if linear {
+                assert!(started.linear_shrink(), "must install on grayscale");
+            }
+            let (w, h) = (started.width(), started.height());
+            let mut out = vec![0u8; w * h];
+            started.read_scanlines_into(&mut out).unwrap();
+            started.finish().unwrap();
+            (w, h, out)
+        };
+        let (fw, _, full) = gray(8, false);
+        let (hw, hh, half) = gray(4, true);
+        assert_eq!((hw, hh), (w / 2, h / 2));
+        let (to_linear, to_srgb) = shrink_luts();
+        let at = |x: usize, y: usize| to_linear[full[y * fw + x] as usize] as u32;
+        for y in 0..hh {
+            for x in 0..hw {
+                let sum = at(2 * x, 2 * y)
+                    + at(2 * x + 1, 2 * y)
+                    + at(2 * x, 2 * y + 1)
+                    + at(2 * x + 1, 2 * y + 1);
+                assert_eq!(half[y * hw + x], to_srgb[(sum >> 2) as usize], "at {x},{y}");
+            }
+        }
+    }
+
+    #[test]
     fn linear_shrink_installs_only_at_half_scale_before_reading() {
         let jpeg = mcu_aligned();
         for (scale, want) in [(8, false), (2, false), (4, true)] {

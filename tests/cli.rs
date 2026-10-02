@@ -394,6 +394,47 @@ fn policy_source(name: &str, chroma: (u8, u8)) -> std::path::PathBuf {
     path
 }
 
+/// The same 1600x1200 scene as a single-component grayscale JPEG.
+fn policy_source_gray(name: &str) -> std::path::PathBuf {
+    let (w, h) = (1600, 1200);
+    let mut seed = 0x9E3779B9u32;
+    let mut px = Vec::with_capacity(w * h);
+    for y in 0..h {
+        for x in 0..w {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            px.push((x * 170 / w + y * 50 / h + (seed >> 28) as usize) as u8);
+        }
+    }
+    let mut comp = mozjpeg::Compress::new(mozjpeg::ColorSpace::JCS_GRAYSCALE);
+    comp.set_size(w, h);
+    comp.set_quality(90.0);
+    let mut started = comp.start_compress(Vec::new()).unwrap();
+    started.write_scanlines(&px).unwrap();
+    let path = tmp(name);
+    std::fs::write(&path, started.finish().unwrap()).unwrap();
+    path
+}
+
+/// Grayscale sources take the same policy as 4:2:0: half size at 4x
+/// and at the boundary, full size past it, below it, and when off.
+#[test]
+fn linear_shrink_policy_covers_grayscale() {
+    let src = policy_source_gray("policy-gray.jpg");
+    let (full, half) = ((1600, 1200), (800, 600));
+    assert_eq!(decode_size(&src, 400, &[]).0, half);
+    assert_eq!(decode_size(&src, 420, &[]).0, half);
+    assert_eq!(decode_size(&src, 421, &[]).0, full);
+    let (dims, on) = decode_size(&src, 533, &[]);
+    assert_eq!(dims, full);
+    let (_, off) = decode_size(&src, 533, &[("OXIMG_LINEAR_SHRINK", "0")]);
+    assert!(on == off, "below 1.9x left, the output must not change");
+    assert_eq!(
+        decode_size(&src, 400, &[("OXIMG_LINEAR_SHRINK", "0")]).0,
+        full
+    );
+    std::fs::remove_file(&src).ok();
+}
+
 /// Resize `src` to `width` wide with OXIMG_TIMING on; returns the
 /// decoded size the timing line reports and the output bytes.
 fn decode_size(
@@ -401,7 +442,12 @@ fn decode_size(
     width: u32,
     env: &[(&str, &str)],
 ) -> ((usize, usize), Vec<u8>) {
-    let out = tmp(&format!("policy-{width}-{}.jpg", env.len()));
+    // Named after the source too: the policy tests run in parallel.
+    let out = tmp(&format!(
+        "out-{}-{width}-{}.jpg",
+        src.file_stem().unwrap().to_string_lossy(),
+        env.len()
+    ));
     let mut cmd = bin();
     cmd.args(["resize"])
         .arg(src)
