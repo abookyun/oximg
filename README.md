@@ -82,7 +82,7 @@ combines with any encode column:
 
 | Format | Decode | Encode |
 |---|---|---|
-| JPEG | baseline & progressive, grayscale; streaming, full-size decode (4:2:0 luma at 1/2 in linear light from ~3.8x; libjpeg shrink-on-load opt-in) | jpegli progressive (default), mozjpeg profiles via `PRESET` |
+| JPEG | baseline, extended sequential (SOF1) & progressive, grayscale; streaming, full-size decode (4:2:0 luma at 1/2 in linear light from ~3.8x; libjpeg shrink-on-load opt-in) | jpegli progressive (default) or sequential (SOF1, `OXIMG_JPEG_PROGRESSIVE=0`), mozjpeg profiles via `PRESET` |
 | PNG | palette / grayscale / 16-bit, normalized to RGB(A)8 | lossless RGB(A); opt-in palette quantization (`OXIMG_PNG_QUANTIZE`) |
 | WebP | lossy & lossless, alpha | lossy (`OXIMG_WEBP_QUALITY`, 75), alpha; output is scaled to fit WebP's 16383 px limit |
 | AVIF (`--features avif`) | dav1d: 8/10/12-bit, all subsamplings, alpha | SVT-AV1: 10-bit 4:2:0, tune=ssim, alpha as auxiliary image |
@@ -520,7 +520,7 @@ never silently falls back to a default.
 |---|---|---|
 | `QUALITY` | `80` | JPEG quality |
 | `PRESET` | `jpegli` | `fast` = mozjpeg baseline, `small` = mozjpeg trellis+progressive |
-| `OXIMG_JPEG_PROGRESSIVE` | `1` | `0` = baseline jpegli: a few percent larger output for lower latency; with `OXIMG_OVERLAP` this is the speed profile (~-13% single-request latency, ~+9% saturated throughput) |
+| `OXIMG_JPEG_PROGRESSIVE` | `1` | `0` = sequential jpegli (SOF1, extended sequential; not baseline SOF0): a few percent larger output for lower latency; with `OXIMG_OVERLAP` this is the speed profile (~-13% single-request latency, ~+9% saturated throughput) |
 | `OXIMG_WEBP_QUALITY` | `75` | WebP quality |
 | `OXIMG_WEBP_EFFORT` | `2` | libwebp `method` |
 | `OXIMG_AVIF_QUALITY` | `55` | AVIF quality (libavif semantics; chosen by operating point, see [bench/quality/QUALITY.md](bench/quality/QUALITY.md)) |

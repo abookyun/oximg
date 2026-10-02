@@ -80,7 +80,7 @@ At q80 oximg produces 33.9 KB (Kodak group mean, jpegli default);
 imgproxy reaches a lower score (76.0) at q90 with 63.8 KB.
 
 The speed profile (`OXIMG_JPEG_PROGRESSIVE=0`, see BENCH.md) scores
-**identically to the default on all 30 corpus images** — baseline and
+**identically to the default on all 30 corpus images** — sequential (SOF1) and
 progressive jpegli encode the same quantized coefficients, differing
 only in entropy layout — at +9-11% bytes (Kodak group: 37.2 KB vs
 34.0 KB; imgproxy produces 35.0 KB at 71.2). That comparison was made
