@@ -1022,13 +1022,13 @@ fn preset_bytes_do_not_depend_on_overlap_gate() {
     }
 }
 
-/// The default jpegli encode is progressive with oximg's own scan
-/// script — no successive-approximation refinements — on every route
-/// into the encoder: the fused JPEG worker, the serial JPEG path, and a
-/// PNG source's whole-frame encode. `OXIMG_JPEG_PROGRESSIVE=0` is one
-/// sequential scan instead.
+/// The default jpegli encode is one sequential scan on every route into
+/// the encoder: the fused JPEG worker, the serial JPEG path, and a PNG
+/// source's whole-frame encode. `OXIMG_JPEG_PROGRESSIVE=1` writes
+/// progressive with oximg's own scan script, with no
+/// successive-approximation refinements.
 #[test]
-fn jpegli_default_uses_the_scan_script_and_the_knob_selects_sequential() {
+fn jpegli_default_is_sequential_and_the_knob_selects_the_scan_script() {
     let script: Vec<common::Scan> = vec![
         (vec![0, 1, 2], 0, 0, 0, 0),
         (vec![0], 1, 2, 0, 0),
@@ -1044,16 +1044,20 @@ fn jpegli_default_uses_the_scan_script_and_the_knob_selects_sequential() {
         let s = Server::start(&[("OXIMG_OVERLAP", overlap.into())]);
         for url in urls {
             let (sof, scans) = common::jpeg_scans(&s.get(url).unwrap().2);
-            assert_eq!(sof, 0xC2, "OVERLAP={overlap} {url}: not progressive");
-            assert_eq!(scans, script, "OVERLAP={overlap} {url}");
+            // jpegli's sequential output is SOF1 (extended), not SOF0.
+            assert_eq!(sof, 0xC1, "OVERLAP={overlap} {url}: not sequential");
+            assert_eq!(
+                scans,
+                vec![(vec![0, 1, 2], 0, 63, 0, 0)],
+                "OVERLAP={overlap} {url}"
+            );
         }
     }
-    let s = Server::start(&[("OXIMG_JPEG_PROGRESSIVE", "0".into())]);
+    let s = Server::start(&[("OXIMG_JPEG_PROGRESSIVE", "1".into())]);
     for url in urls {
         let (sof, scans) = common::jpeg_scans(&s.get(url).unwrap().2);
-        // jpegli's sequential output is SOF1 (extended), not SOF0.
-        assert_eq!(sof, 0xC1, "{url}: not sequential");
-        assert_eq!(scans, vec![(vec![0, 1, 2], 0, 63, 0, 0)], "{url}");
+        assert_eq!(sof, 0xC2, "{url}: not progressive");
+        assert_eq!(scans, script, "{url}");
     }
 }
 
@@ -3127,8 +3131,8 @@ fn jpeg_estimate_follows_the_shrink_on_load_scale() {
         .expect("encode fixture")
         .0
     };
-    // PRESET=fast is mozjpeg's baseline profile; the default (jpegli)
-    // writes progressive, which is the other half of this test.
+    // PRESET=fast is mozjpeg's baseline profile and PRESET=small its
+    // progressive one, the other half of this test.
     std::fs::write(
         dir.join("baseline.jpg"),
         encode(oximg::pipeline::Encoder::MozFast),
@@ -3136,7 +3140,7 @@ fn jpeg_estimate_follows_the_shrink_on_load_scale() {
     .unwrap();
     std::fs::write(
         dir.join("progressive.jpg"),
-        encode(oximg::pipeline::Encoder::Jpegli),
+        encode(oximg::pipeline::Encoder::MozSmall),
     )
     .unwrap();
 

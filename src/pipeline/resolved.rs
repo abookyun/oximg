@@ -153,7 +153,7 @@ mod tests {
             icc_passthrough: true,
             dct_margin: None,
             linear_shrink: true,
-            jpegli_progressive: true,
+            jpegli_progressive: false,
             flatten_bg: [255, 255, 255],
             png_compression: None,
             png_quantize: false,

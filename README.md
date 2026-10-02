@@ -66,10 +66,11 @@ AWS pending (see [Benchmarks](#benchmarks)).
   pinned to the core count. Peak
   memory stays at a fraction of imgproxy's under identical load
   ([BENCH.md](BENCH.md)).
-- **Tunable profiles**: the default maximizes quality per byte
-  (progressive jpegli); one env flip (`OXIMG_JPEG_PROGRESSIVE=0`)
-  trades ~10% output size for the lowest latency at unchanged pixels.
-  `PRESET=fast|small` selects mozjpeg profiles instead.
+- **Tunable profiles**: the default is the cheap jpegli configuration
+  (sequential, adaptive quantization off, quality mapped so each q keeps
+  its earlier SSIMULACRA2); one env flip (`OXIMG_JPEG_PROGRESSIVE=1`)
+  spends CPU on progressive scans for ~6% smaller output at unchanged
+  pixels. `PRESET=fast|small` selects mozjpeg profiles instead.
 - **Self-contained deploys**: multi-arch Docker images
   (linux/amd64 + linux/arm64) on Docker Hub (`oximg/oximg`) and GHCR
   (`ghcr.io/oximg/oximg`); a single static-leaning binary otherwise.
@@ -82,7 +83,7 @@ combines with any encode column:
 
 | Format | Decode | Encode |
 |---|---|---|
-| JPEG | baseline & progressive, grayscale; streaming, full-size decode (4:2:0 luma at 1/2 in linear light from ~3.8x; libjpeg shrink-on-load opt-in) | jpegli progressive (default), mozjpeg profiles via `PRESET` |
+| JPEG | baseline, extended sequential (SOF1) & progressive, grayscale; streaming, full-size decode (4:2:0 luma at 1/2 in linear light from ~3.8x; libjpeg shrink-on-load opt-in) | jpegli sequential (default; progressive via `OXIMG_JPEG_PROGRESSIVE=1`), mozjpeg profiles via `PRESET` |
 | PNG | palette / grayscale / 16-bit, normalized to RGB(A)8 | lossless RGB(A); opt-in palette quantization (`OXIMG_PNG_QUANTIZE`) |
 | WebP | lossy & lossless, alpha | lossy (`OXIMG_WEBP_QUALITY`, 75), alpha; output is scaled to fit WebP's 16383 px limit |
 | AVIF (`--features avif`) | dav1d: 8/10/12-bit, all subsamplings, alpha | SVT-AV1: 10-bit 4:2:0, tune=ssim, alpha as auxiliary image |
@@ -520,7 +521,7 @@ never silently falls back to a default.
 |---|---|---|
 | `QUALITY` | `80` | JPEG quality |
 | `PRESET` | `jpegli` | `fast` = mozjpeg baseline, `small` = mozjpeg trellis+progressive |
-| `OXIMG_JPEG_PROGRESSIVE` | `1` | `0` = baseline jpegli: a few percent larger output for lower latency; with `OXIMG_OVERLAP` this is the speed profile (~-13% single-request latency, ~+9% saturated throughput) |
+| `OXIMG_JPEG_PROGRESSIVE` | `0` | `0` = sequential jpegli (SOF1, extended sequential, which is how jpegli marks it; not baseline SOF0). `1` = progressive jpegli with oximg's scan script: the same pixels in about 6% fewer bytes, for 7-9% more server CPU per request (DIV2K fit 512, Zen 4). Either way jpegli runs with adaptive quantization off, and the requested quality is mapped to the jpegli quality that scores the SSIMULACRA2 the AQ-on encoder of 0.13 and earlier scored at it (q80 runs jpegli q70) |
 | `OXIMG_WEBP_QUALITY` | `75` | WebP quality |
 | `OXIMG_WEBP_EFFORT` | `2` | libwebp `method` |
 | `OXIMG_AVIF_QUALITY` | `55` | AVIF quality (libavif semantics; chosen by operating point, see [bench/quality/QUALITY.md](bench/quality/QUALITY.md)) |
