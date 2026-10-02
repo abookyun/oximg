@@ -158,7 +158,7 @@ quality, ahead of imgproxy at every concurrency in this table.
 default, with adaptive quantization off and the quality remapped, and
 `OXIMG_JPEG_PROGRESSIVE=1` selects progressive.)
 
-The default keeps the 10% smaller progressive output and leads the
+In that pre-0.14 setup, the default kept the 10% smaller progressive output and led the
 real-photo DIV2K harness (196-197 req/s on this box's 2-cpu pinned
 replica); its residual throughput gap here — 4% at c=1, 5-6% at
 saturation on this one synthetic — is the deliberate quality work
