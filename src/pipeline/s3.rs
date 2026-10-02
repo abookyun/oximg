@@ -1,19 +1,38 @@
 //! `s3://` source fetching (issue #11): read objects from a private
-//! S3 or S3-compatible bucket.
+//! S3 or S3-compatible bucket (AWS S3, Cloudflare R2, MinIO). It runs
+//! on the same shared reqwest client as every other fetch, so size
+//! caps and deadlines apply unchanged. `fetch` has its own copy of the
+//! one-retry rule.
 //!
-//! This first part is the request signer: AWS Signature Version 4. It
-//! uses `hmac` and `sha2`, which the `server` feature already has for
-//! URL signing. It does not use an AWS SDK: we only sign one kind of
+//! Credentials: static keys from the environment (`AWS_ACCESS_KEY_ID`
+//! and `AWS_SECRET_ACCESS_KEY`, plus `AWS_SESSION_TOKEN` for temporary
+//! keys). The `~/.aws` profile files are out of scope.
+//! `aws configure export-credentials --format env` turns a profile
+//! into static keys.
+//!
+//! Requests are signed with AWS Signature Version 4. The signer uses
+//! `hmac` and `sha2`, which the `server` feature already has for URL
+//! signing. It does not use an AWS SDK: we only sign one kind of
 //! request, a GET with an empty body.
 //!
 //! S3 differs from the generic SigV4 rules in one place. The canonical
-//! URI is the path encoded once, with no normalization. In S3, `.` and
-//! `..` segments and repeated slashes are part of the key, so we sign
-//! the path exactly as we send it.
+//! URI is the path encoded once, with no normalization. Repeated
+//! slashes are part of the key, and we sign the path exactly as we send
+//! it. `.` and `..` segments are refused before signing: reqwest would
+//! remove them from the URL, and the signature would no longer match.
+//!
+//! Settings are read once, on first use. `AWS_REGION` is required.
+//! `OXIMG_S3_ENDPOINT` defaults to `https://s3.<region>.amazonaws.com`.
+//! `OXIMG_S3_PATH_STYLE` is explained at `Settings::path_style`.
+//! Temporary keys are not refreshed. When `AWS_SESSION_TOKEN` expires,
+//! every fetch fails until the process restarts with new keys.
 
+use anyhow::Result;
 use hmac::Mac;
 use hmac::digest::KeyInit;
 use sha2::{Digest, Sha256};
+use std::sync::OnceLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::{SourceRejected, UpstreamFault};
 
@@ -192,6 +211,77 @@ impl Settings {
     }
 }
 
+/// Read an `AWS_*` variable the way `config::var` reads ours: trimmed,
+/// and blank reads as unset. It is not `config::var` itself because the
+/// env inventory test in `config.rs` finds non-`OXIMG_` reads by their
+/// `std::env::var("…")` call.
+fn aws_var(value: Result<String, std::env::VarError>) -> Option<String> {
+    value
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn load_settings() -> Result<Settings, String> {
+    let region = aws_var(std::env::var("AWS_REGION")).ok_or(
+        "s3:// needs AWS_REGION, the bucket's region (R2 accepts `auto`). \
+             AWS_DEFAULT_REGION is not read",
+    )?;
+    // The region goes into the host name and the signature scope.
+    if !region
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err(format!("AWS_REGION={region:?} is not a region name"));
+    }
+    let custom = crate::config::var("OXIMG_S3_ENDPOINT");
+    if custom.is_none() && region == "auto" {
+        return Err(
+            "AWS_REGION=auto is for R2. Set OXIMG_S3_ENDPOINT to the R2 endpoint, \
+                    or set AWS_REGION to the AWS bucket's region"
+                .into(),
+        );
+    }
+    let endpoint = custom
+        .clone()
+        .unwrap_or_else(|| format!("https://s3.{region}.amazonaws.com"));
+    let (scheme, host) = parse_endpoint(&endpoint)?;
+    // `config::validate` refuses other values at boot. A library caller
+    // that skips it gets the default.
+    let path_style = match crate::config::var("OXIMG_S3_PATH_STYLE").as_deref() {
+        Some("1") => Some(true),
+        Some("0") => Some(false),
+        _ => None,
+    };
+    // Virtual-host style puts the bucket in front of the host name. An
+    // IP address cannot take a prefix like that. Without the setting, a
+    // custom endpoint already uses path style.
+    if path_style == Some(false) && is_ip_literal(&host) {
+        return Err(format!(
+            "OXIMG_S3_ENDPOINT={endpoint:?} is an IP address, so it needs path style \
+             (OXIMG_S3_PATH_STYLE=1)"
+        ));
+    }
+    let (Some(access_key_id), Some(secret_access_key)) = (
+        aws_var(std::env::var("AWS_ACCESS_KEY_ID")),
+        aws_var(std::env::var("AWS_SECRET_ACCESS_KEY")),
+    ) else {
+        return Err("s3:// needs AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY".into());
+    };
+    Ok(Settings {
+        scheme,
+        host,
+        region,
+        path_style,
+        custom_endpoint: custom.is_some(),
+        credentials: Credentials {
+            access_key_id,
+            secret_access_key,
+            session_token: aws_var(std::env::var("AWS_SESSION_TOKEN")),
+        },
+    })
+}
+
 /// Split an endpoint URL into its scheme and its `Host` value. Only
 /// `scheme://host[:port]` is accepted: a path, a query or user info in
 /// the endpoint would change what we sign.
@@ -228,6 +318,16 @@ fn is_ip_literal(host: &str) -> bool {
     name.parse::<std::net::Ipv4Addr>().is_ok()
 }
 
+/// The settings, read on first use. An error stays cached: the
+/// environment does not change while the process runs.
+fn settings() -> Result<&'static Settings, String> {
+    static SETTINGS: OnceLock<Result<Settings, String>> = OnceLock::new();
+    SETTINGS
+        .get_or_init(load_settings)
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
 /// Where one object lives: the URL to fetch, the `Host` we sign, and
 /// the encoded path, which is both the URL path and the canonical URI.
 struct Target {
@@ -250,6 +350,42 @@ impl Target {
             path,
         }
     }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Sign and send one GET. Every attempt is signed again, so a retry
+/// carries a fresh `x-amz-date`.
+async fn send_signed(s: &Settings, t: &Target) -> reqwest::Result<reqwest::Response> {
+    let datetime = amz_datetime(unix_now());
+    let mut headers = vec![
+        ("host", t.host.as_str()),
+        ("x-amz-content-sha256", EMPTY_SHA256),
+        ("x-amz-date", datetime.as_str()),
+    ];
+    if let Some(token) = &s.credentials.session_token {
+        headers.push(("x-amz-security-token", token));
+    }
+    let req = Request {
+        method: "GET",
+        canonical_uri: &t.path,
+        canonical_query: "",
+        headers: &headers,
+        payload_hash: EMPTY_SHA256,
+    };
+    let auth = authorization(&req, &s.credentials, &s.region, "s3", &datetime);
+    // reqwest sets `Host` from the URL. We signed the same value.
+    let mut builder = super::fetch_client()
+        .get(&t.url)
+        .header("authorization", auth);
+    for (name, value) in headers.iter().filter(|(name, _)| *name != "host") {
+        builder = builder.header(*name, *value);
+    }
+    builder.send().await
 }
 
 /// S3 caps keys at 1024 bytes of UTF-8, the same as GCS. The store
@@ -289,6 +425,73 @@ fn percent_decode(encoded: &str) -> Vec<u8> {
         }
     }
     out
+}
+
+/// Statuses worth one retry, as the SDKs retry reads: throttling and
+/// temporary server errors. Unlike `gs://`, 401 is not here. Static
+/// keys do not refresh, so a second try would fail the same way.
+fn retryable_status(code: u16) -> bool {
+    matches!(code, 429 | 500 | 502 | 503 | 504)
+}
+
+/// GET one object, signed. `key` is already percent-encoded by the
+/// caller (the same segment-wise encoding as the HTTP mode). We decode
+/// it and encode it again with the stricter SigV4 rules.
+pub(crate) async fn fetch(bucket: &str, key: &str) -> Result<reqwest::Response> {
+    let raw_key = percent_decode(key);
+    if raw_key.len() > S3_MAX_KEY_BYTES {
+        return Err(anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "object key is {} bytes, over the {S3_MAX_KEY_BYTES}-byte S3 limit",
+                raw_key.len()
+            ),
+        )));
+    }
+    if has_dot_segment(&raw_key) {
+        return Err(anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "object key has a . or .. segment, which cannot be fetched as signed",
+        )));
+    }
+    // A settings error is a deployment fault, the same class as the
+    // store reporting one: `PermissionDenied`, so `SourceUnreadable`.
+    let s = settings().map_err(|e| {
+        anyhow::Error::new(std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))
+    })?;
+    let target = Target::new(s, bucket, &raw_key);
+    // One retry, on connection transients and on `retryable_status`.
+    // Unlike `gs://`, a 401 is not retried.
+    let first = send_signed(s, &target).await;
+    let retry = match &first {
+        Ok(resp) => retryable_status(resp.status().as_u16()),
+        Err(e) => !e.is_timeout() && (e.is_connect() || e.is_request()),
+    };
+    let resp = if retry {
+        super::UPSTREAM_RETRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        send_signed(s, &target).await
+    } else {
+        first
+    }
+    .map_err(map_transport_err)?;
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let body = read_error_body(resp).await;
+    Err(status_error(status, body.code.as_deref(), bucket))
+}
+
+/// Transport failures: timeouts keep their io shape for
+/// classification, everything else indicts the upstream.
+fn map_transport_err(e: reqwest::Error) -> anyhow::Error {
+    if e.is_timeout() {
+        return anyhow::Error::new(std::io::Error::new(std::io::ErrorKind::TimedOut, e));
+    }
+    anyhow::Error::new(e)
+        .context("fetch s3 object")
+        .context(UpstreamFault)
 }
 
 /// Error `<Code>` values that are the requester's fault: the key is
@@ -459,6 +662,83 @@ fn unescape_xml(text: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// The key the boot probe asks for. It should not exist. If it does,
+/// the probe still passes.
+const PROBE_KEY: &str = ".oximg-startup-probe";
+
+/// Boot probe: fail closed with a clear message instead of a 500 on the
+/// first cache miss. Unlike `gs://`, which only proves that credentials
+/// exist, a signed GET of a missing key also checks the endpoint, the
+/// region and the keys, and on AWS and MinIO the bucket. The expected
+/// answer is 404 `NoSuchKey`. The key is under the prefix, where reads
+/// go, so a key limited to that prefix passes.
+///
+/// One answer only warns. 403 `AccessDenied` is what AWS sends for a
+/// missing key when the key lacks `s3:ListBucket`, and reads can still
+/// work. It can also mean that the key cannot read this bucket, or (on
+/// R2) that the bucket does not exist, so the warning says both.
+pub(crate) fn startup(bucket: &str, prefix: Option<&str>) -> Result<(), String> {
+    let s = settings()?;
+    if s.scheme == "http" {
+        eprintln!(
+            "oximg: warning: OXIMG_S3_ENDPOINT uses http://, so requests, session tokens and \
+             images are not encrypted, and a signed request can be replayed. Use https:// \
+             outside a trusted network."
+        );
+    }
+    if prefix.is_some_and(|p| has_dot_segment(p.as_bytes())) {
+        return Err(format!(
+            "s3:// prefix {prefix:?} has a . or .. segment, which cannot be fetched as signed"
+        ));
+    }
+    let key = match prefix {
+        Some(p) => format!("{p}/{PROBE_KEY}"),
+        None => PROBE_KEY.to_string(),
+    };
+    let target = Target::new(s, bucket, key.as_bytes());
+    // `block_on_fetch` runs the future on another thread, so it must
+    // own what it uses.
+    super::block_on_fetch(probe(s, bucket.to_string(), target))
+}
+
+async fn probe(s: &'static Settings, bucket: String, target: Target) -> Result<(), String> {
+    let fail = |what: String| {
+        format!(
+            "s3:// boot probe of bucket {bucket:?} at {}://{} (region {:?}) {what}",
+            s.scheme, s.host, s.region
+        )
+    };
+    let resp = send_signed(s, &target).await.map_err(|e| {
+        fail(format!(
+            "could not reach the endpoint: {:#}",
+            anyhow::Error::new(e)
+        ))
+    })?;
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let body = read_error_body(resp).await;
+    match (status.as_u16(), body.code.as_deref()) {
+        (404, Some("NoSuchKey")) => Ok(()),
+        (403, Some("AccessDenied")) => {
+            eprintln!(
+                "oximg: warning: s3:// boot probe of bucket {bucket:?} got 403 AccessDenied \
+                 for a missing key. If the key lacks s3:ListBucket, reads work but a missing \
+                 object answers 500, not 404. If it lacks s3:GetObject on this bucket or \
+                 prefix, or the bucket does not exist (R2 answers 403 for that), every read \
+                 will fail."
+            );
+            Ok(())
+        }
+        _ => {
+            let code = body.code.as_deref().unwrap_or("(no code)");
+            let message = body.message.as_deref().unwrap_or("");
+            Err(fail(format!("got {status} {code}: {message}")))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -870,5 +1150,15 @@ mod tests {
         let denied = deployment_hint(403, Some("AccessDenied"), "b");
         assert!(denied.contains("s3:ListBucket") && denied.contains("bucket exists"));
         assert!(deployment_hint(400, Some("InvalidRequest"), "b").contains("not the requester"));
+    }
+
+    #[test]
+    fn retries_match_the_sdk_read_semantics() {
+        for code in [429, 500, 502, 503, 504] {
+            assert!(retryable_status(code));
+        }
+        for code in [400, 401, 403, 404] {
+            assert!(!retryable_status(code));
+        }
     }
 }
