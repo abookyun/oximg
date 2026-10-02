@@ -45,8 +45,8 @@ pub(crate) struct Config {
     /// linear-light 2x2 average of the full IDCT (issue #60), leaving
     /// at least 2x for the resampler.
     pub linear_shrink: bool,
-    /// OXIMG_JPEG_PROGRESSIVE ("1" selects progressive jpegli; baseline
-    /// by default since issue #61).
+    /// OXIMG_JPEG_PROGRESSIVE ("1" selects progressive jpegli;
+    /// sequential by default since issue #61).
     pub jpegli_progressive: bool,
     /// OXIMG_FLATTEN_BG: alpha→JPEG flatten background, RRGGBB hex.
     pub flatten_bg: [u8; 3],

@@ -650,7 +650,7 @@ pub(super) fn icc_app2_chunks(icc: &[u8]) -> impl Iterator<Item = Vec<u8>> + '_ 
 
 /// jpegli encode via its libjpeg-compatible API (symbols are
 /// `jpegli_`-prefixed, so it links alongside mozjpeg without conflicts).
-/// Baseline by default (issue #61): with adaptive quantization off it
+/// Sequential by default (issue #61): with adaptive quantization off it
 /// is 7-8% less server CPU than progressive at DIV2K fit 512, for
 /// about 6% more bytes. OXIMG_JPEG_PROGRESSIVE=1 selects progressive.
 pub(super) fn jpegli_progressive() -> bool {

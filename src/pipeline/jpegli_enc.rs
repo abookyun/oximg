@@ -209,7 +209,7 @@ impl JpegliEncoder {
             enc.cinfo.image_height = h as ffi::JDIMENSION;
             ffi::jpegli_set_quality(&mut enc.cinfo, jpegli_quality(quality), 0);
             // Adaptive quantization off (issue #61). Together with
-            // baseline output it is the cheap configuration, and
+            // sequential output it is the cheap configuration, and
             // `jpegli_quality` keeps each q at its previous quality.
             jpegli_enable_adaptive_quantization(&mut enc.cinfo, 0);
             if progressive {
