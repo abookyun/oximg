@@ -1661,6 +1661,11 @@ mod jpeg;
 mod jpeg_dec;
 mod jpegli_enc;
 mod resolved;
+// Not called yet: the s3:// fetch path that uses this module comes in a
+// later commit.
+#[cfg(feature = "server")]
+#[allow(dead_code)]
+mod s3;
 #[cfg(test)]
 mod tests;
 
