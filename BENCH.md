@@ -136,7 +136,7 @@ plasma source, identical 500x333 outputs:
 SSIM2 scores this table's own outputs against a linear-light Lanczos
 reference of the plasma source (differences above ~2 points are
 generally perceptible; both oximg profiles decode to identical pixels
-— baseline vs progressive jpegli differ only in entropy layout).
+— sequential (SOF1) vs progressive jpegli differ only in entropy layout).
 Smooth synthetic noise is the content where oximg's supersampled
 linear-light resize matters least; on the real-photo corpus the same
 q80 comparison is **77.5 / 72.1 / 67.3 vs imgproxy's 71.2 / 60.1 /
@@ -149,16 +149,12 @@ Both oximg rows are the auto overlap gate composing one pipeline:
 decode fused with resize+encode on a second thread below saturation,
 one core per request at saturation — serial and fused stream through
 the same SIMD row kernel, so a URL's bytes never depend on load. The
-speed profile was `OXIMG_JPEG_PROGRESSIVE=0` (sequential jpegli: entropy
+speed profile is `OXIMG_JPEG_PROGRESSIVE=0` (sequential jpegli, SOF1: entropy
 coding leaves the latency tail and per-request CPU drops ~1.2 ms):
 output lands at libjpeg-turbo size for this source at unchanged
 quality, ahead of imgproxy at every concurrency in this table.
-(Measured before 0.14, when progressive was the default. Since
-[#61](https://github.com/oximg/oximg/issues/61) sequential is the
-default, with adaptive quantization off and the quality remapped, and
-`OXIMG_JPEG_PROGRESSIVE=1` selects progressive.)
 
-In that pre-0.14 setup, the default kept the 10% smaller progressive output and led the
+The default keeps the 10% smaller progressive output and leads the
 real-photo DIV2K harness (196-197 req/s on this box's 2-cpu pinned
 replica); its residual throughput gap here — 4% at c=1, 5-6% at
 saturation on this one synthetic — is the deliberate quality work

@@ -45,8 +45,7 @@ pub(crate) struct Config {
     /// linear-light 2x2 average of the full IDCT (issue #60), leaving
     /// at least 2x for the resampler.
     pub linear_shrink: bool,
-    /// OXIMG_JPEG_PROGRESSIVE ("1" selects progressive jpegli;
-    /// sequential by default since issue #61).
+    /// OXIMG_JPEG_PROGRESSIVE ("0" selects sequential jpegli, SOF1).
     pub jpegli_progressive: bool,
     /// OXIMG_FLATTEN_BG: alpha→JPEG flatten background, RRGGBB hex.
     pub flatten_bg: [u8; 3],
@@ -335,7 +334,7 @@ pub(crate) fn config() -> &'static Config {
         icc_passthrough: var("OXIMG_ICC").as_deref() != Some("0"),
         dct_margin: parsed("OXIMG_DCT_MARGIN"),
         linear_shrink: var("OXIMG_LINEAR_SHRINK").as_deref() != Some("0"),
-        jpegli_progressive: var("OXIMG_JPEG_PROGRESSIVE").as_deref() == Some("1"),
+        jpegli_progressive: var("OXIMG_JPEG_PROGRESSIVE").as_deref() != Some("0"),
         flatten_bg: var("OXIMG_FLATTEN_BG")
             .and_then(|v| {
                 let v = v.trim_start_matches('#');
