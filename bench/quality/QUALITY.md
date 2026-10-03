@@ -51,6 +51,13 @@ CPU of the mozjpeg trellis path (`PRESET=small`).
 
 ## Group B — end-to-end (q80, scored vs linear-light reference)
 
+> Measured before 0.14.0. 0.14 decodes 4:2:0 sources reduced about
+> 3.8x or more through a linear-light half-size luma decode
+> ([#60](https://github.com/oximg/oximg/issues/60)), which can move the
+> medium (2000px into 500) and large (4000px into 500) rows if their
+> sources are 4:2:0. The Kodak row (768px into 500) is not affected.
+> Not yet re-run.
+
 | Source | oximg (defaults, jpegli) | oximg `PRESET=fast` | imgproxy default | sharp default | imagor 1.9.2* |
 |---|---|---|---|---|---|
 | Kodak 768px (n=24) | **77.5** | 76.0 | 71.2 | 71.2 | 71.2 |
