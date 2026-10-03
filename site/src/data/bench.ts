@@ -33,7 +33,7 @@ export const harness = {
   // Since 0.11.0 JPEG sources decode at full size, so these JPEG cells
   // overstate current releases (BENCH.md, "JPEG sources since 0.11").
   caveat:
-    "JPEG cells predate 0.11.0's full-size decode; on a 2026-10 Zen 4 re-run, 0.13.0 leads imgproxy 4.0.17 by 7–13% on JPEG",
+    "JPEG cells predate 0.11.0's full-size decode; on a 2026-10 local re-run (Intel i7-1360P), 0.14.0 leads imgproxy 4.0.17 by 1.22–1.28× on JPEG",
   caveatSource: `${REPO}/BENCH.md#jpeg-sources-since-011-2026-10`,
   runs: [
     {

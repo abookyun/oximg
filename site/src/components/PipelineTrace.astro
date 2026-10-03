@@ -4,7 +4,7 @@
 // measured end-to-end p95, since per-stage times are not published.
 const stages = [
   { name: "sniff", detail: "format by magic bytes, never the extension" },
-  { name: "decode", detail: "mozjpeg streaming, full size" },
+  { name: "decode", detail: "libjpeg-turbo streaming, luma ½ in linear light" },
   { name: "linearize", detail: "sRGB u8 → linear u16, alpha premultiplied" },
   { name: "resize", detail: "Lanczos3 · NEON / AVX2 row kernels" },
   { name: "encode", detail: "libwebp lossy, ICC passed through" },
