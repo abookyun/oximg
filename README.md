@@ -202,9 +202,11 @@ layer (axum/tokio) only does queueing and IO.
 imgproxy's official harness (DIV2K corpus over nginx, fit into 512x512,
 k6, all defaults) on the AWS instance types behind imgproxy's published
 numbers — req/s, higher is better, p95 in parentheses. Measured
-2026-07-05 on a pre-0.11 build. Since 0.11.0, JPEG sources decode at
-full size, so the JPEG column and the JPEG-source cells overstate
-current releases. On the same harness shape, re-run locally on an
+2026-07-05 on a pre-0.11 build, whose JPEG decode policy differs from
+today's. 0.11-0.13 decoded JPEG sources at full size, and 0.14 takes
+a linear-light half-size luma decode for 4:2:0 sources reduced about
+3.8x or more. The JPEG column and the JPEG-source cells are therefore
+not current numbers. On the same harness shape, re-run locally on an
 Intel i7-1360P (2026-10-02), 0.14.0 leads imgproxy 4.0.17 by
 1.22-1.28x on JPEG→JPEG
 ([BENCH.md](BENCH.md#jpeg-sources-since-011-2026-10)). An AWS
