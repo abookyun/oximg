@@ -10,6 +10,38 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-02
+
+Large JPEG reductions get cheaper ([#60], part of [#64]). A 4:2:0 or
+grayscale source reduced about 3.8x or more decodes luma at half size,
+averaged in linear light. Responses for those requests change bytes;
+every other response is byte-identical to 0.13.0, including all the
+test fixtures. Library and HTTP APIs are unchanged. The jpegli encoder
+change tried for this release ([#61]) was reverted before shipping: it
+made small and graphic outputs larger and worse.
+
+On imgproxy's benchmark shape (100 DIV2K photographs, fit 512 q80, k6),
+measured against 0.13.0 and imgproxy 4.0.17 in rotated rounds. The
+host was an Intel i7-1360P: the server ran on P-cores, and k6 and
+nginx on E-cores. Each cell is the mean of 3 rounds at 2 VUs and 2 at
+8 VUs, and all 30 cells passed every check:
+
+| | one SMT pair, 2 VUs | one SMT pair, 8 VUs | two cores, 2 VUs | two cores, 8 VUs |
+|---|---|---|---|---|
+| 0.13.0 | 95.5 req/s | 86.8 | 110.5 | 114.5 |
+| **0.14.0** | **119.6** | **113.3** | **146.7** | **140.2** |
+| imgproxy 4.0.17 | 97.8 | 91.5 | 119.4 | 109.5 |
+
+0.14.0 does 22-33% more req/s than 0.13.0 at 19-23% less server CPU
+per request, and 1.22-1.28x imgproxy. Output averages 45.0 KB per
+image, against 45.6 KB for 0.13.0 and 42.6 KB for imgproxy.
+
+Known edge case: a periodic high-contrast pattern loses SSIMULACRA2 at
+large reductions. A 32 px checkerboard reduced 5x into 400 px scores
+79.1 against 84.5 for a full decode. Text, gradients and photographic
+content measured equal or better. `OXIMG_LINEAR_SHRINK=0` restores the
+full decode.
+
 ### Changed
 
 - **Large reductions of 4:2:0 and grayscale JPEGs decode luma at half
@@ -180,6 +212,7 @@ NEON changes alter pixels. Library and HTTP APIs are unchanged.
 [#53]: https://github.com/oximg/oximg/pull/53
 [#54]: https://github.com/oximg/oximg/pull/54
 [#60]: https://github.com/oximg/oximg/issues/60
+[#61]: https://github.com/oximg/oximg/issues/61
 
 ## [0.12.0] - 2026-09-29
 
@@ -1652,7 +1685,8 @@ did, in any output format.
   concurrency pinned to the core count — published to crates.io via
   Trusted Publishing.
 
-[unreleased]: https://github.com/oximg/oximg/compare/v0.13.0...HEAD
+[unreleased]: https://github.com/oximg/oximg/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/oximg/oximg/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/oximg/oximg/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/oximg/oximg/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/oximg/oximg/compare/v0.10.1...v0.11.0

@@ -1,6 +1,6 @@
 [package]
 name = "oximg"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
 # The fuzz harness and the website are repo tools, not crate content.
 exclude = ["fuzz/", "site/"]
