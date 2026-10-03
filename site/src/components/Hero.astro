@@ -7,16 +7,16 @@ import PipelineTrace from "./PipelineTrace.astro";
   <div class="container layout">
     <div class="copy">
       <p class="badge mono">
-        <span class="pulse" aria-hidden="true"></span> v0.11 · experimental
+        <span class="pulse" aria-hidden="true"></span> v0.14 · experimental
       </p>
       <h1>
         Image resizing that's faster —<br />
         <span class="brand">and sharper.</span>
       </h1>
       <p class="lede">
-        A Rust image server, CLI and library for JPEG, PNG, WebP and AVIF. It leads every
-        format cell of imgproxy's own benchmark, resizing in linear light at measurably
-        higher quality.
+        A Rust image server, CLI and library for JPEG, PNG, WebP and AVIF. On imgproxy's own
+        benchmark it serves JPEG 1.2–1.3× faster than imgproxy, re-run locally (AWS re-run in
+        progress), resizing in linear light at measurably higher quality.
       </p>
       <CopyCommand command="docker run -p 8081:8081 -v $PWD/images:/images:ro ghcr.io/oximg/oximg" />
       <div class="actions">

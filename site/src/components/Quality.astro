@@ -5,7 +5,7 @@ import { quality } from "../data/bench";
 // scale rather than exaggerated by a cropped baseline.
 const properties = [
   { k: "linear light", v: "resampled on 16-bit linear samples, not gamma-encoded bytes" },
-  { k: "Lanczos3", v: "full-size decode, so the whole reduction is the resampler's" },
+  { k: "Lanczos3", v: "full-size decode, or a linear-light half-size one that still leaves Lanczos ≥1.9×" },
   { k: "premultiplied alpha", v: "no dark fringes around transparent edges" },
   { k: "ICC passthrough", v: "Display P3 photos keep the colors sRGB would clip" },
 ];
