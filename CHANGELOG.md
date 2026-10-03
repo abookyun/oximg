@@ -38,9 +38,13 @@ image, against 45.6 KB for 0.13.0 and 42.6 KB for imgproxy.
 
 Known edge case: a periodic high-contrast pattern loses SSIMULACRA2 at
 large reductions. A 32 px checkerboard reduced 5x into 400 px scores
-79.1 against 84.5 for a full decode. Text, gradients and photographic
-content measured equal or better. `OXIMG_LINEAR_SHRINK=0` restores the
-full decode.
+79.1 against 84.5 for a full decode. Other content stayed close:
+- text scored better (83.5 against 81.1);
+- a gradient banner and a plasma were within 0.3 either way;
+- DIV2K photographs averaged 0.34 lower at 3.98x (the worst image
+  0.99 lower), and within 0.1 from 5.3x up.
+
+`OXIMG_LINEAR_SHRINK=0` restores the full decode.
 
 ### Changed
 
