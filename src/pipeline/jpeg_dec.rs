@@ -804,13 +804,16 @@ mod tests {
         let Some(dir) = std::env::var_os("OXIMG_DECODE_BENCH_DIR") else {
             return;
         };
-        let mut jpegs: Vec<Vec<u8>> = std::fs::read_dir(dir)
+        // Sorted, so every run and filesystem picks the same 30 files.
+        let mut paths: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().is_some_and(|x| x == "jpg"))
-            .map(|e| std::fs::read(e.path()).unwrap())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "jpg"))
             .collect();
-        jpegs.truncate(30);
+        paths.sort();
+        paths.truncate(30);
+        let jpegs: Vec<Vec<u8>> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
         let run = |scale: u8, linear: bool, fancy: bool| {
             let mut buf = Vec::new();
             let mut best = f64::MAX;
