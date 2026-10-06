@@ -37,8 +37,8 @@ extern void jpeg_idct_islow(j_decompress_ptr, jpeg_component_info *,
 
 struct linear_shrink {
   idct_method full; /* the 8x8 IDCT a full-size decode would run */
-  const uint16_t *to_linear; /* 256 entries, linear light x 16383 */
-  const uint8_t *to_srgb;    /* 16384 entries */
+  const uint16_t *pair_linear; /* 65536 entries: lin(lo byte) + lin(hi byte) */
+  const uint8_t *to_srgb;      /* 16384 entries */
 };
 
 static void linear_half(j_decompress_ptr cinfo, jpeg_component_info *comp,
@@ -53,8 +53,8 @@ static void linear_half(j_decompress_ptr cinfo, jpeg_component_info *comp,
     const JSAMPLE *r0 = block + 2 * y * DCTSIZE, *r1 = r0 + DCTSIZE;
     JSAMPLE *o = out[y] + col;
     for (int x = 0; x < DCTSIZE / 2; x++) {
-      unsigned sum = s->to_linear[r0[2 * x]] + s->to_linear[r0[2 * x + 1]] +
-                     s->to_linear[r1[2 * x]] + s->to_linear[r1[2 * x + 1]];
+      unsigned sum = s->pair_linear[r0[2 * x] | (r0[2 * x + 1] << 8)] +
+                     s->pair_linear[r1[2 * x] | (r1[2 * x + 1] << 8)];
       o[x] = s->to_srgb[sum >> 2];
     }
   }
@@ -65,7 +65,7 @@ static void linear_half(j_decompress_ptr cinfo, jpeg_component_info *comp,
  * integer IDCT. Returns 0, leaving the decoder untouched, otherwise.
  */
 int oximg_linear_shrink_install(j_decompress_ptr cinfo,
-                                const uint16_t *to_linear,
+                                const uint16_t *pair_linear,
                                 const uint8_t *to_srgb) {
   if (cinfo->num_components < 1 || cinfo->dct_method != JDCT_ISLOW)
     return 0;
@@ -80,7 +80,7 @@ int oximg_linear_shrink_install(j_decompress_ptr cinfo,
   struct linear_shrink *s = (struct linear_shrink *)(*cinfo->mem->alloc_small)(
       (j_common_ptr)cinfo, JPOOL_IMAGE, sizeof(struct linear_shrink));
   s->full = jsimd_can_idct_islow() ? jsimd_idct_islow : jpeg_idct_islow;
-  s->to_linear = to_linear;
+  s->pair_linear = pair_linear;
   s->to_srgb = to_srgb;
   cinfo->client_data = s;
   cinfo->idct->inverse_DCT[0] = linear_half;

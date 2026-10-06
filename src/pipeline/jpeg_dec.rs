@@ -71,6 +71,18 @@ fn shrink_luts() -> &'static ([u16; 256], Box<[u8; 16384]>) {
     })
 }
 
+/// to_linear summed over the two bytes of a little-endian u16, so the
+/// hook reads two horizontal neighbours with one lookup.
+fn pair_lut() -> &'static [u16] {
+    static PAIR: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
+    PAIR.get_or_init(|| {
+        let (to_linear, _) = shrink_luts();
+        (0..65536usize)
+            .map(|w| to_linear[w & 255] + to_linear[w >> 8])
+            .collect()
+    })
+}
+
 /// A decoder past `jpeg_start_decompress`: output dimensions are
 /// final and scanlines can be read.
 pub(crate) struct DecompressStarted<R> {
@@ -259,20 +271,20 @@ impl<R> DecompressStarted<R> {
         unsafe extern "C-unwind" {
             fn oximg_linear_shrink_install(
                 cinfo: &mut ffi::jpeg_decompress_struct,
-                to_linear: *const u16,
+                pair_linear: *const u16,
                 to_srgb: *const u8,
             ) -> c_int;
         }
         if self.dec.cinfo.output_scanline != 0 {
             return false;
         }
-        let (to_linear, to_srgb) = shrink_luts();
+        let (_, to_srgb) = shrink_luts();
+        let pair = pair_lut();
         // SAFETY: the tables are 'static and as long as the C side
-        // indexes (256 and 16384 entries); the hook state lives in the
+        // indexes (65536 and 16384 entries); the hook state lives in the
         // decoder's own image pool.
         unsafe {
-            oximg_linear_shrink_install(&mut self.dec.cinfo, to_linear.as_ptr(), to_srgb.as_ptr())
-                != 0
+            oximg_linear_shrink_install(&mut self.dec.cinfo, pair.as_ptr(), to_srgb.as_ptr()) != 0
         }
     }
 
@@ -781,6 +793,56 @@ mod tests {
             assert_eq!((w, h), (167, 109), "{name}");
             assert_eq!(px.len(), w * h * 3);
         }
+    }
+
+    /// Decode time per image for the decode paths the policy chooses
+    /// between, over the JPEGs in $OXIMG_DECODE_BENCH_DIR:
+    /// `cargo test --release --lib decode_paths_bench -- --ignored --nocapture`
+    #[test]
+    #[ignore = "benchmark; needs OXIMG_DECODE_BENCH_DIR"]
+    fn decode_paths_bench() {
+        let Some(dir) = std::env::var_os("OXIMG_DECODE_BENCH_DIR") else {
+            return;
+        };
+        // Sorted, so every run and filesystem picks the same 30 files.
+        let mut paths: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "jpg"))
+            .collect();
+        paths.sort();
+        paths.truncate(30);
+        let jpegs: Vec<Vec<u8>> = paths.iter().map(|p| std::fs::read(p).unwrap()).collect();
+        let run = |scale: u8, linear: bool, fancy: bool| {
+            let mut buf = Vec::new();
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                for jpeg in &jpegs {
+                    let mut dec = Decompress::new_mem(jpeg).unwrap();
+                    dec.scale(scale);
+                    dec.do_fancy_upsampling(fancy);
+                    let mut started = dec.rgb().unwrap();
+                    if linear {
+                        assert!(started.linear_shrink());
+                    }
+                    let n = started.width() * started.height() * 3;
+                    buf.resize(n, 0);
+                    started.read_scanlines_into(&mut buf).unwrap();
+                    started.finish().unwrap();
+                }
+                best = best.min(t.elapsed().as_secs_f64() * 1e3 / jpegs.len() as f64);
+            }
+            best
+        };
+        eprintln!(
+            "{} images; ms per decode: full {:.3}, stock 1/2 {:.3}, linear 1/2 {:.3}",
+            jpegs.len(),
+            run(8, false, false),
+            run(4, false, false),
+            run(4, true, false)
+        );
     }
 
     #[test]

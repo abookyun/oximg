@@ -10,6 +10,14 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+### Changed
+
+- **The linear-light half-size decode reads two neighbouring pixels per
+  table lookup.** Two horizontal neighbours sum through one 64K-entry
+  table instead of two 256-entry ones. Output is bit-identical. Decode
+  time per DIV2K image on that path drops 0.23 ms (Intel i7-1360P) and
+  0.18 ms (Apple M2), about 4% of the decode.
+
 ## [0.14.0] - 2026-10-02
 
 Large JPEG reductions get cheaper ([#60], part of [#64]). A 4:2:0 or
