@@ -22,6 +22,7 @@ pub enum Cmd {
     Resize(ResizeArgs),
     Sign(SignArgs),
     Matrix(MatrixArgs),
+    Parity(ParityArgs),
 }
 
 pub struct ServeArgs {
@@ -63,6 +64,15 @@ pub struct MatrixArgs {
     pub formats: Vec<String>,
     pub negatives: bool,
     pub base: Option<String>,
+    pub timeout_secs: u64,
+}
+
+pub struct ParityArgs {
+    /// The second build's `oximg`; the first is `--bin` (or the sibling).
+    pub against: PathBuf,
+    pub sources: Vec<String>,
+    pub boxes: Vec<(u32, u32)>,
+    pub formats: Vec<String>,
     pub timeout_secs: u64,
 }
 
@@ -124,9 +134,10 @@ pub fn parse_args(args: &[String]) -> Result<(Opts, Cmd), CtlError> {
         "resize" => Cmd::Resize(parse_resize(tail)?),
         "sign" => Cmd::Sign(parse_sign(tail)?),
         "matrix" => Cmd::Matrix(parse_matrix(tail)?),
+        "parity" => Cmd::Parity(parse_parity(tail)?),
         other => {
             return Err(CtlError::usage(format!(
-                "unknown command {other:?} (serve|get|probe|resize|sign|matrix)"
+                "unknown command {other:?} (serve|get|probe|resize|sign|matrix|parity)"
             )));
         }
     };
@@ -391,16 +402,7 @@ fn parse_matrix(args: &[String]) -> Result<MatrixArgs, CtlError> {
                 let v = it
                     .next()
                     .ok_or_else(|| CtlError::usage("--format needs a value"))?;
-                match v.as_str() {
-                    "" | "source" => formats.push(v.clone()),
-                    tok if ImageFormat::from_token(tok).is_some() => formats.push(v.clone()),
-                    other => {
-                        return Err(CtlError::usage(format!(
-                            "unknown --format {other:?} (source|{})",
-                            ImageFormat::output_token_hint()
-                        )));
-                    }
-                }
+                formats.push(parse_format(v)?);
             }
             "--no-negatives" => negatives = false,
             "--base" => {
@@ -431,6 +433,59 @@ fn parse_matrix(args: &[String]) -> Result<MatrixArgs, CtlError> {
         base,
         timeout_secs,
     })
+}
+
+fn parse_parity(args: &[String]) -> Result<ParityArgs, CtlError> {
+    let mut against = None;
+    let mut sources = Vec::new();
+    let mut boxes = Vec::new();
+    let mut formats = Vec::new();
+    let mut timeout_secs = 60u64;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = || {
+            it.next()
+                .ok_or_else(|| CtlError::usage(format!("{a} needs a value")))
+        };
+        match a.as_str() {
+            "--against" => against = Some(PathBuf::from(val()?)),
+            "--source" => sources.push(val()?.clone()),
+            "--box" => boxes.push(parse_box(val()?)?),
+            "--format" => formats.push(parse_format(val()?)?),
+            "--timeout-secs" => {
+                let v = val()?;
+                timeout_secs = v
+                    .parse()
+                    .map_err(|_| CtlError::usage(format!("invalid --timeout-secs {v:?}")))?;
+            }
+            other => {
+                return Err(CtlError::usage(format!("parity: unknown option {other:?}")));
+            }
+        }
+    }
+    let against = against.ok_or_else(|| {
+        CtlError::usage("usage: oximg-ctl parity --against PATH (the second build's oximg)")
+    })?;
+    Ok(ParityArgs {
+        against,
+        sources,
+        boxes,
+        formats,
+        timeout_secs,
+    })
+}
+
+/// A `--format` cell token: `source` (the bare path) or an `@{fmt}`
+/// output the server encodes.
+fn parse_format(v: &str) -> Result<String, CtlError> {
+    match v {
+        "" | "source" => Ok(v.to_string()),
+        tok if ImageFormat::from_token(tok).is_some() => Ok(v.to_string()),
+        other => Err(CtlError::usage(format!(
+            "unknown --format {other:?} (source|{})",
+            ImageFormat::output_token_hint()
+        ))),
+    }
 }
 
 fn parse_box(v: &str) -> Result<(u32, u32), CtlError> {
@@ -589,5 +644,41 @@ mod tests {
         let (_, cmd) = parse(&["serve", "--port", "8080"]).unwrap();
         assert!(matches!(cmd, Cmd::Serve(ServeArgs { port: Some(8080) })));
         assert!(usage(&["serve", "--port", "http"]).contains("invalid --port"));
+    }
+
+    #[test]
+    fn parity_needs_a_second_build() {
+        assert!(usage(&["parity"]).contains("--against PATH"));
+        assert!(usage(&["parity", "--against"]).contains("--against needs a value"));
+        assert!(
+            usage(&["parity", "--against", "b", "--format", "gif"]).contains("unknown --format")
+        );
+        assert!(usage(&["parity", "--against", "b", "--box", "0x0"]).contains("0x0 is invalid"));
+        assert!(usage(&["parity", "--against", "b", "--no-negatives"]).contains("unknown option"));
+        let (_, cmd) = parse(&[
+            "parity",
+            "--against",
+            "/b/oximg",
+            "--source",
+            "photo.jpg",
+            "--box",
+            "64x0",
+            "--format",
+            "png",
+        ])
+        .unwrap();
+        let Cmd::Parity(p) = cmd else {
+            panic!("not parity")
+        };
+        assert_eq!(p.against, std::path::Path::new("/b/oximg"));
+        assert_eq!(
+            (p.sources, p.boxes, p.formats),
+            (
+                vec!["photo.jpg".to_string()],
+                vec![(64, 0)],
+                vec!["png".to_string()]
+            )
+        );
+        assert_eq!(p.timeout_secs, 60);
     }
 }

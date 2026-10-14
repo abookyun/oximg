@@ -48,6 +48,7 @@ fn main() {
         Cmd::Resize(a) => cmd::resize::run(&opts, a),
         Cmd::Sign(a) => cmd::sign::run(&opts, a),
         Cmd::Matrix(a) => cmd::matrix::run(&opts, a),
+        Cmd::Parity(a) => cmd::parity::run(&opts, a),
     });
     if let Err(e) = result {
         e.with_pretty(pretty).exit();
@@ -70,6 +71,7 @@ Commands:
   resize <in> <w> <h>       Shell out to `oximg resize`; probe the output
   sign <path>               imgproxy-style HMAC over the decoded path
   matrix                    Walk fixture × box × format cells + negatives
+  parity --against PATH     Same cells on two builds; bodies must match
 
 Global:
   --bin PATH                oximg binary (else sibling, OXIMG_BIN, or PATH)
@@ -109,6 +111,15 @@ matrix:
                             (repeatable; default: source and webp)
   --no-negatives            Skip the 400/404 cells
   --base URL                Drive an existing server
+
+parity:
+  --against PATH            The second build's oximg (the first is --bin)
+  --source FILE             Fixture filename (repeatable; default: every
+                            file in the images dir that probes as an image)
+  --box WxH                 Repeatable (default: 100x100, 333x0, 64x64)
+  --format TOKEN            As for matrix (default: source and webp)
+  A cell compares only when both builds answer 200; the same error on
+  both is skipped. Exit 1 if any cell differs or none compared.
 
 Spawned servers use PORT=0 and, unless already set, OXIMG_WORKERS=1
 so a control-plane loop does not size itself to the host. stderr from
