@@ -681,6 +681,32 @@ fn unescape_xml(text: &str) -> String {
 /// the probe still passes.
 const PROBE_KEY: &str = ".oximg-startup-probe";
 
+fn probe_key(prefix: Option<&str>) -> Result<String, String> {
+    let Some(prefix) = prefix.filter(|p| !p.is_empty()) else {
+        return Ok(PROBE_KEY.into());
+    };
+    if has_dot_segment(prefix.as_bytes()) {
+        return Err(format!(
+            "s3:// prefix {prefix:?} has a . or .. segment, which cannot be fetched as signed"
+        ));
+    }
+    let remaining = S3_MAX_KEY_BYTES
+        .checked_sub(prefix.len() + 1)
+        .filter(|remaining| *remaining > 0)
+        .ok_or_else(|| {
+            "s3:// prefix leaves no room for an object key within the 1024-byte S3 limit"
+                .to_string()
+        })?;
+    // A shorter probe may exist; that is fine. Never shorten to `.` because
+    // the URL parser would remove it, invalidating the signature.
+    let name = if remaining < PROBE_KEY.len() {
+        &PROBE_KEY[1..][..remaining]
+    } else {
+        PROBE_KEY
+    };
+    Ok(format!("{prefix}/{name}"))
+}
+
 /// Boot probe: fail closed with a clear message instead of a 500 on the
 /// first cache miss. Unlike `gs://`, which only proves that credentials
 /// exist, a signed GET of a missing key also checks the endpoint, the
@@ -701,15 +727,7 @@ pub(crate) fn startup(bucket: &str, prefix: Option<&str>) -> Result<(), String> 
              outside a trusted network."
         );
     }
-    if prefix.is_some_and(|p| has_dot_segment(p.as_bytes())) {
-        return Err(format!(
-            "s3:// prefix {prefix:?} has a . or .. segment, which cannot be fetched as signed"
-        ));
-    }
-    let key = match prefix {
-        Some(p) => format!("{p}/{PROBE_KEY}"),
-        None => PROBE_KEY.to_string(),
-    };
+    let key = probe_key(prefix)?;
     let target = Target::new(s, bucket, key.as_bytes());
     // `block_on_fetch` runs the future on another thread, so it must
     // own what it uses.
@@ -1013,6 +1031,22 @@ mod tests {
         assert!(has_dot_segment(b"a/.."));
         assert!(!has_dot_segment(b"a/.b/c..jpg"));
         assert!(!has_dot_segment(b"a//b.jpg"));
+    }
+
+    #[test]
+    fn probe_key_fits_without_changing_the_prefix() {
+        assert_eq!(probe_key(None).unwrap(), PROBE_KEY);
+        assert_eq!(probe_key(Some("")).unwrap(), PROBE_KEY);
+        for n in [1003, 1004, 1006, 1022] {
+            let prefix = "p".repeat(n);
+            let key = probe_key(Some(&prefix)).unwrap();
+            assert!(key.starts_with(&format!("{prefix}/")));
+            assert_eq!(key.len(), 1024);
+            assert!(!has_dot_segment(key.as_bytes()));
+        }
+        for prefix in ["p".repeat(1023), "p".repeat(1024), "a/../b".into()] {
+            assert!(probe_key(Some(&prefix)).is_err());
+        }
     }
 
     #[test]

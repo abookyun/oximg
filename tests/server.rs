@@ -2885,6 +2885,48 @@ fn s3_retry_shares_the_deadline_with_headers_and_body() {
 }
 
 #[test]
+fn s3_probe_respects_the_key_limit_with_long_prefixes() {
+    let s3 = S3::spawn(|path, _| {
+        // Decode with an independent URL decoder, including multibyte prefixes.
+        let key = path.strip_prefix("/test-bucket/").unwrap();
+        let bytes = key.as_bytes();
+        let mut len = 0;
+        let mut i = 0;
+        while i < bytes.len() {
+            i += if bytes[i] == b'%' { 3 } else { 1 };
+            len += 1;
+        }
+        if len > 1024 {
+            return Reply::error("400 Bad Request", "KeyTooLongError");
+        }
+        if path.ends_with("/x") {
+            Reply::photo()
+        } else {
+            Reply::error("404 Not Found", "NoSuchKey")
+        }
+    })
+    .unwrap();
+    for prefix in [
+        "p".repeat(1006),
+        "p".repeat(1022),
+        format!("{}aa", "中".repeat(340)),
+    ] {
+        let mut env = s3_env(s3.port());
+        env.push((
+            "OXIMG_SOURCE_BASE_URL",
+            format!("s3://test-bucket/{prefix}"),
+        ));
+        let server = Server::start(&env);
+        assert_eq!(
+            server.status_of("/resize/100/100/x"),
+            200,
+            "prefix bytes={}",
+            prefix.len()
+        );
+    }
+}
+
+#[test]
 fn s3_harness_shuts_down_inflight_connections() {
     let s3 = S3::spawn(|_, _| {
         Reply::photo()
