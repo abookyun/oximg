@@ -898,3 +898,93 @@ fn jpeg_chroma_is_replicated_when_reducing_and_filtered_at_one_to_one() {
         "reduced chroma amplitude {ar:.1} vs 1:1 {a11:.1}: expected replication (~2x)"
     );
 }
+
+/// --dry-run prints the plan without spawning, reading, or signing.
+#[test]
+fn dry_runs_print_the_plan_without_side_effects() {
+    let (code, v) = run(&[
+        "--dry-run",
+        "get",
+        "resize/1/1/photo.jpg",
+        "--base",
+        "http://127.0.0.1:1",
+        "--expect",
+        "200",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["dry_run"], true);
+    assert_eq!(
+        v["path"], "/resize/1/1/photo.jpg",
+        "a leading slash is added"
+    );
+    assert_eq!(v["expect"], 200);
+
+    let (code, v) = run(&["--dry-run", "probe", "/no/such/file"]);
+    assert_eq!(code, 0, "a dry run does not read the file: {v}");
+    assert_eq!(v["file"], "/no/such/file");
+
+    let key = "deadbeef".repeat(8);
+    let (code, v) = run(&[
+        "--dry-run",
+        "sign",
+        "/a%20b.jpg",
+        "--key",
+        &key,
+        "--salt",
+        &key,
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(
+        v["path"], "/a b.jpg",
+        "the plan names the decoded path it would sign"
+    );
+    assert!(v.get("signature").is_none(), "{v}");
+}
+
+#[test]
+fn get_reports_an_unreachable_base_as_a_failed_proof() {
+    // Port 1 on loopback refuses at once; nothing is spawned for --base.
+    let (code, v) = run(&["get", "/health", "--base", "http://127.0.0.1:1"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["ok"], false);
+    assert!(
+        v["hint"].as_str().unwrap().contains("is the server up"),
+        "{v}"
+    );
+}
+
+#[test]
+fn probe_of_a_missing_file_names_the_working_directory() {
+    let (code, v) = run(&["probe", "no/such/file.jpg"]);
+    assert_eq!(code, 1, "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("no/such/file.jpg"),
+        "{v}"
+    );
+    assert!(
+        v["hint"]
+            .as_str()
+            .unwrap()
+            .contains("current working directory"),
+        "{v}"
+    );
+}
+
+#[test]
+fn resize_with_a_missing_binary_says_which() {
+    // ctl() passes the real --bin first; a later --bin wins.
+    let (code, v) = run(&[
+        "--bin",
+        "/no/such/oximg",
+        "resize",
+        &fixture("photo.jpg"),
+        "10",
+        "10",
+    ]);
+    assert_eq!(code, 1, "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("/no/such/oximg"),
+        "{v}"
+    );
+    assert!(v["hint"].as_str().unwrap().contains("--bin"), "{v}");
+}
