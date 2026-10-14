@@ -112,7 +112,7 @@ required-features = ["server"]
 # the server binary so `cargo test` builds both together.
 [[bin]]
 name = "oximg-ctl"
-path = "src/bin/oximg-ctl.rs"
+path = "src/bin/oximg-ctl/main.rs"
 required-features = ["server"]
 
 # Benchmark/dev tools live under bench/tools/ (kept out of examples/,
