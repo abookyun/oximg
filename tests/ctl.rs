@@ -895,6 +895,9 @@ fn parity_interrupted_before_the_server_listens_reports_it() {
         "oximg-ctl-parity-slow-start-{}",
         std::process::id()
     ));
+    // A run killed from outside (a CI timeout) can leave a dir with a
+    // stale marker under a PID this run may reuse; start empty.
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let slow = dir.join("oximg");
     let started = dir.join("started");
