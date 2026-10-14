@@ -988,3 +988,89 @@ fn resize_with_a_missing_binary_says_which() {
     );
     assert!(v["hint"].as_str().unwrap().contains("--bin"), "{v}");
 }
+
+/// A build compared with itself agrees on every cell it compares.
+#[test]
+fn parity_of_a_build_with_itself_passes() {
+    let oximg = env!("CARGO_BIN_EXE_oximg");
+    let (code, v) = run(&[
+        "parity",
+        "--against",
+        oximg,
+        "--source",
+        "photo.jpg",
+        "--source",
+        "anim.gif",
+        "--box",
+        "100x100",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["cells"], 4, "2 sources × (bare, @webp)");
+    assert_eq!(v["compared"], 4);
+    assert_eq!(v["differ"], 0);
+}
+
+/// The instrument must be able to fail: a build whose server encodes at
+/// another quality differs, and parity says where.
+#[cfg(unix)]
+#[test]
+fn parity_catches_a_build_that_encodes_differently() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("oximg-ctl-parity-skew-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let skewed = dir.join("oximg");
+    std::fs::write(
+        &skewed,
+        format!(
+            "#!/bin/sh\nQUALITY=50 exec '{}' \"$@\"\n",
+            env!("CARGO_BIN_EXE_oximg")
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&skewed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (code, v) = run(&[
+        "parity",
+        "--against",
+        skewed.to_str().unwrap(),
+        "--source",
+        "photo.jpg",
+        "--box",
+        "100x100",
+        "--format",
+        "source",
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["differ"], 1);
+    assert_eq!(v["differing"][0]["path"], "/resize/100/100/photo.jpg");
+    assert_ne!(
+        v["differing"][0]["a"]["sha256"],
+        v["differing"][0]["b"]["sha256"]
+    );
+}
+
+#[test]
+fn parity_dry_run_is_the_plan_and_needs_against() {
+    let (code, v) = run(&["parity"]);
+    assert_eq!(code, 2, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("--against"), "{v}");
+
+    let (code, v) = run(&[
+        "--dry-run",
+        "parity",
+        "--against",
+        "/other/oximg",
+        "--source",
+        "photo.jpg",
+        "--box",
+        "64x0",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["b"], "/other/oximg");
+    assert_eq!(
+        v["cells"],
+        serde_json::json!(["/resize/64/0/photo.jpg", "/resize/64/0/photo.jpg@webp"])
+    );
+}
