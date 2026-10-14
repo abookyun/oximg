@@ -3,7 +3,7 @@
 Compressed index of what oximg does, how a caller reaches it, and how
 an agent proves a change. The [README](../../README.md) is the long
 form; this directory is the token-cheap projection. Drive the binary
-with [`oximg-ctl`](../../src/bin/oximg-ctl.rs) — JSON on stdout, real
+with [`oximg-ctl`](../../src/bin/oximg-ctl/) — JSON on stdout, real
 `oximg` underneath, fixtures under `tests/fixtures/`. Agent drive
 book: [`.claude/skills/verify/`](../../.claude/skills/verify/).
 

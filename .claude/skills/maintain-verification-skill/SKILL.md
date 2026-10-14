@@ -53,7 +53,7 @@ the file) or a product regression (report it, keep it out of this PR).
 
 2. **Source check.** For each feature file, find the code that owns it
    (route table in `src/main.rs`, `src/cli.rs`, `src/options.rs`,
-   `src/bin/oximg-ctl.rs`) and compare the sub-features, flags, and
+   `src/bin/oximg-ctl/`) and compare the sub-features, flags, and
    status codes the file claims. One read-only subagent per feature
    file is fine; they never drive the binary and never edit.
 

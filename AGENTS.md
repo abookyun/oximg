@@ -29,7 +29,7 @@ keeps the proof.
 | `src/pipeline/` | Decode → resize → encode; `jpeg_dec.rs`, `jpegli_enc.rs`, `gif.rs`, `gcs.rs`, `linear_shrink.c` |
 | `src/resize_{kernel,avx2,neon}.rs` | SIMD resize kernels (arch-neutral core + AVX2 + NEON) |
 | `src/avif/`, `src/svt/`, `src/yuv.rs` | AVIF (feature `avif`): SVT-AV1 FFI, dav1d decode |
-| `src/bin/oximg-ctl.rs` | Control plane: `get`, `matrix`, `probe`, `resize`, `sign`, `serve` |
+| `src/bin/oximg-ctl/` | Control plane: one module per command under `cmd/` (`get`, `matrix`, `probe`, `resize`, `sign`, `serve`) |
 | `tests/` | Integration suites; `server.rs` is ~3.7k lines — grep for the test, do not read it whole |
 | `docs/features/` | Token-cheap feature map: routes, formats, knobs, errors, invariants |
 | `bench/` | Benchmarks and quality sweeps; rules in `bench/METHODOLOGY.md` |
