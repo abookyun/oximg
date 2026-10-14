@@ -1,59 +1,71 @@
-//! argv → `Opts`. Every malformed flag is a usage error (exit 2) before
-//! anything spawns.
+//! argv → global `Opts` plus one `Cmd`. Every malformed flag is a usage
+//! error (exit 2) before anything spawns.
 
 use crate::error::CtlError;
 use oximg::pipeline::ImageFormat;
 use std::path::PathBuf;
 
+/// Global flags, shared by every command.
 pub struct Opts {
     pub bin: Option<PathBuf>,
     pub images_dir: Option<PathBuf>,
     pub env: Vec<(String, String)>,
     pub pretty: bool,
     pub dry_run: bool,
-    pub cmd: Cmd,
 }
 
 pub enum Cmd {
-    Serve {
-        port: Option<u16>,
-    },
-    Get {
-        path: String,
-        base: Option<String>,
-        write: Option<PathBuf>,
-        accept: Option<String>,
-        expect: Option<u16>,
-        timeout_secs: u64,
-    },
-    Probe {
-        file: PathBuf,
-    },
-    Resize {
-        input: PathBuf,
-        w: String,
-        h: String,
-        out: Option<PathBuf>,
-        format: Option<String>,
-        quality: Option<String>,
-        preset: Option<String>,
-    },
-    Sign {
-        path: String,
-        key: Option<String>,
-        salt: Option<String>,
-    },
-    Matrix {
-        sources: Vec<String>,
-        boxes: Vec<(u32, u32)>,
-        formats: Vec<String>,
-        negatives: bool,
-        base: Option<String>,
-        timeout_secs: u64,
-    },
+    Serve(ServeArgs),
+    Get(GetArgs),
+    Probe(ProbeArgs),
+    Resize(ResizeArgs),
+    Sign(SignArgs),
+    Matrix(MatrixArgs),
 }
 
-pub fn parse_args(args: &[String]) -> Result<Opts, CtlError> {
+pub struct ServeArgs {
+    pub port: Option<u16>,
+}
+
+pub struct GetArgs {
+    pub path: String,
+    pub base: Option<String>,
+    pub write: Option<PathBuf>,
+    pub accept: Option<String>,
+    pub expect: Option<u16>,
+    pub timeout_secs: u64,
+}
+
+pub struct ProbeArgs {
+    pub file: PathBuf,
+}
+
+pub struct ResizeArgs {
+    pub input: PathBuf,
+    pub w: String,
+    pub h: String,
+    pub out: Option<PathBuf>,
+    pub format: Option<String>,
+    pub quality: Option<String>,
+    pub preset: Option<String>,
+}
+
+pub struct SignArgs {
+    pub path: String,
+    pub key: Option<String>,
+    pub salt: Option<String>,
+}
+
+pub struct MatrixArgs {
+    pub sources: Vec<String>,
+    pub boxes: Vec<(u32, u32)>,
+    pub formats: Vec<String>,
+    pub negatives: bool,
+    pub base: Option<String>,
+    pub timeout_secs: u64,
+}
+
+pub fn parse_args(args: &[String]) -> Result<(Opts, Cmd), CtlError> {
     let mut bin = None;
     let mut images_dir = None;
     let mut env = Vec::new();
@@ -105,26 +117,26 @@ pub fn parse_args(args: &[String]) -> Result<Opts, CtlError> {
         return Err(CtlError::usage("missing command"));
     };
     let cmd = match cmd.as_str() {
-        "serve" => parse_serve(tail)?,
-        "get" => parse_get(tail)?,
-        "probe" => parse_probe(tail)?,
-        "resize" => parse_resize(tail)?,
-        "sign" => parse_sign(tail)?,
-        "matrix" => parse_matrix(tail)?,
+        "serve" => Cmd::Serve(parse_serve(tail)?),
+        "get" => Cmd::Get(parse_get(tail)?),
+        "probe" => Cmd::Probe(parse_probe(tail)?),
+        "resize" => Cmd::Resize(parse_resize(tail)?),
+        "sign" => Cmd::Sign(parse_sign(tail)?),
+        "matrix" => Cmd::Matrix(parse_matrix(tail)?),
         other => {
             return Err(CtlError::usage(format!(
                 "unknown command {other:?} (serve|get|probe|resize|sign|matrix)"
             )));
         }
     };
-    Ok(Opts {
+    let opts = Opts {
         bin,
         images_dir,
         env,
         pretty,
         dry_run,
-        cmd,
-    })
+    };
+    Ok((opts, cmd))
 }
 
 fn need_val<'a>(flag: &str, rest: &'a [String]) -> Result<&'a str, CtlError> {
@@ -151,7 +163,7 @@ fn canonical_env_key(k: &str) -> String {
     k.to_string()
 }
 
-fn parse_serve(args: &[String]) -> Result<Cmd, CtlError> {
+fn parse_serve(args: &[String]) -> Result<ServeArgs, CtlError> {
     let mut port = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -170,10 +182,10 @@ fn parse_serve(args: &[String]) -> Result<Cmd, CtlError> {
             }
         }
     }
-    Ok(Cmd::Serve { port })
+    Ok(ServeArgs { port })
 }
 
-fn parse_get(args: &[String]) -> Result<Cmd, CtlError> {
+fn parse_get(args: &[String]) -> Result<GetArgs, CtlError> {
     let mut path = None;
     let mut base = None;
     let mut write = None;
@@ -232,7 +244,7 @@ fn parse_get(args: &[String]) -> Result<Cmd, CtlError> {
         }
     }
     let path = path.ok_or_else(|| CtlError::usage("usage: oximg-ctl get <path>"))?;
-    Ok(Cmd::Get {
+    Ok(GetArgs {
         path,
         base,
         write,
@@ -242,7 +254,7 @@ fn parse_get(args: &[String]) -> Result<Cmd, CtlError> {
     })
 }
 
-fn parse_probe(args: &[String]) -> Result<Cmd, CtlError> {
+fn parse_probe(args: &[String]) -> Result<ProbeArgs, CtlError> {
     let mut file = None;
     for a in args {
         if a.starts_with('-') && a.len() > 1 {
@@ -254,10 +266,10 @@ fn parse_probe(args: &[String]) -> Result<Cmd, CtlError> {
         file = Some(PathBuf::from(a));
     }
     let file = file.ok_or_else(|| CtlError::usage("usage: oximg-ctl probe <file>"))?;
-    Ok(Cmd::Probe { file })
+    Ok(ProbeArgs { file })
 }
 
-fn parse_resize(args: &[String]) -> Result<Cmd, CtlError> {
+fn parse_resize(args: &[String]) -> Result<ResizeArgs, CtlError> {
     let mut positional = Vec::new();
     let mut out = None;
     let mut format = None;
@@ -304,7 +316,7 @@ fn parse_resize(args: &[String]) -> Result<Cmd, CtlError> {
             "usage: oximg-ctl resize <in> <max_w> <max_h> [--out PATH]",
         ));
     };
-    Ok(Cmd::Resize {
+    Ok(ResizeArgs {
         input: PathBuf::from(input),
         w: w.clone(),
         h: h.clone(),
@@ -315,7 +327,7 @@ fn parse_resize(args: &[String]) -> Result<Cmd, CtlError> {
     })
 }
 
-fn parse_sign(args: &[String]) -> Result<Cmd, CtlError> {
+fn parse_sign(args: &[String]) -> Result<SignArgs, CtlError> {
     let mut path = None;
     let mut key = None;
     let mut salt = None;
@@ -348,10 +360,10 @@ fn parse_sign(args: &[String]) -> Result<Cmd, CtlError> {
         }
     }
     let path = path.ok_or_else(|| CtlError::usage("usage: oximg-ctl sign <path>"))?;
-    Ok(Cmd::Sign { path, key, salt })
+    Ok(SignArgs { path, key, salt })
 }
 
-fn parse_matrix(args: &[String]) -> Result<Cmd, CtlError> {
+fn parse_matrix(args: &[String]) -> Result<MatrixArgs, CtlError> {
     let mut sources = Vec::new();
     let mut boxes = Vec::new();
     let mut formats = Vec::new();
@@ -410,7 +422,7 @@ fn parse_matrix(args: &[String]) -> Result<Cmd, CtlError> {
             }
         }
     }
-    Ok(Cmd::Matrix {
+    Ok(MatrixArgs {
         sources,
         boxes,
         formats,

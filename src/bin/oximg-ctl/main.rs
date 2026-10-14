@@ -30,7 +30,9 @@ mod report;
 mod spawn;
 mod urlpath;
 
-use args::{Cmd, Opts, parse_args};
+use args::{
+    Cmd, GetArgs, MatrixArgs, Opts, ProbeArgs, ResizeArgs, ServeArgs, SignArgs, parse_args,
+};
 use error::{CtlError, emit};
 use http::{
     Http, HttpResult, content_type_matches_token, get_report, image_200_proved, media_type_essence,
@@ -54,13 +56,16 @@ fn main() {
         return;
     }
     let pretty = args.iter().any(|a| a == "--pretty");
-    match parse_args(&args) {
-        Ok(opts) => {
-            if let Err(e) = run(opts) {
-                e.with_pretty(pretty).exit();
-            }
-        }
-        Err(e) => e.with_pretty(pretty).exit(),
+    let result = parse_args(&args).and_then(|(opts, cmd)| match &cmd {
+        Cmd::Serve(a) => cmd_serve(&opts, a),
+        Cmd::Get(a) => cmd_get(&opts, a),
+        Cmd::Probe(a) => cmd_probe(&opts, a),
+        Cmd::Resize(a) => cmd_resize(&opts, a),
+        Cmd::Sign(a) => cmd_sign(&opts, a),
+        Cmd::Matrix(a) => cmd_matrix(&opts, a),
+    });
+    if let Err(e) = result {
+        e.with_pretty(pretty).exit();
     }
 }
 
@@ -140,59 +145,11 @@ Examples:
 }
 
 // ---------------------------------------------------------------------------
-// Args
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Dispatch
-// ---------------------------------------------------------------------------
-
-fn run(opts: Opts) -> Result<(), CtlError> {
-    match &opts.cmd {
-        Cmd::Serve { port } => cmd_serve(&opts, *port),
-        Cmd::Get {
-            path,
-            base,
-            write,
-            accept,
-            expect,
-            timeout_secs,
-        } => cmd_get(
-            &opts,
-            path,
-            base.as_deref(),
-            write.as_deref(),
-            accept.as_deref(),
-            *expect,
-            *timeout_secs,
-        ),
-        Cmd::Probe { file } => cmd_probe(&opts, file),
-        Cmd::Resize { .. } => cmd_resize(&opts),
-        Cmd::Sign { path, key, salt } => cmd_sign(&opts, path, key.as_deref(), salt.as_deref()),
-        Cmd::Matrix {
-            sources,
-            boxes,
-            formats,
-            negatives,
-            base,
-            timeout_secs,
-        } => cmd_matrix(
-            &opts,
-            sources.clone(),
-            boxes.clone(),
-            formats.clone(),
-            *negatives,
-            base.clone(),
-            *timeout_secs,
-        ),
-    }
-}
-
-// ---------------------------------------------------------------------------
 // serve / spawn
 // ---------------------------------------------------------------------------
 
-fn cmd_serve(opts: &Opts, port: Option<u16>) -> Result<(), CtlError> {
+fn cmd_serve(opts: &Opts, a: &ServeArgs) -> Result<(), CtlError> {
+    let port = a.port;
     if opts.dry_run {
         emit(
             &json!({
@@ -339,16 +296,13 @@ fn redact_env_value<'a>(key: &str, value: &'a str) -> &'a str {
     }
 }
 
-fn cmd_get(
-    opts: &Opts,
-    path: &str,
-    base: Option<&str>,
-    write: Option<&Path>,
-    accept: Option<&str>,
-    expect: Option<u16>,
-    timeout_secs: u64,
-) -> Result<(), CtlError> {
-    let path = normalize_path(path);
+fn cmd_get(opts: &Opts, a: &GetArgs) -> Result<(), CtlError> {
+    let base = a.base.as_deref();
+    let write = a.write.as_deref();
+    let accept = a.accept.as_deref();
+    let expect = a.expect;
+    let timeout_secs = a.timeout_secs;
+    let path = normalize_path(&a.path);
     if opts.dry_run {
         emit(
             &json!({
@@ -395,7 +349,8 @@ fn cmd_get(
 // probe / resize / sign
 // ---------------------------------------------------------------------------
 
-fn cmd_probe(opts: &Opts, file: &Path) -> Result<(), CtlError> {
+fn cmd_probe(opts: &Opts, a: &ProbeArgs) -> Result<(), CtlError> {
+    let file = a.file.as_path();
     if opts.dry_run {
         emit(
             &json!({"ok": true, "dry_run": true, "file": file.display().to_string()}),
@@ -434,8 +389,8 @@ fn cmd_probe(opts: &Opts, file: &Path) -> Result<(), CtlError> {
     Ok(())
 }
 
-fn cmd_resize(opts: &Opts) -> Result<(), CtlError> {
-    let Cmd::Resize {
+fn cmd_resize(opts: &Opts, a: &ResizeArgs) -> Result<(), CtlError> {
+    let ResizeArgs {
         input,
         w,
         h,
@@ -443,10 +398,7 @@ fn cmd_resize(opts: &Opts) -> Result<(), CtlError> {
         format,
         quality,
         preset,
-    } = &opts.cmd
-    else {
-        unreachable!("cmd_resize");
-    };
+    } = a;
     let format = format.as_deref();
     let quality = quality.as_deref();
     let preset = preset.as_deref();
@@ -569,13 +521,10 @@ fn resize_argv(
     v
 }
 
-fn cmd_sign(
-    opts: &Opts,
-    path: &str,
-    key: Option<&str>,
-    salt: Option<&str>,
-) -> Result<(), CtlError> {
-    let path = percent_decode_path(&normalize_path(path))?;
+fn cmd_sign(opts: &Opts, a: &SignArgs) -> Result<(), CtlError> {
+    let key = a.key.as_deref();
+    let salt = a.salt.as_deref();
+    let path = percent_decode_path(&normalize_path(&a.path))?;
     let key_hex = key
         .map(str::to_string)
         .or_else(|| std::env::var("OXIMG_KEY").ok())
@@ -744,29 +693,30 @@ fn source_display_size(src: &str, images_dir: &Path, rotate: bool) -> Option<(u3
     Some((w as u32, h as u32))
 }
 
-fn cmd_matrix(
-    opts: &Opts,
-    sources: Vec<String>,
-    boxes: Vec<(u32, u32)>,
-    formats: Vec<String>,
-    negatives: bool,
-    base: Option<String>,
-    timeout_secs: u64,
-) -> Result<(), CtlError> {
+fn cmd_matrix(opts: &Opts, a: &MatrixArgs) -> Result<(), CtlError> {
+    let MatrixArgs {
+        sources,
+        boxes,
+        formats,
+        negatives,
+        base,
+        timeout_secs,
+    } = a;
+    let (negatives, timeout_secs) = (*negatives, *timeout_secs);
     let sources = if sources.is_empty() {
         default_sources()
     } else {
-        sources
+        sources.clone()
     };
     let boxes = if boxes.is_empty() {
         vec![(100, 100)]
     } else {
-        boxes
+        boxes.clone()
     };
     let formats = if formats.is_empty() {
         default_formats()
     } else {
-        formats
+        formats.clone()
     };
     // Local fixtures are only an oracle when we spawned the server.
     // --base talks to someone else's tree; sniffing our images_dir
