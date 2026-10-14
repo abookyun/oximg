@@ -52,7 +52,7 @@ cargo build --profile agent           # both oximg and oximg-ctl
 
 The `agent` profile is release codegen without fat LTO: a one-line
 edit relinks in seconds, not ~100 s, and its output matched release
-byte for byte on the fixture matrix (`bench/profile_parity.py`): amd64
+byte for byte on the fixture matrix (`oximg-ctl parity`): amd64
 with and without avif, and aarch64 with default features only, under
 QEMU — AVIF on arm64 is unchecked. When the risk is the
 codegen itself — SIMD, `unsafe`, FFI — also drive the release binary
