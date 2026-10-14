@@ -99,7 +99,10 @@ fi
 
 head=$(git rev-parse HEAD 2>/dev/null || echo unknown)
 dirty=false
-[[ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]] && dirty=true
+# Untracked files count: cargo compiles a new tests/*.rs or a `mod`-ed
+# src file whether or not it is committed, so a pass with one present
+# says nothing about HEAD alone.
+[[ -n "$(git status --porcelain 2>/dev/null)" ]] && dirty=true
 filtered=false
 [[ ${#test_args[@]} -gt 0 ]] && filtered=true
 
