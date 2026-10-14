@@ -60,7 +60,8 @@ the file) or a product regression (report it, keep it out of this PR).
 3. **Live pass.** Required even when the source looks clean. Follow
    the verify skill's Launch, Doctor, and Cleanup:
 
-   - `cargo build --release`, then `scripts/doctor.sh` must exit 0.
+   - `cargo build --release`, then
+     `.claude/skills/verify/scripts/doctor.sh` must exit 0.
    - Run every **Driving it with oximg-ctl** block. Each status,
      content type, or geometry the block states (`--expect`, the
      `# expect:` comments) is a claim; the ctl JSON either matches it

@@ -98,9 +98,12 @@ One read-only check. Does not spawn, bind a port, or kill anything.
 ```
 
 Pass (`ok: true`, exit 0) means: `cmake` and `nasm` are on `PATH`,
-`./target/release/oximg` and `./target/release/oximg-ctl` exist and
-`--version` matches `oximg <semver>` / `oximg-ctl <semver>`,
-`tests/fixtures/` is a directory. `OXIMG_VERIFY_PID` unset →
+`./target/release/oximg` and `./target/release/oximg-ctl` exist,
+report the `Cargo.toml` package version (`oximg <version>` /
+`oximg-ctl <version>`), and are newer than every file under `src/` and
+`build.rs` — a stale binary is proof for other code, and between two
+releases the version alone cannot tell. `tests/fixtures/` is a
+directory. `OXIMG_VERIFY_PID` unset →
 `spawned: none` (the expected state after auto-spawn). If set, that
 pid must be alive (Unix `ps`/`kill`, not `/proc`), owned by this uid,
 and `comm` must be `oximg` or `oximg-ctl`; otherwise `ok: false` and
