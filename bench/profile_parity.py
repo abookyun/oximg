@@ -37,15 +37,45 @@ def cells(build_dir):
     out = {}
     for f in fixtures():
         for box in BOXES:
-            res = subprocess.run(
-                [ctl, "--bin", bin_, "matrix", "--source", f, "--box", box,
-                 "--no-negatives"],
-                capture_output=True,
-                text=True,
-            )
-            for c in json.loads(res.stdout)["cells"]:
-                out[c["path"]] = (c["status"], c.get("sha256"))
+            try:
+                res = subprocess.run(
+                    [ctl, "--bin", bin_, "matrix", "--source", f, "--box",
+                     box, "--no-negatives"],
+                    capture_output=True,
+                    text=True,
+                )
+            except OSError as e:
+                res = subprocess.CompletedProcess(ctl, 127, "", str(e))
+            try:
+                report = json.loads(res.stdout)
+            except ValueError:
+                report = {}
+            if "cells" not in report:
+                # ctl failed before any cell ran: missing binary, spawn
+                # failure. Say which build and why, as the one JSON object.
+                fail(build_dir, f, box, res, report)
+            for c in report["cells"]:
+                # A transport failure has no status; keep its error so it
+                # can only match the same failure on the other side.
+                out[c["path"]] = (c.get("status", c.get("error")), c.get("sha256"))
     return out
+
+
+def fail(build_dir, source, box, res, report):
+    print(
+        json.dumps(
+            {
+                "ok": False,
+                "build": build_dir,
+                "source": source,
+                "box": box,
+                "ctl_exit": res.returncode,
+                "ctl_report": report or None,
+                "ctl_stderr": res.stderr[-2000:],
+            }
+        )
+    )
+    sys.exit(1)
 
 
 def main():
