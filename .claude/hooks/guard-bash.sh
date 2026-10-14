@@ -8,32 +8,17 @@
 #    files.
 #
 # Only command positions count: heredoc bodies and quoted strings are
-# dropped first, so a commit message that names `gh pr create` is not a
-# PR. A guardrail, not a sandbox — `bash -c '…'` walks past it.
+# dropped first (shell_text.py), so a commit message that names
+# `gh pr create` is not a PR. A guardrail, not a sandbox — `bash -c '…'`
+# walks past it.
 #
 # Exit 2 blocks the command and shows stderr to the agent.
 set -uo pipefail
 
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 input=$(cat)
 if command -v python3 >/dev/null 2>&1; then
-  cmd=$(python3 -c '
-import json, re, sys
-cmd = json.load(sys.stdin).get("tool_input", {}).get("command", "")
-out, term = [], None
-for line in cmd.split("\n"):
-    if term is not None:
-        if line.strip() == term:
-            term = None
-        continue
-    m = re.search(r"<<-?\s*([\x27\x22]?)(\w+)\1", line)
-    if m:
-        term = m.group(2)
-    out.append(line)
-s = "\n".join(out)
-s = re.sub(r"\x27[^\x27]*\x27", "\x27\x27", s)
-s = re.sub(r"\x22(?:[^\x22\\\\]|\\\\.)*\x22", "\x22\x22", s)
-print(s)
-' <<<"$input")
+  cmd=$(python3 "$here/shell_text.py" code <<<"$input")
 elif command -v jq >/dev/null 2>&1; then
   cmd=$(jq -r '.tool_input.command // empty' <<<"$input")
 else
