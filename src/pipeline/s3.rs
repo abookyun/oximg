@@ -479,7 +479,7 @@ pub(crate) async fn fetch(bucket: &str, key: &str) -> Result<reqwest::Response> 
     if status.is_success() {
         return Ok(resp);
     }
-    let body = read_error_body(resp).await;
+    let body = read_error_body(resp).await?;
     Err(status_error(status, body.code.as_deref(), bucket))
 }
 
@@ -596,14 +596,14 @@ struct ErrorBody {
 /// many, so a broken store cannot make us buffer a large body.
 const ERROR_BODY_LIMIT: usize = 16 * 1024;
 
-async fn read_error_body(mut resp: reqwest::Response) -> ErrorBody {
+async fn read_error_body(mut resp: reqwest::Response) -> Result<ErrorBody> {
     let mut body = Vec::new();
     while body.len() < ERROR_BODY_LIMIT
-        && let Ok(Some(chunk)) = resp.chunk().await
+        && let Some(chunk) = resp.chunk().await.map_err(map_transport_err)?
     {
         body.extend_from_slice(&chunk);
     }
-    parse_error_body(&body)
+    Ok(parse_error_body(&body))
 }
 
 /// Read `<Code>` and `<Message>` from an S3 error body. These two
@@ -720,7 +720,9 @@ async fn probe(s: &'static Settings, bucket: String, target: Target) -> Result<(
     if status.is_success() {
         return Ok(());
     }
-    let body = read_error_body(resp).await;
+    let body = read_error_body(resp)
+        .await
+        .map_err(|e| fail(format!("could not read the {status} response: {e:#}")))?;
     match (status.as_u16(), body.code.as_deref()) {
         (404, Some("NoSuchKey")) => Ok(()),
         (403, Some("AccessDenied")) => {

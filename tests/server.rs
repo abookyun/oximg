@@ -2680,6 +2680,66 @@ fn fake_s3(
 }
 
 #[test]
+fn s3_error_body_failures_preserve_transport_errors() {
+    let s3 = S3::spawn(|path, _| {
+        let status = if path.contains("400") {
+            "400 Bad Request"
+        } else {
+            "404 Not Found"
+        };
+        if path.contains("timeout") || path.contains("truncated") {
+            let reply = Reply::raw(format!(
+                "HTTP/1.1 {status}\r\nContent-Length: 128\r\nConnection: close\r\n\r\n<Error><Code>"
+            ));
+            if path.contains("timeout") {
+                reply.then(std::time::Duration::from_secs(5), Vec::new())
+            } else {
+                reply
+            }
+        } else if path.ends_with("bucket.jpg") {
+            Reply::error("404 Not Found", "NoSuchBucket")
+        } else {
+            Reply::error("404 Not Found", "NoSuchKey")
+        }
+    })
+    .unwrap();
+    let mut env = s3_env(s3.port());
+    env.extend([
+        ("OXIMG_SOURCE_BASE_URL", "s3://test-bucket".into()),
+        ("OXIMG_UPSTREAM_TIMEOUT", "1".into()),
+        ("OXIMG_METRICS", "1".into()),
+    ]);
+    let server = Server::start(&env);
+    for (key, status) in [
+        ("truncated400.jpg", 502),
+        ("truncated404.jpg", 502),
+        ("timeout400.jpg", 504),
+        ("timeout404.jpg", 504),
+        ("missing.jpg", 404),
+        ("bucket.jpg", 500),
+    ] {
+        assert_eq!(
+            server.status_of(&format!("/resize/100/100/{key}")),
+            status,
+            "{key}"
+        );
+    }
+    let body = String::from_utf8(server.get("/metrics").unwrap().2).unwrap();
+    assert_eq!(
+        metric(&body, "oximg_upstream_fetch_total{outcome=\"timeout\"}"),
+        2.0
+    );
+    assert_eq!(
+        metric(&body, "oximg_upstream_fetch_total{outcome=\"error\"}"),
+        2.0
+    );
+    assert_eq!(
+        metric(&body, "oximg_upstream_fetch_total{outcome=\"not_found\"}"),
+        1.0
+    );
+}
+
+#[test]
 fn s3_harness_shuts_down_inflight_connections() {
     let s3 = S3::spawn(|_, _| {
         Reply::photo()
