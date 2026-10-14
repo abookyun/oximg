@@ -51,3 +51,55 @@ fn hex(bytes: &[u8]) -> String {
     }
     s
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture(name: &str) -> Vec<u8> {
+        std::fs::read(format!(
+            "{}/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn probe_reports_type_and_stored_size() {
+        let v = probe_value(&fixture("photo.jpg"));
+        assert_eq!(v["content_type"], "image/jpeg");
+        assert_eq!(
+            (v["width"].as_u64(), v["height"].as_u64()),
+            (Some(200), Some(150))
+        );
+        assert_eq!(v["stored_pixels"], 30_000);
+        assert!(v.get("animation").is_none(), "{v}");
+        assert!(v.get("error").is_none(), "{v}");
+    }
+
+    #[test]
+    fn probe_reports_animation() {
+        let v = probe_value(&fixture("anim.gif"));
+        assert_eq!(v["animation"]["frames"], 3);
+        assert_eq!(v["animation"]["duration_ms"], 1500);
+    }
+
+    #[test]
+    fn probe_of_non_image_bytes_is_an_error_field() {
+        let v = probe_value(b"not an image");
+        assert!(v["error"].is_string(), "{v}");
+        assert!(v.get("width").is_none(), "{v}");
+    }
+
+    #[test]
+    fn sha256_is_lowercase_hex() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+}
