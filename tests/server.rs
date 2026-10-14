@@ -2740,6 +2740,46 @@ fn s3_error_body_failures_preserve_transport_errors() {
 }
 
 #[test]
+fn s3_error_body_limits_are_strict() {
+    let s3 = S3::spawn(|path, _| {
+        if path.ends_with(".oximg-startup-probe") {
+            return Reply::error("404 Not Found", "NoSuchKey");
+        }
+        let size = if path.contains("under") {
+            16383
+        } else if path.contains("over") {
+            16385
+        } else {
+            16384
+        };
+        let mut body = b"<Error><Code>NoSuchBucket</Code></Error>".to_vec();
+        body.resize(size, b' ');
+        let framing = if path.contains("chunked") {
+            format!("Transfer-Encoding: chunked\r\n\r\n{size:X}\r\n")
+        } else {
+            format!("Content-Length: {size}\r\n\r\n")
+        };
+        let mut raw =
+            format!("HTTP/1.1 404 Not Found\r\nConnection: close\r\n{framing}").into_bytes();
+        raw.extend_from_slice(&body);
+        if path.contains("chunked") {
+            raw.extend_from_slice(b"\r\n0\r\n\r\n");
+        }
+        Reply::raw(raw)
+    })
+    .unwrap();
+    let mut env = s3_env(s3.port());
+    env.push(("OXIMG_SOURCE_BASE_URL", "s3://test-bucket".into()));
+    let server = Server::start(&env);
+    for framing in ["declared", "chunked"] {
+        for (size, status) in [("under", 500), ("exact", 500), ("over", 502)] {
+            let path = format!("/resize/100/100/{framing}-{size}.jpg");
+            assert_eq!(server.status_of(&path), status, "{path}");
+        }
+    }
+}
+
+#[test]
 fn s3_harness_shuts_down_inflight_connections() {
     let s3 = S3::spawn(|_, _| {
         Reply::photo()

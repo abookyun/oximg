@@ -592,15 +592,26 @@ struct ErrorBody {
     message: Option<String>,
 }
 
-/// Error bodies are a few hundred bytes. We stop reading after this
-/// many, so a broken store cannot make us buffer a large body.
+/// Error bodies are a few hundred bytes. Larger answers are upstream
+/// faults; never classify a truncated error as a missing object or bad key.
 const ERROR_BODY_LIMIT: usize = 16 * 1024;
 
 async fn read_error_body(mut resp: reqwest::Response) -> Result<ErrorBody> {
-    let mut body = Vec::new();
-    while body.len() < ERROR_BODY_LIMIT
-        && let Some(chunk) = resp.chunk().await.map_err(map_transport_err)?
+    let too_large = || {
+        anyhow::anyhow!("S3 error response exceeds the {ERROR_BODY_LIMIT}-byte limit")
+            .context(UpstreamFault)
+    };
+    if resp
+        .content_length()
+        .is_some_and(|len| len > ERROR_BODY_LIMIT as u64)
     {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(map_transport_err)? {
+        if chunk.len() > ERROR_BODY_LIMIT - body.len() {
+            return Err(too_large());
+        }
         body.extend_from_slice(&chunk);
     }
     Ok(parse_error_body(&body))
