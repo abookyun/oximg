@@ -19,8 +19,12 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 input=$(cat)
 if command -v python3 >/dev/null 2>&1; then
   cmd=$(python3 "$here/shell_text.py" code <<<"$input")
+  # Kill patterns are usually quoted (`pkill -f 'oximg serve'`), so the
+  # kill rule matches with quotes kept; only heredoc bodies go.
+  kill_text=$(python3 "$here/shell_text.py" heredoc <<<"$input")
 elif command -v jq >/dev/null 2>&1; then
   cmd=$(jq -r '.tool_input.command // empty' <<<"$input")
+  kill_text=$cmd
 else
   exit 0
 fi
@@ -29,8 +33,8 @@ fi
 # Start of a line, or after ; & | ( or $( — then optional sudo.
 at='(^|[;&|(]|\$\()[[:space:]]*(sudo[[:space:]]+)?'
 
-if grep -Eq "${at}(killall|pkill)[^;&|]*oximg" <<<"$cmd" ||
-  grep -Eq "${at}kill[^;&|]*\\\$\\([[:space:]]*pgrep[^)]*oximg" <<<"$cmd"; then
+if grep -Eq "${at}(killall|pkill)[^;&|]*oximg" <<<"$kill_text" ||
+  grep -Eq "${at}kill[^;&|]*\\\$\\([[:space:]]*pgrep[^)]*oximg" <<<"$kill_text"; then
   echo "Blocked: never kill oximg by name — other sessions on this host run their own. Kill the pid you started (the oximg-ctl wrapper for serve)." >&2
   exit 2
 fi
