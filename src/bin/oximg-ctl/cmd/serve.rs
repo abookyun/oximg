@@ -75,3 +75,33 @@ fn redact_env_value<'a>(key: &str, value: &'a str) -> &'a str {
         value
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::redact_env_value;
+
+    #[test]
+    fn secrets_are_redacted_in_any_case() {
+        for k in [
+            "OXIMG_KEY",
+            "oximg_salt",
+            "Api_Token",
+            "DB_PASSWORD",
+            "GCS_SECRET_JSON",
+        ] {
+            assert_eq!(redact_env_value(k, "s3cr3t"), "<redacted>", "{k}");
+        }
+    }
+
+    #[test]
+    fn other_values_are_shown() {
+        for k in [
+            "OXIMG_BIND",
+            "OXIMG_SOURCE_BASE_URL",
+            "QUALITY",
+            "OXIMG_WORKERS",
+        ] {
+            assert_eq!(redact_env_value(k, "v"), "v", "{k}");
+        }
+    }
+}
