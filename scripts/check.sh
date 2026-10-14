@@ -84,6 +84,16 @@ step() {
   steps_json="${steps_json:+$steps_json, }$entry"
 }
 
+# CI's "Examples smoke": run the example CLIs once, not just compile them.
+examples_smoke() {
+  cargo run --release --example probe -- tests/fixtures/photo.webp &&
+    cargo run --release --example thumbnail -- tests/fixtures/photo.jpg 64 64 "$out_dir/t.jpg"
+}
+examples_smoke_avif() {
+  cargo run --release --example transcode --features avif -- tests/fixtures/photo.jpg 64 64 avif "$out_dir/t.avif" &&
+    cargo run --release --example qcli --features avif -- transcode tests/fixtures/photo.jpg 64 64 webp "$out_dir/q.webp"
+}
+
 step fmt any cargo fmt --check
 if [[ "$mode" == quick ]]; then
   step clippy any cargo clippy --profile agent --all-targets -- -D warnings
@@ -95,6 +105,9 @@ else
   step clippy-library-only avif cargo clippy --release --no-default-features --features avif -- -D warnings
   step test any cargo test --release
   step test-avif avif cargo test --release --features avif
+  step build-all-targets avif cargo build --release --all-targets --features avif
+  step examples-smoke any examples_smoke
+  step examples-smoke-avif avif examples_smoke_avif
 fi
 
 head=$(git rev-parse HEAD 2>/dev/null || echo unknown)
