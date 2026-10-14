@@ -56,6 +56,18 @@ ok=true
 steps_json=""
 started=$(date +%s)
 
+# Untracked files count: cargo compiles a new tests/*.rs or a `mod`-ed
+# src file whether or not it is committed, so a pass with one present
+# says nothing about HEAD alone.
+tree_state() {
+  git rev-parse HEAD 2>/dev/null || echo unknown
+  git status --porcelain 2>/dev/null
+}
+# Sampled before the first step and again after the last: a commit or
+# an edit made in another terminal mid-run must not let this result
+# vouch for code no step saw.
+before=$(tree_state)
+
 # step NAME NEEDS_AVIF CMD...
 step() {
   local name=$1 needs_avif=$2
@@ -110,12 +122,11 @@ else
   step examples-smoke-avif avif examples_smoke_avif
 fi
 
-head=$(git rev-parse HEAD 2>/dev/null || echo unknown)
+head=${before%%$'\n'*}
 dirty=false
-# Untracked files count: cargo compiles a new tests/*.rs or a `mod`-ed
-# src file whether or not it is committed, so a pass with one present
-# says nothing about HEAD alone.
-[[ -n "$(git status --porcelain 2>/dev/null)" ]] && dirty=true
+# Dirty at the start, or anything different at the end (HEAD moved,
+# files changed): the steps did not check one clean HEAD.
+[[ "$before" != "$head" || "$(tree_state)" != "$before" ]] && dirty=true
 filtered=false
 [[ ${#test_args[@]} -gt 0 ]] && filtered=true
 
