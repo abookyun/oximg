@@ -32,7 +32,8 @@ keeps the proof.
 | `src/bin/oximg-ctl/` | Control plane: one module per command under `cmd/` (`get`, `matrix`, `parity`, `probe`, `resize`, `sign`, `serve`) |
 | `tests/` | Integration suites; `server.rs` is ~3.7k lines — grep for the test, do not read it whole |
 | `docs/features/` | Token-cheap feature map: routes, formats, knobs, errors, invariants |
-| `bench/` | Benchmarks and quality sweeps; rules in `bench/METHODOLOGY.md` |
+| `bench/` | Benchmarks and quality sweeps; rules in `bench/METHODOLOGY.md`; `bench/platforms/` measures the deploy targets |
+| `deploy/` | Per-target deploy scripts and configs (Cloud Run, Cloudflare Containers, Cloudflare Workers wasm build); guides in `docs/deploy-*.md` |
 | `rubygem/`, `npm/`, `site/` | Ruby gems, npm wrapper, website (own workflow) |
 
 ## Build and check
