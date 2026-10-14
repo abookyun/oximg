@@ -2,6 +2,7 @@
 
 pub mod get;
 pub mod matrix;
+pub mod parity;
 pub mod probe;
 pub mod resize;
 pub mod serve;

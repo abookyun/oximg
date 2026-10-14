@@ -22,6 +22,10 @@ mod unix_child {
 
     static CHILD: AtomicI32 = AtomicI32::new(0);
     static SIGNALED: AtomicBool = AtomicBool::new(false);
+    /// Set by every SIGINT/SIGTERM once the handler is installed, child or
+    /// not, and never cleared: a signal between two children (or before
+    /// the first is set) must still stop a multi-server command.
+    static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
     unsafe extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
@@ -32,6 +36,7 @@ mod unix_child {
     const SIGTERM: i32 = 15;
 
     extern "C" fn forward(sig: i32) {
+        INTERRUPTED.store(true, Ordering::SeqCst);
         let pid = CHILD.load(Ordering::SeqCst);
         if pid > 0 {
             SIGNALED.store(true, Ordering::SeqCst);
@@ -61,6 +66,10 @@ mod unix_child {
 
     pub fn signaled() -> bool {
         SIGNALED.load(Ordering::SeqCst)
+    }
+
+    pub fn interrupted() -> bool {
+        INTERRUPTED.load(Ordering::SeqCst)
     }
 }
 
@@ -193,6 +202,24 @@ impl Spawned {
     }
 }
 
+/// Whether a SIGINT/SIGTERM has arrived since this process installed its
+/// handler (the first spawn). Latched: unlike the per-child flag, no
+/// spawn or teardown resets it.
+pub fn interrupted() -> bool {
+    #[cfg(unix)]
+    {
+        unix_child::interrupted()
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+pub fn interrupted_error() -> CtlError {
+    CtlError::fail("interrupted by a signal; the run is incomplete", None)
+}
+
 /// The base URL to drive: `--base` as given (a foreign tree), or a
 /// loopback server spawned for this command. Keep the returned guard
 /// bound until the last request; dropping it reaps the server.
@@ -309,6 +336,9 @@ pub fn spawn_server(
             unix_child::clear();
             let _ = child.kill();
             let _ = child.wait();
+            if interrupted() {
+                return Err(interrupted_error());
+            }
             return Err(CtlError::fail(
                 "server did not print a listening line within 15s",
                 Some("check --bin points at oximg, and that cmake/nasm are installed"),
@@ -323,6 +353,12 @@ pub fn spawn_server(
         // inherits and idles. Do not unbounded-wait past SPAWN_TIMEOUT.
         let leftover = deadline.saturating_duration_since(Instant::now());
         let status = wait_child_until(&mut child, leftover);
+        // oximg installs its signal handlers just before the listening
+        // line, so a Ctrl-C before it kills the child outright: the
+        // caller's stop, not a broken --bin.
+        if interrupted() {
+            return Err(interrupted_error());
+        }
         let hint = if boot.is_empty() {
             "check --bin points at oximg, and that cmake/nasm are installed"
         } else {
@@ -356,6 +392,11 @@ pub fn spawn_server(
         ) && res.status == 200
         {
             return Ok(spawned);
+        }
+        // A Ctrl-C that reached the child during startup is the caller's
+        // stop, not a server failure.
+        if interrupted() {
+            return Err(interrupted_error());
         }
         if let Ok(Some(status)) = spawned.child.try_wait() {
             return Err(CtlError::fail(
