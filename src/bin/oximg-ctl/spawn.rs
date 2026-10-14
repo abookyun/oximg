@@ -336,6 +336,9 @@ pub fn spawn_server(
             unix_child::clear();
             let _ = child.kill();
             let _ = child.wait();
+            if interrupted() {
+                return Err(interrupted_error());
+            }
             return Err(CtlError::fail(
                 "server did not print a listening line within 15s",
                 Some("check --bin points at oximg, and that cmake/nasm are installed"),
@@ -350,6 +353,12 @@ pub fn spawn_server(
         // inherits and idles. Do not unbounded-wait past SPAWN_TIMEOUT.
         let leftover = deadline.saturating_duration_since(Instant::now());
         let status = wait_child_until(&mut child, leftover);
+        // oximg installs its signal handlers just before the listening
+        // line, so a Ctrl-C before it kills the child outright: the
+        // caller's stop, not a broken --bin.
+        if interrupted() {
+            return Err(interrupted_error());
+        }
         let hint = if boot.is_empty() {
             "check --bin points at oximg, and that cmake/nasm are installed"
         } else {
