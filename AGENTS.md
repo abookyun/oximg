@@ -63,6 +63,13 @@ without the HTTP stack); without SVT-AV1/dav1d it reports those steps
 as skipped. CI also runs arm64, MSRV, coverage ≥ 80%, the Ruby gems,
 and `cargo deny`.
 
+Push only commits `full` has passed on a clean tree.
+`.githooks/pre-push` enforces it for Claude Code sessions, which enable
+it with `git config core.hooksPath .githooks`; a branch that touches
+only agent files, `site/`, or Markdown other than `README.md` and
+`docs/features/` (which `src/config.rs` tests) is exempt. Never
+`--no-verify`.
+
 ## Docs that CI pins to code
 
 Adding or removing a knob, an `ErrorKind`, an HTTP status mapping, or

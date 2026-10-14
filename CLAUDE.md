@@ -8,11 +8,9 @@ apply to Claude Code alone.
 - Skills: `verify` (`.claude/skills/verify/`) is the drive book above;
   `/maintain-verification-skill` is a manual upkeep pass over it.
 - Hooks (`.claude/settings.json`): an edited `.rs` file is run through
-  rustfmt; Bash refuses to kill oximg by name; `gh pr create` is
-  refused until `scripts/check.sh full` has passed on a clean HEAD
-  (a branch that touches only agent files, `site/`, or Markdown other
-  than `README.md` and `docs/features/` is exempt — `src/config.rs`
-  tests those two).
+  rustfmt; Bash refuses to kill oximg by name; session start sets
+  `core.hooksPath` to `.githooks` when the clone has none, which turns
+  on the pre-push gate above (it says so if another hooks path wins).
 - A worktree under `.claude/worktrees/` starts without `target/`: the
   first `cargo build --profile agent` there is a full build (~45 s).
 
