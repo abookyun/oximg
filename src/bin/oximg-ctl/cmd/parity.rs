@@ -11,7 +11,7 @@ use crate::cmd::matrix;
 use crate::error::{CtlError, emit};
 use crate::http::Http;
 use crate::report::sha256_hex;
-use crate::spawn::{images_dir, interrupted, resolve_bin, server_base};
+use crate::spawn::{images_dir, interrupted, interrupted_error, resolve_bin, server_base};
 use oximg::pipeline;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -64,6 +64,10 @@ pub fn run(opts: &Opts, a: &ParityArgs) -> Result<(), CtlError> {
     let timeout = Duration::from_secs(a.timeout_secs);
     let side_a = responses(opts, &bin_a, &paths, &http, timeout)?;
     let side_b = responses(opts, &bin_b, &paths, &http, timeout)?;
+    // The last chance for a Ctrl-C to win over a verdict.
+    if interrupted() {
+        return Err(interrupted_error());
+    }
     let mut report = compare(&paths, &side_a, &side_b);
     report["a"] = json!(bin_a.display().to_string());
     report["b"] = json!(bin_b.display().to_string());
@@ -105,6 +109,13 @@ fn responses(
     http: &Http,
     timeout: Duration,
 ) -> Result<Vec<Outcome>, CtlError> {
+    // Ctrl-C reaches the server, not us, and the wrapper keeps running:
+    // every later request would fail and read as a difference. The
+    // latch is checked before spawning (a signal between sides), by
+    // spawn_server during startup, and after every request.
+    if interrupted() {
+        return Err(interrupted_error());
+    }
     let mut side = opts.clone();
     side.bin = Some(bin.to_path_buf());
     let (_spawned, base) = server_base(&side, None, http)?;
@@ -117,17 +128,8 @@ fn responses(
             },
             Err(e) => Outcome::Transport(e),
         });
-        // Ctrl-C reaches the server, not us: every later request would
-        // fail and read as a difference. Stop before the guard drops,
-        // which clears the flag.
         if interrupted() {
-            return Err(CtlError::fail(
-                format!(
-                    "interrupted while driving {}; nothing was compared",
-                    bin.display()
-                ),
-                None,
-            ));
+            return Err(interrupted_error());
         }
     }
     Ok(out)
