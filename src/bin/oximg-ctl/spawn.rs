@@ -1,7 +1,7 @@
 //! The child `oximg` server: which binary, which env, readiness, and
 //! teardown. Everything a proof spawns goes through `spawn_server`.
 
-use crate::Opts;
+use crate::args::Opts;
 use crate::error::CtlError;
 use crate::http::Http;
 use serde_json::json;
