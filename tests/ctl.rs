@@ -897,10 +897,14 @@ fn parity_interrupted_before_the_server_listens_reports_it() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let slow = dir.join("oximg");
+    let started = dir.join("started");
+    // The marker proves ctl already spawned side A, so its SIGINT
+    // handler is installed: the signal cannot hit ctl's default action.
     std::fs::write(
         &slow,
         format!(
-            "#!/bin/sh\ntrap 'exit 130' INT TERM\nsleep 5 </dev/null >/dev/null 2>&1 &\nwait $!\nexec '{}' \"$@\"\n",
+            "#!/bin/sh\ntrap 'exit 130' INT TERM\n: > '{}'\nsleep 5 </dev/null >/dev/null 2>&1 &\nwait $!\nexec '{}' \"$@\"\n",
+            started.display(),
             env!("CARGO_BIN_EXE_oximg")
         ),
     )
@@ -920,18 +924,26 @@ fn parity_interrupted_before_the_server_listens_reports_it() {
         .spawn()
         .expect("spawn oximg-ctl parity");
     let mut stdout = child.stdout.take().expect("stdout piped");
-    // ctl installs its handler as it spawns side A, within milliseconds;
-    // side A then sleeps 5 s before it could listen.
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(
-        Command::new("kill")
-            .args(["-INT", &child.id().to_string()])
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert_parity_reported_interrupted(child, &mut stdout);
+    // Side A is running and will not listen for 5 s.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !started.exists() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(&dir);
+            panic!("side A's wrapper never started");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let sent = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .unwrap()
+        .success();
+    // Clean up before asserting, so a failure leaves nothing behind.
     let _ = std::fs::remove_dir_all(&dir);
+    assert!(sent, "kill -INT failed");
+    assert_parity_reported_interrupted(child, &mut stdout);
 }
 
 /// Wait for a signalled parity run and require "interrupted": exit 1,
