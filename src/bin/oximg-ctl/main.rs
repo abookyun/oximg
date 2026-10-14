@@ -29,12 +29,9 @@ mod report;
 mod spawn;
 mod urlpath;
 
-use args::{Cmd, GetArgs, MatrixArgs, Opts, ResizeArgs, ServeArgs, parse_args};
+use args::{Cmd, MatrixArgs, Opts, ResizeArgs, ServeArgs, parse_args};
 use error::{CtlError, emit};
-use http::{
-    Http, HttpResult, content_type_matches_token, get_report, image_200_proved, media_type_essence,
-    normalize_path,
-};
+use http::{Http, HttpResult, content_type_matches_token, get_report, media_type_essence};
 use report::{probe_value, sha256_hex};
 use spawn::{
     child_auto_rotate, images_dir, remote_source_base, resolve_bin, server_base, spawn_server,
@@ -55,7 +52,7 @@ fn main() {
     let pretty = args.iter().any(|a| a == "--pretty");
     let result = parse_args(&args).and_then(|(opts, cmd)| match &cmd {
         Cmd::Serve(a) => cmd_serve(&opts, a),
-        Cmd::Get(a) => cmd_get(&opts, a),
+        Cmd::Get(a) => cmd::get::run(&opts, a),
         Cmd::Probe(a) => cmd::probe::run(&opts, a),
         Cmd::Resize(a) => cmd_resize(&opts, a),
         Cmd::Sign(a) => cmd::sign::run(&opts, a),
@@ -291,55 +288,6 @@ fn redact_env_value<'a>(key: &str, value: &'a str) -> &'a str {
     } else {
         value
     }
-}
-
-fn cmd_get(opts: &Opts, a: &GetArgs) -> Result<(), CtlError> {
-    let base = a.base.as_deref();
-    let write = a.write.as_deref();
-    let accept = a.accept.as_deref();
-    let expect = a.expect;
-    let timeout_secs = a.timeout_secs;
-    let path = normalize_path(&a.path);
-    if opts.dry_run {
-        emit(
-            &json!({
-                "ok": true,
-                "dry_run": true,
-                "path": path,
-                "base": base,
-                "accept": accept,
-                "expect": expect,
-            }),
-            opts.pretty,
-        );
-        return Ok(());
-    }
-    let http = Http::new().map_err(|e| CtlError::fail(e, None))?;
-    let (_spawned, base) = server_base(opts, base, &http)?;
-    let url = format!("{base}{path}");
-    let res = http
-        .get(&url, accept, Duration::from_secs(timeout_secs))
-        .map_err(|e| {
-            CtlError::fail(
-                e,
-                Some("is the server up? pass --base or let get auto-spawn"),
-            )
-        })?;
-    let mut report = get_report(&res, write)?;
-    if let Some(want) = expect
-        && res.status != want
-    {
-        report["ok"] = json!(false);
-        report["error"] = json!(format!("expected status {want}, got {}", res.status));
-        return Err(CtlError::from_value(1, report));
-    }
-    if !image_200_proved(&res, &report) {
-        report["ok"] = json!(false);
-        report["error"] = json!("response body did not probe as an image");
-        return Err(CtlError::from_value(1, report));
-    }
-    emit(&report, opts.pretty);
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
