@@ -16,9 +16,8 @@
 
 use hmac::Mac;
 use hmac::digest::KeyInit;
-use oximg::pipeline::{self, Animation, ImageFormat};
+use oximg::pipeline::{self, ImageFormat};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::IpAddr;
@@ -28,9 +27,11 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 mod error;
+mod report;
 mod urlpath;
 
 use error::{CtlError, emit};
+use report::{probe_value, sha256_hex};
 use urlpath::{percent_decode_path, percent_encode_path};
 
 /// Unix: forward SIGINT/SIGTERM to the spawned child. `signal(2)`
@@ -1354,39 +1355,6 @@ fn cmd_get(
 // probe / resize / sign
 // ---------------------------------------------------------------------------
 
-fn probe_value(bytes: &[u8]) -> Value {
-    match pipeline::probe(bytes) {
-        Ok((fmt, w, h)) => {
-            let mut v = json!({
-                "content_type": fmt.content_type(),
-                "width": w,
-                "height": h,
-                "stored_pixels": w as u64 * h as u64,
-            });
-            match pipeline::probe_animation(bytes) {
-                Ok(Some(Animation {
-                    frames,
-                    duration_ms,
-                    loop_count,
-                })) => {
-                    v["animation"] = json!({
-                        "frames": frames,
-                        "duration_ms": duration_ms,
-                        "loop_count": loop_count,
-                    });
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    v["error"] = json!(e.to_string());
-                    v["animation_error"] = json!(e.to_string());
-                }
-            }
-            v
-        }
-        Err(e) => json!({ "error": e.to_string() }),
-    }
-}
-
 fn cmd_probe(opts: &Opts, file: &Path) -> Result<(), CtlError> {
     if opts.dry_run {
         emit(
@@ -1664,20 +1632,6 @@ fn base64url_nopad(data: &[u8]) -> String {
         _ => {}
     }
     out
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    hex(&Sha256::digest(bytes))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    const H: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        s.push(H[(b >> 4) as usize] as char);
-        s.push(H[(b & 0xf) as usize] as char);
-    }
-    s
 }
 
 // ---------------------------------------------------------------------------
