@@ -14,11 +14,15 @@ disable-model-invocation: true
 `features/`, `scripts/`. Drive and launch rules stay in that skill;
 this file only owns the upkeep loop.
 
-`docs/features/` is not in scope: `src/config.rs`
+`docs/features/` is pinned only in part: `src/config.rs`
 (`knobs_are_documented`, `feature_map_errors`,
-`feature_map_format_tokens`) already pins it to the code, and CI fails
-on drift. Nothing pins the skill's `features/` recipes or its `expect:`
-comments — that is what this pass checks.
+`feature_map_format_tokens`) checks the knob table in `knobs.md`, the
+ErrorKind/status table in `errors.md`, and the `@{fmt}` token list in
+`formats.md`, and CI fails on drift there. Nothing checks `routes.md`,
+`paths.md`, `invariants.md`, or the prose of the pinned files, and
+nothing checks the skill's `features/` recipes or their `expect:`
+comments. The recipes are what this pass fixes; drift it finds in the
+unpinned map files is reported, not dismissed.
 
 ## Outcomes
 
@@ -41,7 +45,7 @@ the file) or a product regression (report it, keep it out of this PR).
 ## Pass
 
 1. **Index hygiene.** `features/README.md` lists every
-   `features/*.md` and nothing else. Every route, `@{fmt}` behavior,
+   `features/*.md` except itself, and nothing else. Every route, `@{fmt}` behavior,
    and caller path in [`docs/features/`](../../../docs/features/)
    (`routes.md`, `paths.md`, `formats.md`) is reachable from some
    feature file, or the gap is named in the outcome. Do not write
@@ -70,7 +74,10 @@ the file) or a product regression (report it, keep it out of this PR).
 4. **Triage.** Wrong description or `expect:` → doc drift, fix it.
    Working behavior ctl cannot drive → harness gap, report it (a new
    ctl subcommand is a `src/` change, out of scope here). Binary
-   wrong → product gap, report only.
+   wrong → product gap, report only. A `docs/features/` file that
+   disagrees with the source or the live run → map drift, report it
+   with the file, the line, and the ctl JSON; its fix is a separate
+   PR.
 
 5. **Ship or stop.** For **changed**: one PR, every changed file
    re-read, the ctl JSON that proves each correction pasted into the
