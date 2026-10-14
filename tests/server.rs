@@ -2661,215 +2661,48 @@ fn gcs_boot_is_fail_closed() {
     }
 }
 
-/// The empty-body SHA-256, which every signed S3 GET must send as
-/// `x-amz-content-sha256`.
-const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+// The reusable transport also powers tools/s3-harness.
+#[path = "support/s3.rs"]
+mod s3_harness;
+use s3_harness::{Reply, S3, s3_env, s3_error};
 
-/// An S3 error body, as AWS, R2 and MinIO send it.
-fn s3_error(status: &str, code: &str) -> String {
-    let body = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error><Code>{code}</Code><Message>test</Message></Error>"
-    );
-    format!(
-        "HTTP/1.1 {status}\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    )
-}
-
-/// Check a SigV4 signature against the request as it arrived: the
-/// request line and the signed headers on the wire. This is a second,
-/// small implementation that does not call oximg's signer, so it fails
-/// when the request we send differs from the request we signed (a path
-/// encoded again, another `Host`). The AWS test vectors in
-/// `src/pipeline/s3.rs` pin the algorithm itself.
-fn sigv4_is_valid(req: &str, secret: &str) -> bool {
-    use hmac::Mac;
-    use hmac::digest::KeyInit;
-    use sha2::{Digest, Sha256};
-    let hmac = |key: &[u8], data: &str| {
-        let mut mac = hmac::Hmac::<Sha256>::new_from_slice(key).unwrap();
-        mac.update(data.as_bytes());
-        mac.finalize().into_bytes().to_vec()
-    };
-    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let mut lines = req.split("\r\n");
-    let mut request_line = lines.next().unwrap_or("").split(' ');
-    let (Some(method), Some(path)) = (request_line.next(), request_line.next()) else {
-        return false;
-    };
-    let headers: Vec<(String, String)> = lines
-        .take_while(|l| !l.is_empty())
-        .filter_map(|l| l.split_once(':'))
-        .map(|(n, v)| {
-            (
-                n.trim().to_ascii_lowercase(),
-                v.split_whitespace().collect::<Vec<_>>().join(" "),
-            )
-        })
-        .collect();
-    let get = |name: &str| {
-        headers
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.as_str())
-    };
-    let (Some(auth), Some(datetime), Some(payload)) = (
-        get("authorization"),
-        get("x-amz-date"),
-        get("x-amz-content-sha256"),
-    ) else {
-        return false;
-    };
-    let field = |name: &str| {
-        auth.trim_start_matches("AWS4-HMAC-SHA256 ")
-            .split(", ")
-            .find_map(|f| f.strip_prefix(name))
-    };
-    let (Some(credential), Some(signed), Some(signature)) = (
-        field("Credential="),
-        field("SignedHeaders="),
-        field("Signature="),
-    ) else {
-        return false;
-    };
-    let scope = credential.split_once('/').map_or("", |(_, scope)| scope);
-    let names: Vec<&str> = signed.split(';').collect();
-    if !scope.starts_with(datetime.get(..8).unwrap_or("-")) || !names.is_sorted() {
-        return false;
-    }
-    let mut canonical_headers = String::new();
-    for name in &names {
-        let Some(value) = get(name) else { return false };
-        canonical_headers.push_str(&format!("{name}:{value}\n"));
-    }
-    let canonical = format!("{method}\n{path}\n\n{canonical_headers}\n{signed}\n{payload}");
-    let string_to_sign = format!(
-        "AWS4-HMAC-SHA256\n{datetime}\n{scope}\n{}",
-        hex(&Sha256::digest(canonical.as_bytes()))
-    );
-    // The scope is date/region/service/aws4_request, in signing order.
-    let mut key = format!("AWS4{secret}").into_bytes();
-    for part in scope.split('/') {
-        key = hmac(&key, part);
-    }
-    hex(&hmac(&key, &string_to_sign)) == signature
-}
-
-/// The verifier must accept a signature that AWS published, or it
-/// proves nothing about ours. This is the GET Object example from the
-/// S3 API reference.
-#[test]
-fn sigv4_verifier_accepts_the_aws_example() {
-    let req = "GET /test.txt HTTP/1.1\r\n\
-        Host: examplebucket.s3.amazonaws.com\r\n\
-        Authorization: AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, \
-        SignedHeaders=host;range;x-amz-content-sha256;x-amz-date, \
-        Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41\r\n\
-        Range: bytes=0-9\r\n\
-        x-amz-content-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\r\n\
-        x-amz-date: 20130524T000000Z\r\n\r\n";
-    let secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
-    assert!(sigv4_is_valid(req, secret));
-    assert!(!sigv4_is_valid(
-        &req.replace("/test.txt", "/test2.txt"),
-        secret
-    ));
-    assert!(!sigv4_is_valid(req, "another-secret"));
-}
-
-/// A fake S3 endpoint. Every request must carry a valid signature for
-/// the test keys (`sigv4_is_valid`), with the headers that oximg must
-/// sign. Other requests get 403 `SignatureDoesNotMatch`. `route`
-/// answers by path (it also gets the lower-cased request, to check a
-/// header).
 fn fake_s3(
     route: fn(&str, &str) -> Option<String>,
-) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-    use std::io::Write;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    let fixtures = format!("{}/tests/fixtures", env!("CARGO_MANIFEST_DIR"));
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let hits = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&hits);
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { continue };
-            let fixtures = fixtures.clone();
-            let counter = Arc::clone(&counter);
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 8192];
-                let n = std::io::Read::read(&mut stream, &mut buf).unwrap_or(0);
-                counter.fetch_add(1, Ordering::SeqCst);
-                let req = String::from_utf8_lossy(&buf[..n]).to_string();
-                let lower = req.to_lowercase();
-                let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
-                let header = |name: &str| {
-                    lower
-                        .lines()
-                        .find_map(|l| l.strip_prefix(&format!("{name}: ")))
-                        .map(|v| v.trim().to_string())
-                };
-                let token = header("x-amz-security-token");
-                let signed = if token.is_some() {
-                    "signedheaders=host;x-amz-content-sha256;x-amz-date;x-amz-security-token,"
-                } else {
-                    "signedheaders=host;x-amz-content-sha256;x-amz-date,"
-                };
-                let well_formed = header("authorization").is_some_and(|auth| {
-                    auth.starts_with("aws4-hmac-sha256 credential=akidtest/")
-                        && auth.contains("/us-east-1/s3/aws4_request,")
-                        && auth.contains(signed)
-                }) && header("x-amz-content-sha256").as_deref()
-                    == Some(EMPTY_SHA256)
-                    && sigv4_is_valid(&req, "test-secret");
-                if !well_formed {
-                    let _ = write!(
-                        stream,
-                        "{}",
-                        s3_error("403 Forbidden", "SignatureDoesNotMatch")
-                    );
-                    return;
-                }
-                match route(&path, &lower).as_deref() {
-                    Some("photo") => {
-                        let data = std::fs::read(format!("{fixtures}/photo.jpg")).unwrap();
-                        let _ = write!(
-                            stream,
-                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                            data.len()
-                        );
-                        let _ = stream.write_all(&data);
-                    }
-                    Some(raw) => {
-                        let _ = write!(stream, "{raw}");
-                    }
-                    None => {
-                        let _ = write!(stream, "{}", s3_error("404 Not Found", "NoSuchKey"));
-                    }
-                }
-            });
-        }
-    });
-    (port, hits)
+) -> (S3, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let s3 = S3::spawn(move |path, req| match route(path, req).as_deref() {
+        Some("photo") => Reply::photo(),
+        Some(raw) => Reply::raw(raw),
+        None => Reply::error("404 Not Found", "NoSuchKey"),
+    })
+    .unwrap();
+    let hits = s3.hits.clone();
+    (s3, hits)
 }
 
-/// The env every s3:// test starts from. Blank values read as unset,
-/// so this also clears whatever the developer's shell has exported.
-fn s3_env(endpoint_port: u16) -> Vec<(&'static str, String)> {
-    vec![
-        (
-            "OXIMG_S3_ENDPOINT",
-            format!("http://127.0.0.1:{endpoint_port}"),
-        ),
-        ("AWS_REGION", "us-east-1".into()),
-        ("AWS_ACCESS_KEY_ID", "AKIDTEST".into()),
-        ("AWS_SECRET_ACCESS_KEY", "test-secret".into()),
-        ("AWS_SESSION_TOKEN", String::new()),
-        ("OXIMG_S3_PATH_STYLE", String::new()),
-    ]
+#[test]
+fn s3_harness_shuts_down_inflight_connections() {
+    let s3 = S3::spawn(|_, _| {
+        Reply::photo()
+            .delay_headers(std::time::Duration::from_millis(5))
+            .then(std::time::Duration::from_secs(30), Vec::new())
+    })
+    .unwrap();
+    let port = s3.port();
+    let mut env = s3_env(port);
+    env.push(("OXIMG_SOURCE_BASE_URL", "s3://test-bucket".into()));
+    let server = Server::start(&env);
+    assert_eq!(server.status_of("/resize/100/100/photo.jpg"), 200);
+    assert_eq!(
+        s3.requests(),
+        [
+            "/test-bucket/.oximg-startup-probe",
+            "/test-bucket/photo.jpg"
+        ]
+    );
+    let start = std::time::Instant::now();
+    drop(s3);
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
 }
 
 /// Issue #11: the s3:// mode reads a private bucket with static keys.
@@ -2882,7 +2715,7 @@ fn s3_source_mode_signs_and_maps_statuses() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static FLAKY_HITS: AtomicUsize = AtomicUsize::new(0);
-    let (port, hits) = fake_s3(|path, _| match path {
+    let (s3, hits) = fake_s3(|path, _| match path {
         "/test-bucket/originals/.oximg-startup-probe" => None,
         "/test-bucket/originals/albums/2026/photo.jpg" => Some("photo".into()),
         "/test-bucket/originals/wrong-region.jpg" => {
@@ -2904,7 +2737,7 @@ fn s3_source_mode_signs_and_maps_statuses() {
         _ => None,
     });
 
-    let mut envs = s3_env(port);
+    let mut envs = s3_env(s3.port());
     envs.push(("OXIMG_SOURCE_BASE_URL", "s3://test-bucket/originals".into()));
     envs.push(("OXIMG_METRICS", "1".into()));
     let s = Server::start(&envs);
@@ -2980,14 +2813,14 @@ fn s3_source_mode_signs_and_maps_statuses() {
 /// which a local fake cannot get everywhere.)
 #[test]
 fn s3_session_token_is_signed() {
-    let (port, _) = fake_s3(|path, req| match path {
+    let (s3, _) = fake_s3(|path, req| match path {
         "/test-bucket/photo.jpg" if req.contains("x-amz-security-token: test-session-token") => {
             Some("photo".into())
         }
         "/test-bucket/photo.jpg" => Some(s3_error("400 Bad Request", "InvalidToken")),
         _ => None,
     });
-    let mut envs = s3_env(port);
+    let mut envs = s3_env(s3.port());
     envs.retain(|(k, _)| *k != "AWS_SESSION_TOKEN");
     envs.extend([
         ("AWS_SESSION_TOKEN", "test-session-token".into()),
@@ -3004,7 +2837,7 @@ fn s3_session_token_is_signed() {
 /// a 200 means that we sent the path we signed.
 #[test]
 fn s3_sends_the_path_it_signs() {
-    let (port, _) = fake_s3(|path, _| match path {
+    let (s3, _) = fake_s3(|path, _| match path {
         "/test-bucket/space%20name.jpg"
         | "/test-bucket/plus%2Bsign.jpg"
         | "/test-bucket/100%25.jpg"
@@ -3015,7 +2848,7 @@ fn s3_sends_the_path_it_signs() {
         | "/test-bucket/a%40b%24c%2Cd%3A.jpg" => Some("photo".into()),
         _ => None,
     });
-    let mut envs = s3_env(port);
+    let mut envs = s3_env(s3.port());
     envs.push(("OXIMG_SOURCE_BASE_URL", "s3://test-bucket".into()));
     let s = Server::start(&envs);
     for key in [
@@ -3040,7 +2873,7 @@ fn s3_sends_the_path_it_signs() {
 /// stops the boot. The probe asks under the prefix, where reads go.
 #[test]
 fn s3_boot_is_fail_closed() {
-    let (port, _) = fake_s3(|path, _| match path {
+    let (s3, _) = fake_s3(|path, _| match path {
         "/no-list/.oximg-startup-probe" => Some(s3_error("403 Forbidden", "AccessDenied")),
         "/no-bucket/.oximg-startup-probe" => Some(s3_error("404 Not Found", "NoSuchBucket")),
         "/bad-secret/.oximg-startup-probe" => {
@@ -3063,7 +2896,7 @@ fn s3_boot_is_fail_closed() {
         cmd.env("PORT", "0")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped());
-        for (k, v) in s3_env(port) {
+        for (k, v) in s3_env(s3.port()) {
             cmd.env(k, v);
         }
         for (k, v) in extra {

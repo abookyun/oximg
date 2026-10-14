@@ -23,6 +23,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use oximg::pipeline::{self, ErrorKind, Params};
 
+#[path = "support/s3.rs"]
+mod s3_harness;
+
 fn init() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -31,6 +34,14 @@ fn init() {
         // addresses can be pinned into the environment.
         let md_port = metadata_server();
         let (gcs_port, _) = origin();
+        static S3: std::sync::OnceLock<s3_harness::S3> = std::sync::OnceLock::new();
+        let s3 = S3.get_or_init(|| {
+            s3_harness::S3::spawn(|path, _| match path {
+                "/test-bucket/photo.jpg" => s3_harness::Reply::photo(),
+                _ => s3_harness::Reply::error("404 Not Found", "NoSuchKey"),
+            })
+            .unwrap()
+        });
         // SAFETY: set before any config()/http_agent()/gcs access —
         // every test calls init() first, and Once blocks the racers
         // until the vars are in place.
@@ -43,14 +54,10 @@ fn init() {
             std::env::set_var("OXIMG_UPSTREAM_TIMEOUT", "2");
             std::env::set_var("GCE_METADATA_HOST", format!("127.0.0.1:{md_port}"));
             std::env::set_var("OXIMG_GCS_ENDPOINT", format!("http://127.0.0.1:{gcs_port}"));
-            // The same origin serves s3:// in path style. Blank values
-            // read as unset, so the developer's own AWS_* do not leak in.
-            std::env::set_var("OXIMG_S3_ENDPOINT", format!("http://127.0.0.1:{gcs_port}"));
-            std::env::set_var("OXIMG_S3_PATH_STYLE", "");
-            std::env::set_var("AWS_REGION", "us-east-1");
-            std::env::set_var("AWS_ACCESS_KEY_ID", "AKIDTEST");
-            std::env::set_var("AWS_SECRET_ACCESS_KEY", "test-secret");
-            std::env::set_var("AWS_SESSION_TOKEN", "");
+            // Library S3 calls also cross the independent wire-signature verifier.
+            for (name, value) in s3_harness::s3_env(s3.port()) {
+                std::env::set_var(name, value);
+            }
         }
     });
 }
