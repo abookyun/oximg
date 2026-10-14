@@ -34,7 +34,7 @@ CLI: `oximg resize in.gif 100 100 out.webp` or `-f webp`.
 ## Driving it with oximg-ctl
 
 ```sh
-CTL=./target/release/oximg-ctl
+CTL=./target/agent/oximg-ctl
 
 $CTL get /resize/100/100/photo.jpg --expect 200
 # image/jpeg, 100×75

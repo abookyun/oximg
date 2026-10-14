@@ -32,11 +32,11 @@ env. `oximg probe` is header-only and does not consume those knobs.
 
 `resize` shells out to `oximg resize` (the argv a user types).
 `oximg-ctl probe` is in-process library — when the **CLI argv** for
-probe is what changed, also run `./target/release/oximg probe` or
+probe is what changed, also run `./target/agent/oximg probe` or
 `tests/cli.rs`.
 
 ```sh
-CTL=./target/release/oximg-ctl
+CTL=./target/agent/oximg-ctl
 
 $CTL probe tests/fixtures/photo.jpg
 # expect: ok true, probe.content_type image/jpeg, width 200, height 150

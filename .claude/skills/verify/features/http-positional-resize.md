@@ -36,7 +36,7 @@ required. `GET /health` is always on and returns body `ok`.
 Auto-spawn; do not hold a server.
 
 ```sh
-CTL=./target/release/oximg-ctl
+CTL=./target/agent/oximg-ctl
 
 $CTL get /resize/100/100/photo.jpg --expect 200
 # expect: status 200, content_type image/jpeg, probe.width 100, probe.height 75
@@ -71,4 +71,4 @@ without `--no-negatives` also hits `/resize/0/0/photo.jpg` (400),
 - Non-2xx without `--expect` is still exit 0 (observation). Use
   `--expect` when the status is the proof.
 - `cargo run --bin oximg-ctl` does not build `oximg`; Launch with
-  `cargo build --release`.
+  `cargo build --profile agent`.

@@ -30,7 +30,7 @@ not unlock `/resize/100/100/photo.jpg@webp`.
 Committed vector (key = `deadbeef` × 8, salt = `cafebabe` × 8):
 
 ```sh
-CTL=./target/release/oximg-ctl
+CTL=./target/agent/oximg-ctl
 KEY=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
 SALT=cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe
 

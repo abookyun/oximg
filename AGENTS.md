@@ -9,7 +9,7 @@ agent; [`CLAUDE.md`](CLAUDE.md) loads this file. Humans:
 
 ## Done means proved
 
-`cargo test --release` green is necessary and not sufficient. A change
+A green `scripts/check.sh` is necessary and not sufficient. A change
 that touches HTTP, pixels, CLI argv, or a knob is done when `oximg-ctl`
 has run the compiled binary and its JSON matches
 [`docs/features/`](docs/features/). Follow the verify skill:
@@ -41,25 +41,27 @@ Default features need `cmake` (jpegli) and `nasm` (mozjpeg SIMD); MSRV
 is Rust 1.90. `--features avif` also needs SVT-AV1 ≥ 4.1 and dav1d
 (CONTRIBUTING.md has the pinned revision).
 
-The release profile is fat LTO with one codegen unit: on a 16-thread
-Ryzen a one-line edit costs ~100 s to rebuild, the same as a clean
-build (measured 2026-10-14). Batch edits before rebuilding, and run
-one suite (`cargo test --release --test ctl`) before the whole set.
+Iterate on the `agent` profile, not `--release`. Release is fat LTO
+with one codegen unit: on a 16-thread Ryzen a one-line edit costs
+~100 s to relink, while `agent` (same codegen, no LTO, incremental)
+relinks in seconds and runs the whole suite warm in ~5 s (measured
+2026-10-14). Binaries land in `target/agent/`. Performance numbers
+still come from `--release` only.
 
-Before pushing, at minimum:
+The local gate, one JSON object on stdout (also `target/check/last.json`):
 
 ```sh
-cargo fmt --check
-cargo clippy --release --all-targets -- -D warnings
-cargo test --release
+scripts/check.sh quick                  # fmt, clippy, tests on `agent`
+scripts/check.sh quick -- --test ctl    # args after -- go to cargo test
+scripts/check.sh full                   # CI's amd64 job, on release
 ```
 
-CI also runs clippy with `--features avif`, with
-`--examples --features avif,bench-internals`, and with
+`full` adds the clippy and test variants CI runs with `--features
+avif`, `--examples --features avif,bench-internals`, and
 `--no-default-features --features avif` (the library must build
-without the HTTP stack); tests on amd64 **and** arm64; MSRV; coverage
-≥ 80%; the Ruby gems; `cargo deny`. Run the variant your change can
-break.
+without the HTTP stack); without SVT-AV1/dav1d it reports those steps
+as skipped. CI also runs arm64, MSRV, coverage ≥ 80%, the Ruby gems,
+and `cargo deny`.
 
 ## Docs that CI pins to code
 
@@ -98,6 +100,6 @@ proved with `bench/bytecmp.sh`, not asserted.
   env-dependent test goes through the single `init()` — read the note
   at the top of `tests/remote_api.rs` first.
 - `cargo run --bin oximg-ctl` does not build `oximg`; run
-  `cargo build --release` first.
+  `cargo build --profile agent` first.
 - Never `killall oximg` / `pkill -f oximg`: other sessions on the host
   run their own. Tear down only the pid you started.

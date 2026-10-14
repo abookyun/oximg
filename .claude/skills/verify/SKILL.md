@@ -12,7 +12,7 @@ description: >
 
 # Verify oximg
 
-`cargo test --release` is necessary and not sufficient. A change that
+A green `scripts/check.sh` is necessary and not sufficient. A change that
 touches HTTP, pixels, CLI argv, or a knob is verified only when
 `oximg-ctl` has run the **compiled** artifact and the JSON matches
 [docs/features/](../../../docs/features/).
@@ -45,16 +45,23 @@ not compile without them):
 - `nasm` (mozjpeg SIMD)
 
 ```sh
-cargo build --release                 # both oximg and oximg-ctl
-# cargo build --release --features avif   # only when AVIF is under test
+cargo build --profile agent           # both oximg and oximg-ctl
+# cargo build --profile agent --features avif   # only when AVIF is under test
 # cargo run --bin oximg-ctl does not build oximg
 ```
+
+The `agent` profile is release codegen without fat LTO: a one-line
+edit relinks in seconds, not ~100 s, and its output matched release
+byte for byte on the fixture matrix (amd64). When the risk is the
+codegen itself — SIMD, `unsafe`, FFI — also drive the release binary
+(`cargo build --release`, `CTL=./target/release/oximg-ctl`,
+`OXIMG_PROFILE=release` for doctor), and on arm64 too.
 
 Readiness: both binaries exist and doctor exits 0.
 
 ```sh
-test -x ./target/release/oximg
-test -x ./target/release/oximg-ctl
+test -x ./target/agent/oximg
+test -x ./target/agent/oximg-ctl
 .claude/skills/verify/scripts/doctor.sh
 ```
 
@@ -77,7 +84,7 @@ If you truly need a held process (many `--base` calls against one
 listener), bind loopback and capture the JSON:
 
 ```sh
-./target/release/oximg-ctl --env OXIMG_BIND=127.0.0.1 --pretty serve
+./target/agent/oximg-ctl --env OXIMG_BIND=127.0.0.1 --pretty serve
 # one JSON object, then wait: ok, pid (the oximg child), port, base, bin, images_dir
 ```
 
@@ -98,7 +105,8 @@ One read-only check. Does not spawn, bind a port, or kill anything.
 ```
 
 Pass (`ok: true`, exit 0) means: `cmake` and `nasm` are on `PATH`,
-`./target/release/oximg` and `./target/release/oximg-ctl` exist,
+`./target/agent/oximg` and `./target/agent/oximg-ctl` (or
+`target/$OXIMG_PROFILE/`) exist,
 report the `Cargo.toml` package version (`oximg <version>` /
 `oximg-ctl <version>`), and are newer than every file under `src/` and
 `build.rs` — a stale binary is proof for other code, and between two
@@ -124,7 +132,7 @@ Prefer stable handles: URL paths, `--expect`, JSON fields
 stderr timings or pixel bytes.
 
 ```sh
-CTL=./target/release/oximg-ctl
+CTL=./target/agent/oximg-ctl
 
 # HTTP positional resize (auto-spawn, then reap)
 $CTL get /resize/100/100/photo.jpg --expect 200
@@ -177,7 +185,7 @@ Which layer to drive (do not run every layer every time):
 
 | Touch | Proof |
 |---|---|
-| Any PR | `cargo test --release` (add `--features avif` only if that toolchain is present) **and** ctl JSON for the changed surface |
+| Any PR | `scripts/check.sh full` (runs the AVIF steps when that toolchain is present) **and** ctl JSON for the changed surface |
 | Routes, `@{fmt}`, box, errors | `get` and/or `matrix` covering the change |
 | Signing | `sign` vs the vectors in [routes.md](../../../docs/features/routes.md) / `tests/ctl.rs`; then signed `get` with `--env OXIMG_KEY` / `OXIMG_SALT` |
 | CLI / one-shot | `resize` (real `oximg resize`); `oximg probe` or `tests/cli.rs` for probe/argv |

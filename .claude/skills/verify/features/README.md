@@ -5,7 +5,7 @@ tables, and the full knob inventory live in
 [`docs/features/`](../../../../docs/features/) — link out, do not copy.
 
 Drive with `oximg-ctl` (JSON on stdout, real `oximg` underneath,
-fixtures under `tests/fixtures/`). `cargo test --release` is necessary
+fixtures under `tests/fixtures/`). A green `scripts/check.sh` is necessary
 and not sufficient; a cell here is proved only when ctl JSON matches
 the linked invariant.
 
