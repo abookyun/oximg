@@ -2793,8 +2793,14 @@ fn remote_retries_share_the_deadline_in_http_and_gcs_modes() {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
-                let mut buf = [0; 4096];
-                stream.read(&mut buf).unwrap();
+                let mut reader = std::io::BufReader::new(&mut stream);
+                loop {
+                    let mut line = String::new();
+                    assert!(std::io::BufRead::read_line(&mut reader, &mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
                 std::thread::sleep(Duration::from_millis(650));
                 if attempt == 0 {
                     // HTTP retries EOF, GCS also retries a 503 response.
