@@ -71,6 +71,17 @@ codegen-units = 1
 # Note: panic = "abort" must NOT be set; the libjpeg error handlers (the
 # mozjpeg crate's and src/pipeline/jpeg_dec.rs) rely on unwinding.
 
+# The edit-build-test loop: release codegen without fat LTO, so a
+# one-line edit relinks in seconds instead of rebuilding for ~100 s.
+# Output matched release byte for byte on the fixture matrix (198
+# cells, avif on, amd64; arm64 not yet compared), but every performance
+# number still comes from `--release` (bench/METHODOLOGY.md).
+[profile.agent]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 pic-scale = "0.7"
 
