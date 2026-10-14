@@ -454,3 +454,139 @@ fn parse_box(v: &str) -> Result<(u32, u32), CtlError> {
     }
     Ok((w, h))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(argv: &[&str]) -> Result<(Opts, Cmd), CtlError> {
+        let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
+        parse_args(&argv)
+    }
+
+    /// A usage error's message; panics unless it is one (exit 2 carries
+    /// the --help hint).
+    fn usage(argv: &[&str]) -> String {
+        let Err(e) = parse(argv) else {
+            panic!("{argv:?} should be a usage error");
+        };
+        assert_eq!(e.json["hint"], "oximg-ctl --help", "{}", e.json);
+        e.json["error"].as_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn global_flags_come_before_the_command() {
+        let (opts, cmd) = parse(&[
+            "--pretty",
+            "--dry-run",
+            "--bin",
+            "/x/oximg",
+            "--images-dir",
+            "/f",
+            "get",
+            "/a",
+        ])
+        .unwrap();
+        assert!(opts.pretty && opts.dry_run);
+        assert_eq!(opts.bin.as_deref(), Some(std::path::Path::new("/x/oximg")));
+        assert_eq!(opts.images_dir.as_deref(), Some(std::path::Path::new("/f")));
+        assert!(
+            matches!(cmd, Cmd::Get(GetArgs { ref path, timeout_secs: 60, .. }) if path == "/a")
+        );
+    }
+
+    #[test]
+    fn env_folds_the_managed_keys_and_keeps_others() {
+        let (opts, _) = parse(&[
+            "--env",
+            "oximg_bind=::1",
+            "--env",
+            "Custom_Key=a=b",
+            "serve",
+        ])
+        .unwrap();
+        assert_eq!(
+            opts.env,
+            vec![
+                ("OXIMG_BIND".to_string(), "::1".to_string()),
+                ("Custom_Key".to_string(), "a=b".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn env_rejects_reserved_and_malformed_keys() {
+        assert!(usage(&["--env", "port=1", "serve"]).contains("PORT is reserved"));
+        assert!(usage(&["--env", "Images_Dir=/x", "serve"]).contains("IMAGES_DIR is reserved"));
+        assert!(usage(&["--env", "NOEQUALS", "serve"]).contains("KEY=VAL"));
+        assert!(usage(&["--env"]).contains("--env needs a value"));
+    }
+
+    #[test]
+    fn commands_must_exist() {
+        assert_eq!(usage(&["--pretty"]), "missing command");
+        assert!(usage(&["frobnicate"]).contains("unknown command"));
+    }
+
+    #[test]
+    fn get_takes_exactly_one_path() {
+        assert!(usage(&["get"]).contains("usage: oximg-ctl get"));
+        assert!(usage(&["get", "/a", "/b"]).contains("one path"));
+        assert!(usage(&["get", "--expect", "ok", "/a"]).contains("invalid --expect"));
+        assert!(usage(&["get", "--nope", "/a"]).contains("unknown option"));
+    }
+
+    #[test]
+    fn resize_takes_three_positionals() {
+        assert!(usage(&["resize", "a.jpg", "1"]).contains("usage: oximg-ctl resize"));
+        let (_, cmd) = parse(&["resize", "a.jpg", "10", "0", "-f", "webp", "-q", "70"]).unwrap();
+        let Cmd::Resize(r) = cmd else {
+            panic!("not resize")
+        };
+        assert_eq!((r.w.as_str(), r.h.as_str()), ("10", "0"));
+        assert_eq!(
+            (r.format.as_deref(), r.quality.as_deref()),
+            (Some("webp"), Some("70"))
+        );
+    }
+
+    #[test]
+    fn matrix_validates_boxes_and_formats() {
+        let (_, cmd) = parse(&[
+            "matrix",
+            "--box",
+            "750x0",
+            "--box",
+            "0x64",
+            "--format",
+            "source",
+            "--format",
+            "webp",
+            "--no-negatives",
+        ])
+        .unwrap();
+        let Cmd::Matrix(m) = cmd else {
+            panic!("not matrix")
+        };
+        assert_eq!(m.boxes, vec![(750, 0), (0, 64)]);
+        assert_eq!(m.formats, vec!["source", "webp"]);
+        assert!(!m.negatives);
+        assert!(usage(&["matrix", "--format", "gif"]).contains("unknown --format"));
+    }
+
+    #[test]
+    fn boxes_follow_the_http_grammar() {
+        assert_eq!(parse_box("100x100").unwrap(), (100, 100));
+        assert_eq!(parse_box("8192x0").unwrap(), (8192, 0));
+        for bad in ["0x0", "8193x1", "1x8193", "100", "ax1", "1x", "-1x5"] {
+            assert!(parse_box(bad).is_err(), "{bad} should be rejected");
+        }
+    }
+
+    #[test]
+    fn serve_port_must_be_a_number() {
+        let (_, cmd) = parse(&["serve", "--port", "8080"]).unwrap();
+        assert!(matches!(cmd, Cmd::Serve(ServeArgs { port: Some(8080) })));
+        assert!(usage(&["serve", "--port", "http"]).contains("invalid --port"));
+    }
+}
