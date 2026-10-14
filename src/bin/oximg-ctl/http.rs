@@ -148,3 +148,92 @@ pub fn content_type_matches_token(ct: &str, token: &str) -> bool {
     };
     media_type_essence(ct).eq_ignore_ascii_case(want)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn res(status: u16, ct: Option<&str>, body: &[u8]) -> HttpResult {
+        let mut headers = HashMap::new();
+        if let Some(ct) = ct {
+            headers.insert("content-type".to_string(), ct.to_string());
+        }
+        HttpResult {
+            status,
+            headers,
+            body: body.to_vec(),
+            ms: 1.25,
+            url: "http://127.0.0.1:1/x".into(),
+        }
+    }
+
+    fn photo() -> Vec<u8> {
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/photo.jpg"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn paths_get_a_leading_slash() {
+        assert_eq!(normalize_path("resize/1/1/a.jpg"), "/resize/1/1/a.jpg");
+        assert_eq!(normalize_path("/health"), "/health");
+    }
+
+    #[test]
+    fn content_type_tokens_ignore_parameters_and_case() {
+        assert!(content_type_matches_token("image/jpeg", "jpg"));
+        assert!(content_type_matches_token("IMAGE/JPEG; q=1", "jpeg"));
+        assert!(content_type_matches_token(" image/webp ;x=y", "webp"));
+        assert!(!content_type_matches_token("image/png", "webp"));
+        // GIF has no encoder, so no @gif cell may ever match.
+        assert!(!content_type_matches_token("image/gif", "gif"));
+    }
+
+    #[test]
+    fn report_probes_an_image_200() {
+        let r = res(200, Some("image/jpeg"), &photo());
+        let v = get_report(&r, None).unwrap();
+        assert_eq!(v["status"], 200);
+        assert_eq!(v["probe"]["width"], 200);
+        assert_eq!(v["ms"], 1.3, "rounded to one decimal");
+        assert!(v.get("body_text").is_none());
+        assert!(image_200_proved(&r, &v));
+    }
+
+    #[test]
+    fn report_clips_a_text_body_to_512_chars() {
+        let body = "e".repeat(600);
+        let r = res(400, Some("text/plain"), body.as_bytes());
+        let v = get_report(&r, None).unwrap();
+        assert_eq!(v["body_text"].as_str().unwrap().len(), 512);
+        assert!(v.get("probe").is_none());
+    }
+
+    #[test]
+    fn report_writes_the_body_when_asked() {
+        let dir = std::env::temp_dir().join(format!("oximg-ctl-http-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("body.bin");
+        let v = get_report(&res(404, None, b"nope"), Some(&out)).unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), b"nope");
+        assert_eq!(v["body_path"], out.display().to_string());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_image_200_that_does_not_probe_is_not_proved() {
+        let r = res(200, Some("image/jpeg"), b"garbage");
+        let v = get_report(&r, None).unwrap();
+        assert!(!image_200_proved(&r, &v));
+    }
+
+    #[test]
+    fn non_image_and_non_200_responses_are_observations() {
+        let text = res(200, Some("text/plain"), b"ok");
+        assert!(image_200_proved(&text, &get_report(&text, None).unwrap()));
+        let err = res(500, Some("image/jpeg"), b"");
+        assert!(image_200_proved(&err, &get_report(&err, None).unwrap()));
+    }
+}
