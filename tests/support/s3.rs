@@ -224,6 +224,27 @@ fn signed_with_test_keys(req: &str) -> bool {
         && sigv4_is_valid(req, "test-secret")
 }
 
+#[test]
+fn fragmented_headers_are_read_before_rejecting_an_unsigned_request() {
+    let s3 = S3::spawn(|_, _| panic!("unsigned request reached the fixture router")).unwrap();
+    let mut stream = TcpStream::connect(("127.0.0.1", s3.port())).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    stream
+        .write_all(b"GET /test-bucket/x HTTP/1.1\r\nHo")
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(20));
+    stream
+        .write_all(b"st: localhost\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply).unwrap();
+    assert!(reply.starts_with("HTTP/1.1 403 Forbidden"), "{reply}");
+    assert!(reply.contains("SignatureDoesNotMatch"));
+    assert_eq!(s3.requests(), ["/test-bucket/x"]);
+}
+
 /// Check a SigV4 signature against the request as it arrived: the
 /// request line and the signed headers on the wire. This is a second,
 /// small implementation that does not call oximg's signer, so it fails
