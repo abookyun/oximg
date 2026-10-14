@@ -187,6 +187,30 @@ impl Drop for Spawned {
     }
 }
 
+impl Spawned {
+    pub fn base(&self) -> String {
+        format!("http://{}:{}", self.host, self.port)
+    }
+}
+
+/// The base URL to drive: `--base` as given (a foreign tree), or a
+/// loopback server spawned for this command. Keep the returned guard
+/// bound until the last request; dropping it reaps the server.
+pub fn server_base(
+    opts: &Opts,
+    base: Option<&str>,
+    http: &Http,
+) -> Result<(Option<Spawned>, String), CtlError> {
+    match base {
+        Some(b) => Ok((None, b.trim_end_matches('/').to_string())),
+        None => {
+            let spawned = spawn_server(opts, None, true, http)?;
+            let base = spawned.base();
+            Ok((Some(spawned), base))
+        }
+    }
+}
+
 pub fn spawn_server(
     opts: &Opts,
     port: Option<u16>,

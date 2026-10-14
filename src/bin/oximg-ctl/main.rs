@@ -36,7 +36,8 @@ use http::{
 };
 use report::{probe_value, sha256_hex};
 use spawn::{
-    child_auto_rotate, images_dir, remote_source_base, resolve_bin, spawn_server, wait_served_child,
+    child_auto_rotate, images_dir, remote_source_base, resolve_bin, server_base, spawn_server,
+    wait_served_child,
 };
 use urlpath::{percent_decode_path, percent_encode_path};
 
@@ -653,7 +654,7 @@ fn cmd_serve(opts: &Opts, port: Option<u16>) -> Result<(), CtlError> {
             "ok": true,
             "pid": spawned.child.id(),
             "port": spawned.port,
-            "base": format!("http://{}:{}", spawned.host, spawned.port),
+            "base": spawned.base(),
             "bin": spawned.bin.display().to_string(),
             "images_dir": spawned.images_dir.display().to_string(),
         }),
@@ -799,15 +800,7 @@ fn cmd_get(
         return Ok(());
     }
     let http = Http::new().map_err(|e| CtlError::fail(e, None))?;
-    let spawned = match base {
-        Some(_) => None,
-        None => Some(spawn_server(opts, None, true, &http)?),
-    };
-    let base = match (base, spawned.as_ref()) {
-        (Some(b), _) => b.trim_end_matches('/').to_string(),
-        (None, Some(s)) => format!("http://{}:{}", s.host, s.port),
-        (None, None) => unreachable!(),
-    };
+    let (_spawned, base) = server_base(opts, base, &http)?;
     let url = format!("{base}{path}");
     let res = http
         .get(&url, accept, Duration::from_secs(timeout_secs))
@@ -1314,15 +1307,7 @@ fn cmd_matrix(
     }
 
     let http = Http::new().map_err(|e| CtlError::fail(e, None))?;
-    let spawned = match base.as_deref() {
-        Some(_) => None,
-        None => Some(spawn_server(opts, None, true, &http)?),
-    };
-    let base = match (base.as_deref(), spawned.as_ref()) {
-        (Some(b), _) => b.trim_end_matches('/').to_string(),
-        (None, Some(s)) => format!("http://{}:{}", s.host, s.port),
-        (None, None) => unreachable!(),
-    };
+    let (_spawned, base) = server_base(opts, base.as_deref(), &http)?;
 
     let t0 = Instant::now();
     let timeout = Duration::from_secs(timeout_secs);
