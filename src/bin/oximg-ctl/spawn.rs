@@ -418,3 +418,86 @@ pub fn wait_served_child(spawned: &mut Spawned) -> std::io::Result<ExitStatus> {
         spawned.child.wait()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Opts with the given --env pairs. Tests only use cases an explicit
+    /// --env decides, so the parent shell's env cannot leak in.
+    fn opts(env: &[(&str, &str)]) -> Opts {
+        Opts {
+            bin: None,
+            images_dir: None,
+            env: env
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            pretty: false,
+            dry_run: false,
+        }
+    }
+
+    #[test]
+    fn loopback_proofs_bind_localhost_unless_told_otherwise() {
+        assert_eq!(
+            effective_bind(&opts(&[]), true),
+            IpAddr::from([127, 0, 0, 1])
+        );
+        let v6 = opts(&[("OXIMG_BIND", "::1")]);
+        assert_eq!(effective_bind(&v6, true), "::1".parse::<IpAddr>().unwrap());
+        assert_eq!(effective_bind(&v6, false), "::1".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn an_explicit_empty_bind_is_the_servers_default_not_the_parents() {
+        let empty = opts(&[("OXIMG_BIND", "")]);
+        assert_eq!(effective_bind(&empty, true), IpAddr::from([0, 0, 0, 0]));
+        let junk = opts(&[("OXIMG_BIND", "not-an-ip")]);
+        assert_eq!(effective_bind(&junk, false), IpAddr::from([0, 0, 0, 0]));
+    }
+
+    #[test]
+    fn the_last_env_flag_wins() {
+        let o = opts(&[("OXIMG_BIND", "10.0.0.1"), ("OXIMG_BIND", "10.0.0.2")]);
+        assert_eq!(env_value(&o, "OXIMG_BIND"), Some("10.0.0.2"));
+        assert!(env_named(&o, "OXIMG_BIND"));
+        assert!(!env_named(&o, "OXIMG_KEY"));
+    }
+
+    #[test]
+    fn unspecified_binds_are_dialed_on_loopback() {
+        assert_eq!(http_host(IpAddr::from([0, 0, 0, 0])), "127.0.0.1");
+        assert_eq!(http_host("::".parse().unwrap()), "[::1]");
+        assert_eq!(http_host("::1".parse().unwrap()), "[::1]");
+        assert_eq!(http_host(IpAddr::from([10, 1, 2, 3])), "10.1.2.3");
+    }
+
+    #[test]
+    fn source_base_and_auto_rotate_read_the_env_flags() {
+        assert!(!remote_source_base(&opts(&[(
+            "OXIMG_SOURCE_BASE_URL",
+            "  "
+        )])));
+        assert!(remote_source_base(&opts(&[(
+            "OXIMG_SOURCE_BASE_URL",
+            "http://x"
+        )])));
+        assert!(!child_auto_rotate(&opts(&[("OXIMG_AUTO_ROTATE", "0")])));
+        assert!(child_auto_rotate(&opts(&[("OXIMG_AUTO_ROTATE", "1")])));
+    }
+
+    #[test]
+    fn an_explicit_bin_is_used_as_given() {
+        let p = Path::new("/opt/oximg/bin/oximg");
+        assert_eq!(resolve_bin(Some(p)).unwrap(), p);
+    }
+
+    #[test]
+    fn a_given_base_spawns_nothing_and_loses_its_trailing_slash() {
+        let http = Http::new().unwrap();
+        let (guard, base) = server_base(&opts(&[]), Some("http://h:1//"), &http).unwrap();
+        assert!(guard.is_none());
+        assert_eq!(base, "http://h:1");
+    }
+}
