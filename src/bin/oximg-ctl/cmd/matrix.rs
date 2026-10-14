@@ -12,116 +12,20 @@ use serde_json::{Value, json};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-pub fn run(opts: &Opts, a: &MatrixArgs) -> Result<(), CtlError> {
-    let MatrixArgs {
-        sources,
-        boxes,
-        formats,
-        negatives,
-        base,
-        timeout_secs,
-    } = a;
-    let (negatives, timeout_secs) = (*negatives, *timeout_secs);
-    let sources = if sources.is_empty() {
-        default_sources()
-    } else {
-        sources.clone()
-    };
-    let boxes = if boxes.is_empty() {
-        vec![(100, 100)]
-    } else {
-        boxes.clone()
-    };
-    let formats = if formats.is_empty() {
-        default_formats()
-    } else {
-        formats.clone()
-    };
-    // Local fixtures are only an oracle when we spawned the server.
-    // --base talks to someone else's tree; sniffing our images_dir
-    // would fail a correct remote PNG served as photo.jpg.
-    let sniff_local = base.is_none() && !remote_source_base(opts);
-    let rotate = child_auto_rotate(opts);
+/// One request in a matrix run, and what passing means for it.
+struct Cell {
+    path: String,
+    expect: u16,
+    kind: &'static str,
+    format: Option<String>,
+    box_w: u32,
+    box_h: u32,
+    expected_wh: Option<(u32, u32)>,
+}
 
-    struct Cell {
-        path: String,
-        expect: u16,
-        kind: &'static str,
-        format: Option<String>,
-        box_w: u32,
-        box_h: u32,
-        expected_wh: Option<(u32, u32)>,
-    }
-    let images = images_dir(opts);
-    let mut plan: Vec<Cell> = Vec::new();
-    for src in &sources {
-        let src_enc = percent_encode_path(src);
-        let src_wh = sniff_local
-            .then(|| source_display_size(src, &images, rotate))
-            .flatten();
-        for (w, h) in &boxes {
-            let expected_wh = src_wh.map(|(sw, sh)| fit_box(sw, sh, *w, *h));
-            for fmt in &formats {
-                let (path, format) = match fmt.as_str() {
-                    "" | "source" => (
-                        format!("/resize/{w}/{h}/{src_enc}"),
-                        if sniff_local {
-                            source_output_token(src, &images)
-                        } else {
-                            None
-                        },
-                    ),
-                    token => (
-                        format!("/resize/{w}/{h}/{src_enc}@{token}"),
-                        Some(token.to_string()),
-                    ),
-                };
-                plan.push(Cell {
-                    path,
-                    expect: 200,
-                    kind: "cell",
-                    format,
-                    box_w: *w,
-                    box_h: *h,
-                    expected_wh,
-                });
-            }
-        }
-    }
-    if negatives {
-        plan.push(Cell {
-            path: "/resize/0/0/photo.jpg".into(),
-            expect: 400,
-            kind: "negative",
-            format: None,
-            box_w: 0,
-            box_h: 0,
-            expected_wh: None,
-        });
-        // Only when that key is actually absent from this images dir.
-        // --images-dir may contain a real missing.jpg; --base is a
-        // foreign tree.
-        if sniff_local && matches!(images.join("missing.jpg").try_exists(), Ok(false)) {
-            plan.push(Cell {
-                path: "/resize/100/100/missing.jpg".into(),
-                expect: 404,
-                kind: "negative",
-                format: None,
-                box_w: 100,
-                box_h: 100,
-                expected_wh: None,
-            });
-        }
-        plan.push(Cell {
-            path: "/resize/100/100/photo.jpg@gif".into(),
-            expect: 400,
-            kind: "negative",
-            format: None,
-            box_w: 100,
-            box_h: 100,
-            expected_wh: None,
-        });
-    }
+pub fn run(opts: &Opts, a: &MatrixArgs) -> Result<(), CtlError> {
+    let plan = plan(opts, a);
+    let timeout_secs = a.timeout_secs;
 
     if opts.dry_run {
         emit(
@@ -140,7 +44,7 @@ pub fn run(opts: &Opts, a: &MatrixArgs) -> Result<(), CtlError> {
     }
 
     let http = Http::new().map_err(|e| CtlError::fail(e, None))?;
-    let (_spawned, base) = server_base(opts, base.as_deref(), &http)?;
+    let (_spawned, base) = server_base(opts, a.base.as_deref(), &http)?;
 
     let t0 = Instant::now();
     let timeout = Duration::from_secs(timeout_secs);
@@ -202,6 +106,112 @@ pub fn run(opts: &Opts, a: &MatrixArgs) -> Result<(), CtlError> {
     }
     emit(&report, opts.pretty);
     Ok(())
+}
+
+/// Every source × box × format cell (defaults when a list is empty),
+/// then the negatives. A source's expected geometry and codec come
+/// from the local fixture only when this run spawns the server over it.
+fn plan(opts: &Opts, a: &MatrixArgs) -> Vec<Cell> {
+    let MatrixArgs {
+        sources,
+        boxes,
+        formats,
+        negatives,
+        base,
+        ..
+    } = a;
+    let sources = if sources.is_empty() {
+        default_sources()
+    } else {
+        sources.clone()
+    };
+    let boxes = if boxes.is_empty() {
+        vec![(100, 100)]
+    } else {
+        boxes.clone()
+    };
+    let formats = if formats.is_empty() {
+        default_formats()
+    } else {
+        formats.clone()
+    };
+    // Local fixtures are only an oracle when we spawned the server.
+    // --base talks to someone else's tree; sniffing our images_dir
+    // would fail a correct remote PNG served as photo.jpg.
+    let sniff_local = base.is_none() && !remote_source_base(opts);
+    let rotate = child_auto_rotate(opts);
+
+    let images = images_dir(opts);
+    let mut plan: Vec<Cell> = Vec::new();
+    for src in &sources {
+        let src_enc = percent_encode_path(src);
+        let src_wh = sniff_local
+            .then(|| source_display_size(src, &images, rotate))
+            .flatten();
+        for (w, h) in &boxes {
+            let expected_wh = src_wh.map(|(sw, sh)| fit_box(sw, sh, *w, *h));
+            for fmt in &formats {
+                let (path, format) = match fmt.as_str() {
+                    "" | "source" => (
+                        format!("/resize/{w}/{h}/{src_enc}"),
+                        if sniff_local {
+                            source_output_token(src, &images)
+                        } else {
+                            None
+                        },
+                    ),
+                    token => (
+                        format!("/resize/{w}/{h}/{src_enc}@{token}"),
+                        Some(token.to_string()),
+                    ),
+                };
+                plan.push(Cell {
+                    path,
+                    expect: 200,
+                    kind: "cell",
+                    format,
+                    box_w: *w,
+                    box_h: *h,
+                    expected_wh,
+                });
+            }
+        }
+    }
+    if *negatives {
+        plan.push(Cell {
+            path: "/resize/0/0/photo.jpg".into(),
+            expect: 400,
+            kind: "negative",
+            format: None,
+            box_w: 0,
+            box_h: 0,
+            expected_wh: None,
+        });
+        // Only when that key is actually absent from this images dir.
+        // --images-dir may contain a real missing.jpg; --base is a
+        // foreign tree.
+        if sniff_local && matches!(images.join("missing.jpg").try_exists(), Ok(false)) {
+            plan.push(Cell {
+                path: "/resize/100/100/missing.jpg".into(),
+                expect: 404,
+                kind: "negative",
+                format: None,
+                box_w: 100,
+                box_h: 100,
+                expected_wh: None,
+            });
+        }
+        plan.push(Cell {
+            path: "/resize/100/100/photo.jpg@gif".into(),
+            expect: 400,
+            kind: "negative",
+            format: None,
+            box_w: 100,
+            box_h: 100,
+            expected_wh: None,
+        });
+    }
+    plan
 }
 
 fn default_sources() -> Vec<String> {
