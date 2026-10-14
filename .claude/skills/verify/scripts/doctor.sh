@@ -3,7 +3,7 @@
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# scripts/ -> verify-oximg -> skills -> .cursor -> repo root
+# scripts/ -> verify -> skills -> .claude -> repo root
 root=$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null || true)
 if [[ -z "${root}" ]]; then
   root=$(cd "$script_dir/../../../.." && pwd)
@@ -59,11 +59,31 @@ ctl="$root/target/release/oximg-ctl"
 oximg_version=""
 ctl_version=""
 
+# The [package] version: the first top-level `version =` in Cargo.toml.
+pkg_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$root/Cargo.toml" | head -n1)
+
+# A binary older than a source file is proof for other code. Version
+# alone cannot tell: every build between two releases reports the same
+# one. Only inputs whose newer mtime makes cargo relink belong here:
+# cargo rebuilds on a newer src/ or build.rs, but a touched Cargo.toml
+# or Cargo.lock with no real change leaves the binary as it was, and
+# would read as stale forever. The version check covers the manifest.
+stale_input() {
+  find "$root/src" "$root/build.rs" -type f -newer "$1" 2>/dev/null | head -n1
+}
+
 if [[ -x "$oximg" ]]; then
   oximg_version=$("$oximg" --version 2>/dev/null | head -n1 | tr -d '\r')
+  newer=$(stale_input "$oximg")
   if [[ ! "$oximg_version" =~ ^oximg\ [0-9] ]]; then
     ok=false
     errors+=("unexpected oximg --version: ${oximg_version:-empty}")
+  elif [[ "$oximg_version" != "oximg $pkg_version" ]]; then
+    ok=false
+    errors+=("$oximg is ${oximg_version#oximg }, Cargo.toml is $pkg_version — run: cargo build --release")
+  elif [[ -n "$newer" ]]; then
+    ok=false
+    errors+=("$oximg is older than ${newer#"$root"/} — run: cargo build --release")
   fi
 else
   ok=false
@@ -72,9 +92,16 @@ fi
 
 if [[ -x "$ctl" ]]; then
   ctl_version=$("$ctl" --version 2>/dev/null | head -n1 | tr -d '\r')
+  newer=$(stale_input "$ctl")
   if [[ ! "$ctl_version" =~ ^oximg-ctl\ [0-9] ]]; then
     ok=false
     errors+=("unexpected oximg-ctl --version: ${ctl_version:-empty}")
+  elif [[ "$ctl_version" != "oximg-ctl $pkg_version" ]]; then
+    ok=false
+    errors+=("$ctl is ${ctl_version#oximg-ctl }, Cargo.toml is $pkg_version — run: cargo build --release")
+  elif [[ -n "$newer" ]]; then
+    ok=false
+    errors+=("$ctl is older than ${newer#"$root"/} — run: cargo build --release")
   fi
 else
   ok=false
