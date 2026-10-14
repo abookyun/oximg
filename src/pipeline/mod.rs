@@ -958,7 +958,27 @@ async fn buffer_body_async(mut resp: reqwest::Response) -> Result<Vec<u8>> {
 #[cfg(feature = "server")]
 pub async fn fetch_url_async(url: &str) -> Result<Vec<u8>, Error> {
     let inner = async { buffer_body_async(fetch_head_async(url).await?).await };
-    inner.await.map_err(|e| Error::classify(e, true))
+    fetch_with_deadline(inner)
+        .await
+        .map_err(|e| Error::classify(e, true))
+}
+
+/// One budget for credentials, all attempts, backoff and the complete body.
+/// reqwest's own timeout starts afresh on every send; the outer deadline
+/// makes OXIMG_UPSTREAM_TIMEOUT a whole-fetch limit for every transport.
+#[cfg(feature = "server")]
+async fn fetch_with_deadline<T>(future: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(crate::config::config().upstream_timeout),
+        future,
+    )
+    .await
+    .map_err(|_| {
+        anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "source fetch exceeded OXIMG_UPSTREAM_TIMEOUT (including retries and body)",
+        ))
+    })?
 }
 
 /// Run a fetch future to completion from sync code, from any thread —
@@ -1022,7 +1042,9 @@ pub fn process_gcs(bucket: &str, key: &str, p: &Params) -> Result<(Vec<u8>, Imag
 #[cfg(feature = "server")]
 pub async fn fetch_gcs_async(bucket: &str, key: &str) -> Result<Vec<u8>, Error> {
     let inner = async { buffer_body_async(gcs::fetch(bucket, key).await?).await };
-    inner.await.map_err(|e| Error::classify(e, true))
+    fetch_with_deadline(inner)
+        .await
+        .map_err(|e| Error::classify(e, true))
 }
 
 /// Startup credential probe for the `gs://` mode — the server calls
@@ -1049,7 +1071,9 @@ pub fn process_s3(bucket: &str, key: &str, p: &Params) -> Result<(Vec<u8>, Image
 #[cfg(feature = "server")]
 pub async fn fetch_s3_async(bucket: &str, key: &str) -> Result<Vec<u8>, Error> {
     let inner = async { buffer_body_async(s3::fetch(bucket, key).await?).await };
-    inner.await.map_err(|e| Error::classify(e, true))
+    fetch_with_deadline(inner)
+        .await
+        .map_err(|e| Error::classify(e, true))
 }
 
 /// Startup probe for the `s3://` mode. The server calls this at boot,

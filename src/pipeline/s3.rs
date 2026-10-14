@@ -468,6 +468,8 @@ pub(crate) async fn fetch(bucket: &str, key: &str) -> Result<reqwest::Response> 
         Err(e) => !e.is_timeout() && (e.is_connect() || e.is_request()),
     };
     let resp = if retry {
+        // Release the failed response before waiting or opening another request.
+        drop(first);
         super::UPSTREAM_RETRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tokio::time::sleep(Duration::from_millis(100)).await;
         send_signed(s, &target).await

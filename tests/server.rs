@@ -2780,6 +2780,111 @@ fn s3_error_body_limits_are_strict() {
 }
 
 #[test]
+fn remote_retries_share_the_deadline_in_http_and_gcs_modes() {
+    use std::io::Write;
+    use std::time::Duration;
+    for gcs in [false, true] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut buf = [0; 4096];
+                stream.read(&mut buf).unwrap();
+                std::thread::sleep(Duration::from_millis(650));
+                if attempt == 0 {
+                    // HTTP retries EOF, GCS also retries a 503 response.
+                    if gcs {
+                        let _ = stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    }
+                } else {
+                    let photo = include_bytes!("fixtures/photo.jpg");
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        photo.len()
+                    );
+                    let _ = stream.write_all(photo);
+                }
+            }
+            done.send(()).unwrap();
+        });
+        let mut env = vec![
+            ("OXIMG_UPSTREAM_TIMEOUT", "1".into()),
+            ("OXIMG_SOURCE_BASE_URL", format!("http://127.0.0.1:{port}")),
+        ];
+        if gcs {
+            let (metadata, _) = fake_metadata_server(3600);
+            env[1].1 = "gs://test-bucket".into();
+            env.extend([
+                ("GCE_METADATA_HOST", format!("127.0.0.1:{metadata}")),
+                ("OXIMG_GCS_ENDPOINT", format!("http://127.0.0.1:{port}")),
+            ]);
+        }
+        let server = Server::start(&env);
+        assert_eq!(
+            server.status_of("/resize/100/100/photo.jpg"),
+            504,
+            "gcs={gcs}"
+        );
+        finished.recv_timeout(Duration::from_secs(4)).unwrap();
+    }
+}
+
+#[test]
+fn s3_retry_shares_the_deadline_with_headers_and_body() {
+    use std::time::Duration;
+    let counts = std::sync::Mutex::new(std::collections::HashMap::<String, usize>::new());
+    let s3 = S3::spawn(move |path, _| {
+        if path.ends_with(".oximg-startup-probe") {
+            return Reply::error("404 Not Found", "NoSuchKey");
+        }
+        if path.ends_with("photo.jpg") {
+            return Reply::photo();
+        }
+        let mut counts = counts.lock().unwrap();
+        let count = counts.entry(path.to_string()).or_default();
+        *count += 1;
+        if *count == 1 {
+            return Reply::error("503 Service Unavailable", "SlowDown")
+                .delay_headers(Duration::from_millis(650));
+        }
+        if path.ends_with("headers.jpg") {
+            Reply::photo().delay_headers(Duration::from_millis(650))
+        } else {
+            let photo = include_bytes!("fixtures/photo.jpg");
+            Reply::raw(format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                photo.len()
+            ))
+            .then(Duration::from_millis(650), photo.to_vec())
+        }
+    })
+    .unwrap();
+    let mut env = s3_env(s3.port());
+    env.extend([
+        ("OXIMG_SOURCE_BASE_URL", "s3://test-bucket".into()),
+        ("OXIMG_UPSTREAM_TIMEOUT", "1".into()),
+        ("OXIMG_FETCH_CONCURRENCY", "1".into()),
+    ]);
+    let server = Server::start(&env);
+    for key in ["headers.jpg", "body.jpg"] {
+        assert_eq!(
+            server.status_of(&format!("/resize/100/100/{key}")),
+            504,
+            "{key}"
+        );
+        // Cancellation must release the only fetch slot.
+        assert_eq!(server.status_of("/resize/100/100/photo.jpg"), 200);
+        assert_eq!(s3.requests().iter().filter(|p| p.ends_with(key)).count(), 2);
+    }
+}
+
+#[test]
 fn s3_harness_shuts_down_inflight_connections() {
     let s3 = S3::spawn(|_, _| {
         Reply::photo()

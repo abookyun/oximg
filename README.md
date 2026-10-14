@@ -559,7 +559,7 @@ never silently falls back to a default.
 | `AWS_ACCESS_KEY_ID` | unset | `s3://` access key |
 | `AWS_SECRET_ACCESS_KEY` | unset | `s3://` secret key |
 | `AWS_SESSION_TOKEN` | unset | `s3://` session token, for temporary keys only |
-| `OXIMG_UPSTREAM_TIMEOUT` | `30` | Seconds for the whole origin fetch — bounds how long a stalled upstream can hold a fetch slot (and its buffer); timeouts answer 504, distinct from other upstream failures' 502 |
+| `OXIMG_UPSTREAM_TIMEOUT` | `30` | Seconds for the whole origin fetch, including credentials, retries/backoff and body download (fetch-slot queueing is excluded) — bounds how long a stalled upstream can hold a fetch slot (and its buffer); timeouts answer 504, distinct from other upstream failures' 502 |
 | `OXIMG_UPSTREAM_CONNECT_TIMEOUT` | `5` | Seconds to establish the origin connection |
 | `OXIMG_MAX_SOURCE_BYTES` | 64 MiB | Compressed-size cap; over-limit remote sources answer 413 |
 | `OXIMG_MAX_SRC_PIXELS` | 64,000,000 | Cheap sanity guard on source dimensions, enforced after each format's header parse; over-cap sources answer 413. Not a memory budget — see the next row |

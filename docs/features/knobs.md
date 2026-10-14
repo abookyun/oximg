@@ -84,7 +84,7 @@ Pass extras to a spawned server with `oximg-ctl --env KEY=VAL …`.
 | `OXIMG_MAX_DECODED_BYTES` | unset | Estimated decode allocation → 413 |
 | `OXIMG_LOG_DECODED_BYTES_ABOVE` | unset | Name expensive decodes; still serve |
 | `OXIMG_UPSTREAM_CONNECT_TIMEOUT` | `5` | Seconds |
-| `OXIMG_UPSTREAM_TIMEOUT` | `30` | Whole fetch; timeout → 504 |
+| `OXIMG_UPSTREAM_TIMEOUT` | `30` | Whole fetch including credentials, retry waits and body; timeout → 504 |
 | `OXIMG_OVERLAP` | `auto` | Fuse JPEG decode with resize+encode |
 | `OXIMG_GIF_ANIMATION` | `1` | `0` = still first frame |
 | `OXIMG_MAX_ANIM_FRAMES` | `200` | Over → still 200, not 413 |
