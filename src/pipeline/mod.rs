@@ -1076,10 +1076,10 @@ pub async fn fetch_s3_async(bucket: &str, key: &str) -> Result<Vec<u8>, Error> {
         .map_err(|e| Error::classify(e, true))
 }
 
-/// Startup probe for the `s3://` mode. The server calls this at boot,
-/// so a wrong endpoint, region, key or bucket refuses to start instead
-/// of failing on the first cache miss. `prefix` is the key prefix from
-/// `OXIMG_SOURCE_BASE_URL`, so the probe asks where reads will go.
+/// Startup probe for the `s3://` mode. Rejects confirmed configuration
+/// and transport errors. Ambiguous `AccessDenied` only warns, so success
+/// does not guarantee object readability. `prefix` is the key prefix from
+/// `OXIMG_SOURCE_BASE_URL`; the probe stays within it and the key byte limit.
 #[cfg(feature = "server")]
 pub fn s3_startup(bucket: &str, prefix: Option<&str>) -> Result<(), String> {
     s3::startup(bucket, prefix)

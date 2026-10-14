@@ -22,7 +22,8 @@
 //! remove them from the URL, and the signature would no longer match.
 //!
 //! Settings are read once, on first use. `AWS_REGION` is required.
-//! `OXIMG_S3_ENDPOINT` defaults to `https://s3.<region>.amazonaws.com`.
+//! `OXIMG_S3_ENDPOINT` defaults to the regional AWS endpoint, with
+//! `.amazonaws.com.cn` for China regions and `.amazonaws.com` otherwise.
 //! `OXIMG_S3_PATH_STYLE` is explained at `Settings::path_style`.
 //! Temporary keys are not refreshed. When `AWS_SESSION_TOKEN` expires,
 //! every fetch fails until the process restarts with new keys.
@@ -714,12 +715,10 @@ fn probe_key(prefix: Option<&str>) -> Result<String, String> {
     Ok(format!("{prefix}/{name}"))
 }
 
-/// Boot probe: fail closed with a clear message instead of a 500 on the
-/// first cache miss. Unlike `gs://`, which only proves that credentials
-/// exist, a signed GET of a missing key also checks the endpoint, the
-/// region and the keys, and on AWS and MinIO the bucket. The expected
-/// answer is 404 `NoSuchKey`. The key is under the prefix, where reads
-/// go, so a key limited to that prefix passes.
+/// Boot probe: reject confirmed setup and transport faults before listening.
+/// A signed GET under the prefix is expected to return 404 `NoSuchKey`
+/// (2xx also passes). Its name is shortened to fit the object key limit.
+/// The probe cannot establish object readability in every permission model.
 ///
 /// One answer only warns. 403 `AccessDenied` is what AWS sends for a
 /// missing key when the key lacks `s3:ListBucket`, and reads can still
