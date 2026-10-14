@@ -9,8 +9,9 @@ apply to Claude Code alone.
   `/maintain-verification-skill` is a manual upkeep pass over it.
 - Hooks (`.claude/settings.json`): an edited `.rs` file is run through
   rustfmt; Bash refuses to kill oximg by name; session start sets
-  `core.hooksPath` to `.githooks` when the clone has none, which turns
-  on the pre-push gate above (it says so if another hooks path wins).
+  `core.hooksPath` to `.githooks`, which turns on the pre-push gate
+  above, when the clone has neither a hooks path nor its own hooks in
+  `.git/hooks` (it says so when either one wins).
 - A worktree under `.claude/worktrees/` starts without `target/`: the
   first `cargo build --profile agent` there is a full build (~45 s).
 
