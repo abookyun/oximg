@@ -3,4 +3,5 @@
 pub mod get;
 pub mod probe;
 pub mod resize;
+pub mod serve;
 pub mod sign;
