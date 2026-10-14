@@ -13,8 +13,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// One request in a matrix run, and what passing means for it.
-struct Cell {
-    path: String,
+pub struct Cell {
+    pub path: String,
     expect: u16,
     kind: &'static str,
     format: Option<String>,
@@ -111,7 +111,7 @@ pub fn run(opts: &Opts, a: &MatrixArgs) -> Result<(), CtlError> {
 /// Every source × box × format cell (defaults when a list is empty),
 /// then the negatives. A source's expected geometry and codec come
 /// from the local fixture only when this run spawns the server over it.
-fn plan(opts: &Opts, a: &MatrixArgs) -> Vec<Cell> {
+pub fn plan(opts: &Opts, a: &MatrixArgs) -> Vec<Cell> {
     let MatrixArgs {
         sources,
         boxes,

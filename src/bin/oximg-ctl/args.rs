@@ -6,6 +6,7 @@ use oximg::pipeline::ImageFormat;
 use std::path::PathBuf;
 
 /// Global flags, shared by every command.
+#[derive(Clone)]
 pub struct Opts {
     pub bin: Option<PathBuf>,
     pub images_dir: Option<PathBuf>,
