@@ -4,7 +4,9 @@
 The `agent` cargo profile claims release's output byte for byte; this is
 the instrument behind that claim. Each build's oximg-ctl drives its own
 oximg through `matrix --no-negatives` for every image fixture and box,
-and the response bodies' sha256 must agree cell for cell.
+and the response bodies' sha256 must agree cell for cell. Only cells
+both builds answer with 200 count as compared; the same error on both
+sides is reported as skipped.
 
     bench/profile_parity.py target/release target/agent
 
@@ -50,21 +52,34 @@ def main():
     if len(sys.argv) != 3:
         sys.exit("usage: bench/profile_parity.py BUILD_DIR_A BUILD_DIR_B")
     a, b = cells(sys.argv[1]), cells(sys.argv[2])
-    differ = sorted(k for k in a.keys() | b.keys() if a.get(k) != b.get(k))
+    # Only a 200 on both sides compares encoded output. The same error on
+    # both (an AVIF fixture on a build without the feature answers 422)
+    # agrees without proving anything, so it is skipped, not counted.
+    compared, skipped, differ = [], [], []
+    for k in sorted(a.keys() | b.keys()):
+        sa, sb = a.get(k), b.get(k)
+        if sa != sb:
+            differ.append(k)
+        elif sa[0] == 200:
+            compared.append(k)
+        else:
+            skipped.append(k)
     print(
         json.dumps(
             {
                 "a": sys.argv[1],
                 "b": sys.argv[2],
                 "fixtures": len(fixtures()),
-                "cells": len(a),
-                "status_200": sum(1 for s, _ in a.values() if s == 200),
+                "cells": len(a.keys() | b.keys()),
+                "compared": len(compared),
+                "skipped_same_error": len(skipped),
                 "differ": len(differ),
                 "differing_paths": differ[:20],
+                "skipped_paths": skipped[:20],
             }
         )
     )
-    sys.exit(1 if differ or not a else 0)
+    sys.exit(1 if differ or not compared else 0)
 
 
 if __name__ == "__main__":
