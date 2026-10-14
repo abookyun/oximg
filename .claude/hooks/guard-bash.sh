@@ -4,8 +4,8 @@
 # 1. No killing oximg by name: other sessions on the host run their own
 #    servers. Tear down only the pid you started.
 # 2. `gh pr create` needs `scripts/check.sh full` to have passed on HEAD
-#    with a clean tree, unless the branch touches only docs and agent
-#    files.
+#    with a clean tree, unless the branch touches only agent files,
+#    site/, and Markdown the build does not read.
 #
 # Only command positions count: heredoc bodies and quoted strings are
 # dropped first (shell_text.py), so a commit message that names
@@ -44,11 +44,15 @@ grep -Eq "${at}gh[[:space:]]+pr[[:space:]]+create([^[:alnum:]_-]|$)" <<<"$cmd" |
 root=${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}
 cd "$root" || exit 0
 
-# Docs and agent instructions cannot break the build.
+# Agent files, the site (CI skips it), and prose cannot break the build —
+# except the Markdown src/config.rs reads with include_str! and checks
+# against the code: README.md and docs/features/.
 base=$(git merge-base origin/main HEAD 2>/dev/null || true)
 if [[ -n "$base" ]]; then
-  code=$(git diff --name-only "$base" HEAD |
-    grep -Ev '\.md$|^\.claude/|^\.cursor/|^\.grok/|^docs/|^site/' || true)
+  code=$(git diff --name-only "$base" HEAD | awk '
+    /^README\.md$/ || /^docs\/features\// { print; next }
+    /^\.claude\// || /^\.cursor\// || /^\.grok\// || /^site\// || /\.md$/ { next }
+    { print }')
   [[ -z "$code" ]] && exit 0
 fi
 

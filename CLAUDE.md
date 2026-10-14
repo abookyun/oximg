@@ -10,7 +10,9 @@ apply to Claude Code alone.
 - Hooks (`.claude/settings.json`): an edited `.rs` file is run through
   rustfmt; Bash refuses to kill oximg by name; `gh pr create` is
   refused until `scripts/check.sh full` has passed on a clean HEAD
-  (a branch that touches only docs and agent files is exempt).
+  (a branch that touches only agent files, `site/`, or Markdown other
+  than `README.md` and `docs/features/` is exempt — `src/config.rs`
+  tests those two).
 - A worktree under `.claude/worktrees/` starts without `target/`: the
   first `cargo build --profile agent` there is a full build (~45 s).
 
