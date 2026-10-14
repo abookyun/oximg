@@ -242,9 +242,7 @@ fn load_settings() -> Result<Settings, String> {
                 .into(),
         );
     }
-    let endpoint = custom
-        .clone()
-        .unwrap_or_else(|| format!("https://s3.{region}.amazonaws.com"));
+    let endpoint = custom.clone().unwrap_or_else(|| default_endpoint(&region));
     let (scheme, host) = parse_endpoint(&endpoint)?;
     // `config::validate` refuses other values at boot. A library caller
     // that skips it gets the default.
@@ -280,6 +278,15 @@ fn load_settings() -> Result<Settings, String> {
             session_token: aws_var(std::env::var("AWS_SESSION_TOKEN")),
         },
     })
+}
+
+fn default_endpoint(region: &str) -> String {
+    let suffix = if region.starts_with("cn-") {
+        "amazonaws.com.cn"
+    } else {
+        "amazonaws.com"
+    };
+    format!("https://s3.{region}.{suffix}")
 }
 
 /// Split an endpoint URL into its scheme and its `Host` value. Only
@@ -1069,6 +1076,25 @@ mod tests {
             "https://user:pw@host",
         ] {
             assert!(parse_endpoint(bad).is_err(), "{bad} should be refused");
+        }
+    }
+
+    #[test]
+    fn aws_endpoints_use_the_regions_partition() {
+        for (region, suffix) in [
+            ("us-east-1", "amazonaws.com"),
+            ("us-gov-west-1", "amazonaws.com"),
+            ("cn-north-1", "amazonaws.com.cn"),
+            ("cn-northwest-1", "amazonaws.com.cn"),
+        ] {
+            let endpoint = default_endpoint(region);
+            assert_eq!(endpoint, format!("https://s3.{region}.{suffix}"));
+            let (_, host) = parse_endpoint(&endpoint).unwrap();
+            let target = Target::new(&settings_for("https", &host, None), "pics", b"photo.jpg");
+            assert_eq!(
+                target.url,
+                format!("https://pics.s3.{region}.{suffix}/photo.jpg")
+            );
         }
     }
 

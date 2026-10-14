@@ -374,6 +374,7 @@ filename is taken literally on this route (no `@fmt` token).
   (AWS S3, Cloudflare R2, MinIO), read with static keys from
   `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (plus
   `AWS_SESSION_TOKEN` for temporary keys). `AWS_REGION` is required.
+  AWS China regions use the `.amazonaws.com.cn` endpoint automatically.
   For R2 and MinIO, set `OXIMG_S3_ENDPOINT` too. An `http://` endpoint
   logs a warning at boot, because session tokens and images then
   travel unencrypted. At boot, oximg asks
