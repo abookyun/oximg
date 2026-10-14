@@ -10,7 +10,8 @@ sides is reported as skipped.
 
     bench/profile_parity.py target/release target/agent
 
-Prints one JSON object; exits 1 if any cell differs or none was compared.
+Prints one JSON object; exits 1 if any cell differs, none was compared,
+or ctl failed, and 2 on a usage error.
 Run from the repo root. Python 3.9 compatible (stock macOS), stdlib only.
 """
 
@@ -80,7 +81,16 @@ def fail(build_dir, source, box, res, report):
 
 def main():
     if len(sys.argv) != 3:
-        sys.exit("usage: bench/profile_parity.py BUILD_DIR_A BUILD_DIR_B")
+        # Exit 2 for usage, as oximg-ctl does; still one JSON object.
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "hint": "usage: bench/profile_parity.py BUILD_DIR_A BUILD_DIR_B",
+                }
+            )
+        )
+        sys.exit(2)
     a, b = cells(sys.argv[1]), cells(sys.argv[2])
     # Only a 200 on both sides compares encoded output. The same error on
     # both (an AVIF fixture on a build without the feature answers 422)
