@@ -86,7 +86,7 @@ def main():
             json.dumps(
                 {
                     "ok": False,
-                    "hint": "usage: bench/profile_parity.py BUILD_DIR_A BUILD_DIR_B",
+                    "error": "usage: bench/profile_parity.py BUILD_DIR_A BUILD_DIR_B",
                 }
             )
         )
