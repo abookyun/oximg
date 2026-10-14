@@ -151,7 +151,7 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
     icc: Option<&[u8]>,
 ) -> Result<Decoded> {
     let timing = crate::config::config().timing;
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
 
     let (src_w, src_h) = dec.size();
     check_src_pixels(src_w, src_h)?;
@@ -528,7 +528,7 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
         started.finish().context("decode finish failed")?;
         let t_decode = t0.elapsed();
 
-        let t1 = std::time::Instant::now();
+        let t1 = crate::clock::Instant::now();
         scratch_u16(&mut s.dst16, dst_w * dst_h * 3);
         resize_bands(
             u16_as_bytes(&s.src16[..dec_w * dec_h * 3]),
@@ -564,7 +564,7 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
         started.finish().context("decode finish failed")?;
         let t_decode = t0.elapsed();
 
-        let t1 = std::time::Instant::now();
+        let t1 = crate::clock::Instant::now();
         scratch_u8(&mut s.out8, dst_w * dst_h * 3);
         resize_bands(
             &s.chunk8[..dec_w * dec_h * 3],

@@ -11,7 +11,7 @@ pub(super) fn process_png<R: std::io::Read>(
     p: &Resolved,
 ) -> Result<Vec<u8>> {
     let timing = crate::config::config().timing;
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     s.srcbuf.clear();
     reader
         .read_to_end(&mut s.srcbuf)
@@ -107,7 +107,7 @@ pub(super) fn process_png<R: std::io::Read>(
             }
             anyhow::ensure!(y == src_h, "PNG row count mismatch");
             let t_decode = t0.elapsed();
-            let t1 = std::time::Instant::now();
+            let t1 = crate::clock::Instant::now();
             scratch_u16(&mut s.dst16, dst_w * dst_h * 3);
             resize_bands(
                 u16_as_bytes(&s.src16[..src_w * src_h * 3]),
@@ -126,7 +126,7 @@ pub(super) fn process_png<R: std::io::Read>(
                 *d = back[v as usize];
             }
             let t_resize = t1.elapsed();
-            let t2 = std::time::Instant::now();
+            let t2 = crate::clock::Instant::now();
             let out = encode_output(s, dst_w, dst_h, 3, target, p, icc.as_deref());
             if timing {
                 eprintln!(
@@ -164,10 +164,10 @@ pub(super) fn process_png<R: std::io::Read>(
     };
 
     let t_decode = t0.elapsed();
-    let t1 = std::time::Instant::now();
+    let t1 = crate::clock::Instant::now();
     let (dst_w, dst_h) = resize_pixels_oriented(s, channels, src_w, src_h, orientation, p)?;
     let t_resize = t1.elapsed();
-    let t2 = std::time::Instant::now();
+    let t2 = crate::clock::Instant::now();
     let out = encode_output(s, dst_w, dst_h, channels, target, p, icc.as_deref());
     if timing {
         eprintln!(
@@ -235,7 +235,7 @@ pub(super) fn process_webp<R: std::io::Read>(
     // Lanczos. libwebp's scaler alone (scale straight to target) is what
     // costs other servers their score.
     let timing = crate::config::config().timing;
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     // One mux parse serves both metadata chunks: the ICC profile and
     // the EXIF orientation (raw TIFF or JPEG-style prefixed; writers
     // disagree, browsers accept both).
@@ -260,11 +260,11 @@ pub(super) fn process_webp<R: std::io::Read>(
     let _ = (src_w, src_h);
     let t_dec = t0.elapsed();
 
-    let t1 = std::time::Instant::now();
+    let t1 = crate::clock::Instant::now();
     let (dst_w, dst_h) = resize_pixels_oriented(s, channels, dec_w, dec_h, orientation, p)?;
     let t_resize = t1.elapsed();
 
-    let t2 = std::time::Instant::now();
+    let t2 = crate::clock::Instant::now();
     let out = encode_output(s, dst_w, dst_h, channels, target, p, icc.as_deref())?;
     if timing {
         eprintln!(
@@ -293,7 +293,7 @@ pub(super) fn process_avif<R: std::io::Read>(
         .context("read AVIF source")?;
 
     let timing = crate::config::config().timing;
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     // avif-parse exposes neither colr nor irot/imir; both come from
     // our own bounded container walk.
     let icc = if p.icc_passthrough && target_supports_icc(target) {
@@ -325,11 +325,11 @@ pub(super) fn process_avif<R: std::io::Read>(
     let (src_w, src_h, channels) = crate::avif::decode_avif_into(&s.srcbuf, &mut s.chunk8)?;
     let t_dec = t0.elapsed();
 
-    let t1 = std::time::Instant::now();
+    let t1 = crate::clock::Instant::now();
     let (dst_w, dst_h) = resize_pixels_oriented(s, channels, src_w, src_h, orientation, p)?;
     let t_resize = t1.elapsed();
 
-    let t2 = std::time::Instant::now();
+    let t2 = crate::clock::Instant::now();
     let out = encode_output(s, dst_w, dst_h, channels, target, p, icc.as_deref())?;
     if timing {
         eprintln!(

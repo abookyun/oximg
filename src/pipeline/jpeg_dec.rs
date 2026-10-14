@@ -818,7 +818,7 @@ mod tests {
             let mut buf = Vec::new();
             let mut best = f64::MAX;
             for _ in 0..5 {
-                let t = std::time::Instant::now();
+                let t = crate::clock::Instant::now();
                 for jpeg in &jpegs {
                     let mut dec = Decompress::new_mem(jpeg).unwrap();
                     dec.scale(scale);
