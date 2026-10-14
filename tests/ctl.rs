@@ -813,6 +813,71 @@ fn serve_prints_ready_json_and_reaps_the_child() {
     );
 }
 
+/// Ctrl-C during parity reaches the spawned server, not the wrapper. The
+/// run must stop and say so, not count the dead server's refusals as
+/// differences between the builds.
+#[test]
+#[cfg(unix)]
+fn parity_interrupted_mid_run_reports_it_instead_of_a_diff() {
+    use std::io::{BufRead, BufReader, Read};
+    use std::time::{Duration, Instant};
+
+    let oximg = env!("CARGO_BIN_EXE_oximg");
+    let mut child = ctl()
+        .args(["parity", "--against", oximg])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn oximg-ctl parity");
+    let mut stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+    // Side A is up once its listening line is forwarded; its requests
+    // follow at once, so the signal lands while it is serving them.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut lines = BufReader::new(stderr).lines();
+        for line in lines.by_ref().map_while(Result::ok) {
+            if line.starts_with("oximg listening on :") {
+                let _ = tx.send(());
+                break;
+            }
+        }
+        for _ in lines {}
+    });
+    rx.recv_timeout(Duration::from_secs(20))
+        .expect("side A listening");
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Ok(Some(st)) = child.try_wait() {
+            break st;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("oximg-ctl parity did not exit after SIGINT");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut out = String::new();
+    stdout.read_to_string(&mut out).unwrap();
+    let v: Value = serde_json::from_str(out.trim())
+        .unwrap_or_else(|e| panic!("parity stdout was not JSON ({e}): {out:?}"));
+    assert_eq!(status.code(), Some(1), "{v}");
+    assert_eq!(v["ok"], false);
+    assert!(v["error"].as_str().unwrap().contains("interrupted"), "{v}");
+    assert!(
+        v.get("differ").is_none(),
+        "no verdict on a cut-short run: {v}"
+    );
+}
+
 /// Subsampled chroma is replicated (libjpeg's merged upsampler) when the
 /// resize reduces and triangle-filtered at 1:1. A 4:2:0 source whose
 /// chroma alternates at its own Nyquist rate (constant luma, Cb +-40 per

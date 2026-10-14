@@ -11,7 +11,7 @@ use crate::cmd::matrix;
 use crate::error::{CtlError, emit};
 use crate::http::Http;
 use crate::report::sha256_hex;
-use crate::spawn::{images_dir, resolve_bin, server_base};
+use crate::spawn::{images_dir, interrupted, resolve_bin, server_base};
 use oximg::pipeline;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -108,16 +108,29 @@ fn responses(
     let mut side = opts.clone();
     side.bin = Some(bin.to_path_buf());
     let (_spawned, base) = server_base(&side, None, http)?;
-    Ok(paths
-        .iter()
-        .map(|p| match http.get(&format!("{base}{p}"), None, timeout) {
+    let mut out = Vec::with_capacity(paths.len());
+    for p in paths {
+        out.push(match http.get(&format!("{base}{p}"), None, timeout) {
             Ok(res) => Outcome::Response {
                 status: res.status,
                 sha256: sha256_hex(&res.body),
             },
             Err(e) => Outcome::Transport(e),
-        })
-        .collect())
+        });
+        // Ctrl-C reaches the server, not us: every later request would
+        // fail and read as a difference. Stop before the guard drops,
+        // which clears the flag.
+        if interrupted() {
+            return Err(CtlError::fail(
+                format!(
+                    "interrupted while driving {}; nothing was compared",
+                    bin.display()
+                ),
+                None,
+            ));
+        }
+    }
+    Ok(out)
 }
 
 /// The verdict: ok only when no cell differs and at least one compared.

@@ -193,6 +193,19 @@ impl Spawned {
     }
 }
 
+/// Whether SIGINT/SIGTERM was forwarded to the current child. Read it
+/// while that child's guard is alive: dropping the guard clears it.
+pub fn interrupted() -> bool {
+    #[cfg(unix)]
+    {
+        unix_child::signaled()
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
 /// The base URL to drive: `--base` as given (a foreign tree), or a
 /// loopback server spawned for this command. Keep the returned guard
 /// bound until the last request; dropping it reaps the server.
