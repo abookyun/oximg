@@ -20,6 +20,6 @@
   },
   "devDependencies": {
     "github-slugger": "^2.0.0",
-    "wrangler": "^4.143.1"
+    "wrangler": "^4.151.0"
   }
 }
