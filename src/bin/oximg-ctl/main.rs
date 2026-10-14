@@ -29,7 +29,7 @@ mod report;
 mod spawn;
 mod urlpath;
 
-use args::{Cmd, GetArgs, MatrixArgs, Opts, ProbeArgs, ResizeArgs, ServeArgs, parse_args};
+use args::{Cmd, GetArgs, MatrixArgs, Opts, ResizeArgs, ServeArgs, parse_args};
 use error::{CtlError, emit};
 use http::{
     Http, HttpResult, content_type_matches_token, get_report, image_200_proved, media_type_essence,
@@ -56,7 +56,7 @@ fn main() {
     let result = parse_args(&args).and_then(|(opts, cmd)| match &cmd {
         Cmd::Serve(a) => cmd_serve(&opts, a),
         Cmd::Get(a) => cmd_get(&opts, a),
-        Cmd::Probe(a) => cmd_probe(&opts, a),
+        Cmd::Probe(a) => cmd::probe::run(&opts, a),
         Cmd::Resize(a) => cmd_resize(&opts, a),
         Cmd::Sign(a) => cmd::sign::run(&opts, a),
         Cmd::Matrix(a) => cmd_matrix(&opts, a),
@@ -345,46 +345,6 @@ fn cmd_get(opts: &Opts, a: &GetArgs) -> Result<(), CtlError> {
 // ---------------------------------------------------------------------------
 // probe / resize / sign
 // ---------------------------------------------------------------------------
-
-fn cmd_probe(opts: &Opts, a: &ProbeArgs) -> Result<(), CtlError> {
-    let file = a.file.as_path();
-    if opts.dry_run {
-        emit(
-            &json!({"ok": true, "dry_run": true, "file": file.display().to_string()}),
-            opts.pretty,
-        );
-        return Ok(());
-    }
-    let bytes = std::fs::read(file).map_err(|e| {
-        CtlError::fail(
-            format!("read {}: {e}", file.display()),
-            Some("path is relative to the current working directory"),
-        )
-    })?;
-    let mut probe = probe_value(&bytes);
-    if probe.get("error").is_some() {
-        let mut v = json!({
-            "ok": false,
-            "file": file.display().to_string(),
-            "bytes": bytes.len(),
-            "sha256": sha256_hex(&bytes),
-            "probe": probe,
-        });
-        v["error"] = probe["error"].take();
-        return Err(CtlError::from_value(1, v));
-    }
-    emit(
-        &json!({
-            "ok": true,
-            "file": file.display().to_string(),
-            "bytes": bytes.len(),
-            "sha256": sha256_hex(&bytes),
-            "probe": probe,
-        }),
-        opts.pretty,
-    );
-    Ok(())
-}
 
 fn cmd_resize(opts: &Opts, a: &ResizeArgs) -> Result<(), CtlError> {
     let ResizeArgs {
