@@ -27,6 +27,10 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+mod error;
+
+use error::{CtlError, emit};
+
 /// Unix: forward SIGINT/SIGTERM to the spawned child. `signal(2)`
 /// replaces the default disposition, so the wrapper stays alive to
 /// `wait()` while the server drains. Forced kill is Drop / timeout only.
@@ -175,72 +179,6 @@ Examples:
         ImageFormat::output_token_hint().replace('|', " | "),
         ImageFormat::output_token_hint().replace('|', " | "),
     );
-}
-
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
-
-struct CtlError {
-    exit: i32,
-    json: Value,
-    pretty: bool,
-}
-
-impl CtlError {
-    fn usage(msg: impl Into<String>) -> Self {
-        let msg = msg.into();
-        Self {
-            exit: 2,
-            json: json!({
-                "ok": false,
-                "error": msg,
-                "hint": "oximg-ctl --help",
-            }),
-            pretty: false,
-        }
-    }
-
-    fn fail(msg: impl Into<String>, hint: Option<&str>) -> Self {
-        let mut v = json!({ "ok": false, "error": msg.into() });
-        if let Some(h) = hint {
-            v["hint"] = json!(h);
-        }
-        Self {
-            exit: 1,
-            json: v,
-            pretty: false,
-        }
-    }
-
-    fn from_value(exit: i32, json: Value) -> Self {
-        Self {
-            exit,
-            json,
-            pretty: false,
-        }
-    }
-
-    fn with_pretty(mut self, pretty: bool) -> Self {
-        self.pretty = pretty;
-        self
-    }
-
-    fn exit(self) -> ! {
-        emit(&self.json, self.pretty);
-        std::process::exit(self.exit);
-    }
-}
-
-fn emit(v: &Value, pretty: bool) {
-    if pretty {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
-        );
-    } else {
-        println!("{v}");
-    }
 }
 
 // ---------------------------------------------------------------------------
