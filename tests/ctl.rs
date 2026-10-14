@@ -815,37 +815,60 @@ fn serve_prints_ready_json_and_reaps_the_child() {
 
 /// Ctrl-C during parity reaches the spawned server, not the wrapper. The
 /// run must stop and say so, not count the dead server's refusals as
-/// differences between the builds.
+/// differences between the builds, wherever the signal lands.
 #[test]
 #[cfg(unix)]
-fn parity_interrupted_mid_run_reports_it_instead_of_a_diff() {
+fn parity_interrupted_during_side_a_reports_it_instead_of_a_diff() {
+    assert_parity_interrupted_after_listening(1);
+}
+
+#[test]
+#[cfg(unix)]
+fn parity_interrupted_during_side_b_reports_it_instead_of_a_diff() {
+    assert_parity_interrupted_after_listening(2);
+}
+
+/// SIGINT a parity run once its `nth` server has printed its listening
+/// line: that server is starting up or serving, and both must end in
+/// "interrupted". Ten boxes per source keep each side busy well past any
+/// scheduling delay before the signal, so a side cannot finish first.
+#[cfg(unix)]
+fn assert_parity_interrupted_after_listening(nth: usize) {
     use std::io::{BufRead, BufReader, Read};
     use std::time::{Duration, Instant};
 
     let oximg = env!("CARGO_BIN_EXE_oximg");
+    let mut args = vec!["parity", "--against", oximg];
+    for b in [
+        "100x100", "90x90", "80x80", "70x70", "60x60", "50x50", "40x40", "333x0", "0x111", "64x64",
+    ] {
+        args.extend(["--box", b]);
+    }
     let mut child = ctl()
-        .args(["parity", "--against", oximg])
+        .args(&args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn oximg-ctl parity");
     let mut stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
-    // Side A is up once its listening line is forwarded; its requests
-    // follow at once, so the signal lands while it is serving them.
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut lines = BufReader::new(stderr).lines();
+        let mut seen = 0;
         for line in lines.by_ref().map_while(Result::ok) {
             if line.starts_with("oximg listening on :") {
-                let _ = tx.send(());
-                break;
+                seen += 1;
+                if seen == nth {
+                    let _ = tx.send(());
+                    break;
+                }
             }
         }
         for _ in lines {}
     });
-    rx.recv_timeout(Duration::from_secs(20))
-        .expect("side A listening");
+    rx.recv_timeout(Duration::from_secs(30))
+        .unwrap_or_else(|_| panic!("server {nth} never listened"));
     assert!(
         Command::new("kill")
             .args(["-INT", &child.id().to_string()])
