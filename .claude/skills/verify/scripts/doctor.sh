@@ -54,8 +54,16 @@ if command -v rustc >/dev/null 2>&1; then
   rustc_v=$(rustc --version 2>/dev/null | tr -d '\r')
 fi
 
-oximg="$root/target/release/oximg"
-ctl="$root/target/release/oximg-ctl"
+# The cargo profile whose binaries to check: `agent` for the edit loop,
+# `release` when the proof must come from the shipped codegen.
+profile=${OXIMG_PROFILE:-agent}
+if [[ "$profile" == release ]]; then
+  build_cmd="cargo build --release"
+else
+  build_cmd="cargo build --profile $profile"
+fi
+oximg="$root/target/$profile/oximg"
+ctl="$root/target/$profile/oximg-ctl"
 oximg_version=""
 ctl_version=""
 
@@ -80,14 +88,14 @@ if [[ -x "$oximg" ]]; then
     errors+=("unexpected oximg --version: ${oximg_version:-empty}")
   elif [[ "$oximg_version" != "oximg $pkg_version" ]]; then
     ok=false
-    errors+=("$oximg is ${oximg_version#oximg }, Cargo.toml is $pkg_version — run: cargo build --release")
+    errors+=("$oximg is ${oximg_version#oximg }, Cargo.toml is $pkg_version — run: $build_cmd")
   elif [[ -n "$newer" ]]; then
     ok=false
-    errors+=("$oximg is older than ${newer#"$root"/} — run: cargo build --release")
+    errors+=("$oximg is older than ${newer#"$root"/} — run: $build_cmd")
   fi
 else
   ok=false
-  errors+=("missing executable $oximg — run: cargo build --release")
+  errors+=("missing executable $oximg — run: $build_cmd")
 fi
 
 if [[ -x "$ctl" ]]; then
@@ -98,14 +106,14 @@ if [[ -x "$ctl" ]]; then
     errors+=("unexpected oximg-ctl --version: ${ctl_version:-empty}")
   elif [[ "$ctl_version" != "oximg-ctl $pkg_version" ]]; then
     ok=false
-    errors+=("$ctl is ${ctl_version#oximg-ctl }, Cargo.toml is $pkg_version — run: cargo build --release")
+    errors+=("$ctl is ${ctl_version#oximg-ctl }, Cargo.toml is $pkg_version — run: $build_cmd")
   elif [[ -n "$newer" ]]; then
     ok=false
-    errors+=("$ctl is older than ${newer#"$root"/} — run: cargo build --release")
+    errors+=("$ctl is older than ${newer#"$root"/} — run: $build_cmd")
   fi
 else
   ok=false
-  errors+=("missing executable $ctl — run: cargo build --release")
+  errors+=("missing executable $ctl — run: $build_cmd")
 fi
 
 fixtures="$root/tests/fixtures"
@@ -170,6 +178,7 @@ ok_json=true
 printf '{
   "ok": %s,
   "root": %s,
+  "profile": %s,
   "oximg": %s,
   "oximg_version": %s,
   "oximg_ctl": %s,
@@ -185,6 +194,7 @@ printf '{
 }\n' \
   "$ok_json" \
   "$(json_str "$root")" \
+  "$(json_str "$profile")" \
   "$(json_str "$oximg")" \
   "$(json_str "$oximg_version")" \
   "$(json_str "$ctl")" \

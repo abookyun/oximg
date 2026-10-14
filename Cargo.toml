@@ -2,9 +2,9 @@
 name = "oximg"
 version = "0.14.0"
 edition = "2024"
-# The fuzz harness, the website, and the agent instructions are repo
-# tools, not crate content.
-exclude = ["fuzz/", "site/", ".claude/", ".cursor/", ".grok/", "AGENTS.md", "CLAUDE.md"]
+# The fuzz harness, the website, the local gate, and the agent
+# instructions are repo tools, not crate content.
+exclude = ["fuzz/", "site/", "scripts/", ".githooks/", ".claude/", ".cursor/", ".grok/", "AGENTS.md", "CLAUDE.md"]
 # Bounded by pic-scale (1.89); verified by the CI msrv job.
 rust-version = "1.90"
 description = "High-performance image compression: library, CLI, and self-hostable server (PoC)."
@@ -70,6 +70,17 @@ lto = true
 codegen-units = 1
 # Note: panic = "abort" must NOT be set; the libjpeg error handlers (the
 # mozjpeg crate's and src/pipeline/jpeg_dec.rs) rely on unwinding.
+
+# The edit-build-test loop: release codegen without fat LTO, so a
+# one-line edit relinks in seconds instead of rebuilding for ~100 s.
+# Output matched release byte for byte on the fixture matrix (198
+# cells, avif on, amd64; arm64 not yet compared), but every performance
+# number still comes from `--release` (bench/METHODOLOGY.md).
+[profile.agent]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 pic-scale = "0.7"

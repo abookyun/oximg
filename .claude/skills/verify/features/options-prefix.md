@@ -32,7 +32,7 @@ Without the env, `/image/…` is not mounted (positional 404).
 ## Driving it with oximg-ctl
 
 ```sh
-CTL=./target/release/oximg-ctl
+CTL=./target/agent/oximg-ctl
 
 $CTL --env OXIMG_OPTIONS_PREFIX=/image \
   get /image/width=100,quality=80/photo.jpg --expect 200
