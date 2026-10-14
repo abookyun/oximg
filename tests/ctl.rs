@@ -1044,11 +1044,17 @@ fn parity_catches_a_build_that_encodes_differently() {
     assert_eq!(code, 1, "{v}");
     assert_eq!(v["ok"], false);
     assert_eq!(v["differ"], 1);
-    assert_eq!(v["differing"][0]["path"], "/resize/100/100/photo.jpg");
-    assert_ne!(
-        v["differing"][0]["a"]["sha256"],
-        v["differing"][0]["b"]["sha256"]
+    assert_eq!(v["compared"], 0);
+    let cell = &v["differing"][0];
+    assert_eq!(cell["path"], "/resize/100/100/photo.jpg");
+    // Both builds served the image; only the encode differs. A broken
+    // --against (a 404, a refused connection) must not pass this test.
+    assert_eq!(
+        (cell["a"]["status"].as_u64(), cell["b"]["status"].as_u64()),
+        (Some(200), Some(200))
     );
+    assert!(cell["b"]["sha256"].is_string(), "{v}");
+    assert_ne!(cell["a"]["sha256"], cell["b"]["sha256"]);
 }
 
 #[test]
