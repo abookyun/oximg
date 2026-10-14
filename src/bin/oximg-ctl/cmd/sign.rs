@@ -109,3 +109,62 @@ fn base64url_nopad(data: &[u8]) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hex_err(v: &str) -> String {
+        decode_hex("key", v).expect_err("should fail").json["error"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn base64url_matches_rfc4648_without_padding() {
+        let cases = [
+            ("", ""),
+            ("f", "Zg"),
+            ("fo", "Zm8"),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg"),
+            ("fooba", "Zm9vYmE"),
+            ("foobar", "Zm9vYmFy"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(base64url_nopad(input.as_bytes()), want, "{input:?}");
+        }
+        // Standard base64 would say "+/8=": the URL-safe alphabet, unpadded.
+        assert_eq!(base64url_nopad(&[0xfb, 0xff]), "-_8");
+    }
+
+    #[test]
+    fn hex_decodes_either_case_and_trims() {
+        assert_eq!(
+            decode_hex("key", " DEADbeef\n").unwrap(),
+            [0xde, 0xad, 0xbe, 0xef]
+        );
+    }
+
+    #[test]
+    fn hex_rejects_empty_odd_and_non_hex() {
+        assert!(hex_err("  ").contains("must not be empty"));
+        assert!(hex_err("abc").contains("odd length"));
+        assert!(hex_err("zz").contains("not valid hex"));
+        // Two bytes, even length, but not ASCII hex: no panic on the slice.
+        assert!(hex_err("é").contains("not valid hex"));
+    }
+
+    /// The vector tests/server.rs `signing_gate`, tests/ctl.rs, and the
+    /// Rails gem share.
+    #[test]
+    fn signature_matches_the_server_vector() {
+        let key = decode_hex("key", &"deadbeef".repeat(8)).unwrap();
+        let salt = decode_hex("salt", &"cafebabe".repeat(8)).unwrap();
+        assert_eq!(
+            sign_path(&key, &salt, "/resize/100/100/photo.jpg").unwrap(),
+            "t-jKRoyvzhs4dEBnGGBUS_t6Uh_HE6WysfGYvs8UaTo"
+        );
+    }
+}
