@@ -141,3 +141,52 @@ fn resize_argv(
     }
     v
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn argv_is_what_a_user_types() {
+        let argv = resize_argv(
+            Path::new("in.jpg"),
+            "100",
+            "0",
+            Path::new("o.jpg"),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(argv, ["oximg", "resize", "in.jpg", "100", "0", "o.jpg"]);
+    }
+
+    #[test]
+    fn options_follow_in_the_clis_spelling() {
+        let argv = resize_argv(
+            Path::new("a b.gif"),
+            "64",
+            "64",
+            Path::new("/tmp/o.webp"),
+            Some("webp"),
+            Some("70"),
+            Some("fast"),
+        );
+        assert_eq!(
+            argv,
+            [
+                "oximg",
+                "resize",
+                "a b.gif",
+                "64",
+                "64",
+                "/tmp/o.webp",
+                "-f",
+                "webp",
+                "-q",
+                "70",
+                "--preset",
+                "fast"
+            ]
+        );
+    }
+}
