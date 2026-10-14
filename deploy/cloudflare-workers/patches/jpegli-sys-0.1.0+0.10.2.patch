@@ -1,0 +1,16 @@
+libc has no FILE on wasm32-unknown-unknown; an opaque type is enough
+for the stdio entry points, which oximg never calls.
+diff --color -ru a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs	2026-10-14 14:18:55
++++ b/src/lib.rs	2026-10-14 14:18:55
+@@ -44,7 +44,10 @@
+ pub const JPEG_COM: u32 = 254;
+ pub type __off_t = ::std::os::raw::c_long;
+ pub type __off64_t = ::std::os::raw::c_long;
++#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+ pub type FILE = libc::FILE;
++#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
++pub enum FILE {}
+ pub type JSAMPLE = ::std::os::raw::c_uchar;
+ pub type JCOEF = ::std::os::raw::c_short;
+ pub type JOCTET = ::std::os::raw::c_uchar;

@@ -1,0 +1,24 @@
+Unused imports that do not resolve on wasm32-unknown-unknown, where the
+libc crate defines neither symbol.
+diff --color -ru a/src/decompress.rs b/src/decompress.rs
+--- a/src/decompress.rs	2026-10-14 14:18:55
++++ b/src/decompress.rs	2026-10-14 14:18:55
+@@ -13,7 +13,6 @@
+ use crate::ffi::J_COLOR_SPACE as COLOR_SPACE;
+ use crate::marker::Marker;
+ use crate::readsrc::SourceMgr;
+-use libc::fdopen;
+ use std::cmp::min;
+ use std::fs::File;
+ use std::io;
+diff --color -ru a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs	2026-10-14 14:18:55
++++ b/src/lib.rs	2026-10-14 14:18:55
+@@ -24,7 +24,6 @@
+ use crate::ffi::J_INT_PARAM;
+ pub use crate::marker::Marker;
+ 
+-use libc::free;
+ use std::cmp::min;
+ use std::mem;
+ use std::os::raw::{c_int, c_uchar, c_ulong, c_void};
