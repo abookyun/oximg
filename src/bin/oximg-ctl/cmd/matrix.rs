@@ -354,3 +354,165 @@ fn matrix_geometry_ok(
         None => true,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn opts(env: &[(&str, &str)]) -> Opts {
+        Opts {
+            bin: None,
+            images_dir: None,
+            env: env
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            pretty: false,
+            dry_run: true,
+        }
+    }
+
+    fn args(sources: &[&str], boxes: &[(u32, u32)], base: Option<&str>) -> MatrixArgs {
+        MatrixArgs {
+            sources: sources.iter().map(|s| s.to_string()).collect(),
+            boxes: boxes.to_vec(),
+            formats: vec![],
+            negatives: true,
+            base: base.map(str::to_string),
+            timeout_secs: 60,
+        }
+    }
+
+    fn image_res(ct: &str) -> HttpResult {
+        HttpResult {
+            status: 200,
+            headers: HashMap::from([("content-type".to_string(), ct.to_string())]),
+            body: vec![],
+            ms: 0.0,
+            url: String::new(),
+        }
+    }
+
+    #[test]
+    fn fit_shrinks_proportionally_and_never_enlarges() {
+        assert_eq!(fit_box(200, 150, 100, 100), (100, 75));
+        assert_eq!(fit_box(40, 30, 100, 100), (40, 30));
+        // 0 leaves an axis unconstrained.
+        assert_eq!(fit_box(200, 150, 0, 50), (67, 50));
+        assert_eq!(fit_box(200, 150, 750, 0), (200, 150));
+        // A sliver still gets one pixel.
+        assert_eq!(fit_box(10_000, 1, 100, 100), (100, 1));
+    }
+
+    #[test]
+    fn geometry_must_fit_the_box_and_match_the_oracle() {
+        let r = json!({"probe": {"width": 100, "height": 75}});
+        assert!(matrix_geometry_ok(&r, 100, 100, Some((100, 75))));
+        assert!(matrix_geometry_ok(&r, 100, 100, None));
+        assert!(!matrix_geometry_ok(&r, 100, 100, Some((100, 76))));
+        assert!(!matrix_geometry_ok(&r, 99, 0, None));
+        assert!(!matrix_geometry_ok(&json!({"probe": {}}), 100, 100, None));
+    }
+
+    #[test]
+    fn a_200_proves_only_an_image_of_the_header_type() {
+        let jpeg = json!({"probe": {"content_type": "image/jpeg", "width": 1}});
+        assert!(matrix_200_proved(&image_res("image/jpeg"), &jpeg));
+        // Header says webp, bytes are JPEG.
+        assert!(!matrix_200_proved(&image_res("image/webp"), &jpeg));
+        assert!(!matrix_200_proved(&image_res("text/plain"), &jpeg));
+        let broken = json!({"probe": {"error": "x"}});
+        assert!(!matrix_200_proved(&image_res("image/jpeg"), &broken));
+        let mut not_ok = image_res("image/jpeg");
+        not_ok.status = 404;
+        assert!(!matrix_200_proved(&not_ok, &jpeg));
+    }
+
+    #[test]
+    fn bare_cells_expect_the_sniffed_codec_and_gif_becomes_webp() {
+        let dir = images_dir(&opts(&[]));
+        assert_eq!(
+            source_output_token("photo.jpg", &dir).as_deref(),
+            Some("jpeg")
+        );
+        assert_eq!(
+            source_output_token("still.gif", &dir).as_deref(),
+            Some("webp")
+        );
+        assert_eq!(source_output_token("rgb.png", &dir).as_deref(), Some("png"));
+        // Unreadable: fall back to the extension, or nothing.
+        assert_eq!(
+            source_output_token("gone.gif", &dir).as_deref(),
+            Some("webp")
+        );
+        assert_eq!(source_output_token("gone.txt", &dir), None);
+    }
+
+    #[test]
+    fn bytes_beat_the_extension() {
+        let dir =
+            std::env::temp_dir().join(format!("oximg-ctl-matrix-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy(
+            images_dir(&opts(&[])).join("photo.jpg"),
+            dir.join("lies.png"),
+        )
+        .unwrap();
+        assert_eq!(
+            source_output_token("lies.png", &dir).as_deref(),
+            Some("jpeg")
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_plan_crosses_sources_boxes_and_formats_then_negatives() {
+        let cells = plan(
+            &opts(&[]),
+            &args(&["photo.jpg"], &[(100, 100), (50, 0)], None),
+        );
+        let paths: Vec<&str> = cells.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "/resize/100/100/photo.jpg",
+                "/resize/100/100/photo.jpg@webp",
+                "/resize/50/0/photo.jpg",
+                "/resize/50/0/photo.jpg@webp",
+                "/resize/0/0/photo.jpg",
+                "/resize/100/100/missing.jpg",
+                "/resize/100/100/photo.jpg@gif",
+            ]
+        );
+        assert_eq!(cells[0].expected_wh, Some((100, 75)));
+        assert_eq!(cells[0].format.as_deref(), Some("jpeg"));
+        assert_eq!(cells[2].expected_wh, Some((50, 38)));
+        assert_eq!(cells.iter().filter(|c| c.kind == "negative").count(), 3);
+    }
+
+    #[test]
+    fn a_foreign_tree_gets_no_local_oracle() {
+        for (o, base) in [
+            (opts(&[]), Some("http://elsewhere")),
+            (opts(&[("OXIMG_SOURCE_BASE_URL", "http://origin")]), None),
+        ] {
+            let cells = plan(&o, &args(&["photo.jpg"], &[(100, 100)], base));
+            assert_eq!(cells[0].expected_wh, None);
+            assert_eq!(cells[0].format, None);
+            assert!(!cells.iter().any(|c| c.path.contains("missing.jpg")));
+        }
+    }
+
+    #[test]
+    fn empty_lists_take_the_defaults() {
+        let cells = plan(&opts(&[]), &args(&[], &[], None));
+        let sources = default_sources().len();
+        assert_eq!(
+            cells.len(),
+            sources * 2 + 3,
+            "sources × (bare, webp) + negatives"
+        );
+        assert!(cells[0].path.starts_with("/resize/100/100/"));
+    }
+}
