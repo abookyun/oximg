@@ -834,8 +834,8 @@ fn parity_interrupted_during_side_b_reports_it_instead_of_a_diff() {
 /// scheduling delay before the signal, so a side cannot finish first.
 #[cfg(unix)]
 fn assert_parity_interrupted_after_listening(nth: usize) {
-    use std::io::{BufRead, BufReader, Read};
-    use std::time::{Duration, Instant};
+    use std::io::{BufRead, BufReader};
+    use std::time::Duration;
 
     let oximg = env!("CARGO_BIN_EXE_oximg");
     let mut args = vec!["parity", "--against", oximg];
@@ -876,6 +876,74 @@ fn assert_parity_interrupted_after_listening(nth: usize) {
             .unwrap()
             .success()
     );
+    assert_parity_reported_interrupted(child, &mut stdout);
+}
+
+/// Ctrl-C before the server prints its listening line kills it outright
+/// (oximg installs its own handlers just before that line), so the
+/// wrapper sees stderr close with no port. That is the caller's stop,
+/// not a broken --bin, and must read "interrupted" too. The --bin here
+/// sleeps before exec'ing oximg; the trap makes it exit at once on the
+/// signal under both bash and dash, before it ever listens.
+#[test]
+#[cfg(unix)]
+fn parity_interrupted_before_the_server_listens_reports_it() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    let dir = std::env::temp_dir().join(format!(
+        "oximg-ctl-parity-slow-start-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let slow = dir.join("oximg");
+    std::fs::write(
+        &slow,
+        format!(
+            "#!/bin/sh\ntrap 'exit 130' INT TERM\nsleep 5 </dev/null >/dev/null 2>&1 &\nwait $!\nexec '{}' \"$@\"\n",
+            env!("CARGO_BIN_EXE_oximg")
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let oximg = env!("CARGO_BIN_EXE_oximg");
+    let mut child = ctl()
+        .args([
+            "--bin",
+            slow.to_str().unwrap(),
+            "parity",
+            "--against",
+            oximg,
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn oximg-ctl parity");
+    let mut stdout = child.stdout.take().expect("stdout piped");
+    // ctl installs its handler as it spawns side A, within milliseconds;
+    // side A then sleeps 5 s before it could listen.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_parity_reported_interrupted(child, &mut stdout);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Wait for a signalled parity run and require "interrupted": exit 1,
+/// ok false, and no verdict.
+#[cfg(unix)]
+fn assert_parity_reported_interrupted(
+    mut child: std::process::Child,
+    stdout: &mut std::process::ChildStdout,
+) {
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+
     let deadline = Instant::now() + Duration::from_secs(20);
     let status = loop {
         if let Ok(Some(st)) = child.try_wait() {
