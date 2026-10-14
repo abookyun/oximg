@@ -2,4 +2,5 @@
 
 pub mod get;
 pub mod probe;
+pub mod resize;
 pub mod sign;
