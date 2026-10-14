@@ -3,6 +3,7 @@
 
 use serde_json::{Value, json};
 
+#[derive(Debug)]
 pub struct CtlError {
     exit: i32,
     pub json: Value,

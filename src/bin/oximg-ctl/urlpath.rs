@@ -91,3 +91,55 @@ fn is_pchar(b: u8) -> bool {
             | b'@'
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decode_err(path: &str) -> String {
+        percent_decode_path(path).expect_err("should fail").json["error"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn decode_turns_escapes_back_into_bytes() {
+        assert_eq!(percent_decode_path("/a%2Fb%2fc").unwrap(), "/a/b/c");
+        assert_eq!(percent_decode_path("/%C3%A9").unwrap(), "/é");
+        // A path, not a query: `+` is a plus sign.
+        assert_eq!(percent_decode_path("/a+b").unwrap(), "/a+b");
+    }
+
+    #[test]
+    fn decode_rejects_truncated_and_non_hex_escapes() {
+        assert!(decode_err("/a%2").contains("malformed percent-escape"));
+        assert!(decode_err("/a%").contains("malformed percent-escape"));
+        assert!(decode_err("/a%zz").contains("malformed percent-escape"));
+    }
+
+    #[test]
+    fn decode_rejects_bytes_that_are_not_utf8() {
+        assert!(decode_err("/%FF").contains("not valid UTF-8"));
+    }
+
+    #[test]
+    fn encode_keeps_separators_and_pchars() {
+        assert_eq!(
+            percent_encode_path("/resize/1/1/a-b_c.~!$&'()*+,;=:@.jpg"),
+            "/resize/1/1/a-b_c.~!$&'()*+,;=:@.jpg"
+        );
+    }
+
+    #[test]
+    fn encode_escapes_percent_space_and_non_ascii() {
+        assert_eq!(percent_encode_path("/a b%c/é"), "/a%20b%25c/%C3%A9");
+    }
+
+    #[test]
+    fn decode_undoes_encode() {
+        for p in ["/a b/%25/é?#", "/albums/2026/photo.jpg", "/x%y"] {
+            assert_eq!(percent_decode_path(&percent_encode_path(p)).unwrap(), p);
+        }
+    }
+}
