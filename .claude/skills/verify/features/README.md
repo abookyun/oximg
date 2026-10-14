@@ -1,6 +1,6 @@
-# oximg verification feature map (Cursor)
+# oximg verification feature map
 
-Agent drive book for [verify-oximg](../SKILL.md). Invariants, status
+Agent drive book for [verify](../SKILL.md). Invariants, status
 tables, and the full knob inventory live in
 [`docs/features/`](../../../../docs/features/) — link out, do not copy.
 
@@ -11,8 +11,7 @@ the linked invariant.
 
 After a route, knob, format, or status is added or removed, run
 `/maintain-verification-skill` and update the matching file (or add
-one). Complementary Grok skill:
-[`.grok/skills/verify/SKILL.md`](../../../../.grok/skills/verify/SKILL.md).
+one).
 
 | File | User-facing surface |
 |---|---|

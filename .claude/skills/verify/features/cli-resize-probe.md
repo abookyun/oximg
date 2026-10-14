@@ -67,5 +67,5 @@ existing `--out`.
 - `tests/fixtures/list.txt` is undecodable: `probe` exits 1 with
   `ok: false`.
 - Do not leave `/tmp/oximg-verify-cli.*` as evidence; copy into
-  `evidence/` first or `--out` directly there. Cleanup may remove
-  `/tmp` files.
+  `target/verify-evidence/` first or `--out` directly there. Cleanup
+  may remove `/tmp` files.

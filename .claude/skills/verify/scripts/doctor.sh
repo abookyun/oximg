@@ -3,7 +3,7 @@
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# scripts/ -> verify-oximg -> skills -> .cursor -> repo root
+# scripts/ -> verify -> skills -> .claude -> repo root
 root=$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null || true)
 if [[ -z "${root}" ]]; then
   root=$(cd "$script_dir/../../../.." && pwd)
