@@ -73,9 +73,10 @@ codegen-units = 1
 
 # The edit-build-test loop: release codegen without fat LTO, so a
 # one-line edit relinks in seconds instead of rebuilding for ~100 s.
-# Output matched release byte for byte on the fixture matrix (198
-# cells, avif on, amd64; arm64 not yet compared), but every performance
-# number still comes from `--release` (bench/METHODOLOGY.md).
+# Output matches release byte for byte on the fixture matrix
+# (bench/profile_parity.py: 198 cells on amd64 with and without avif, and
+# on aarch64), but every performance number still comes from
+# `--release` (bench/METHODOLOGY.md).
 [profile.agent]
 inherits = "release"
 lto = false
