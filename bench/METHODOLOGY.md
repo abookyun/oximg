@@ -50,3 +50,13 @@ are the same bytes for metadata-free sources: 18 URLs (3 sources × 4
 same-format cells + 6 cross-format) hashed across two images. This
 doubles as the no-regression gate for refactors — the whole 0.4.x
 refactor series shipped under it.
+
+`profile_parity.py` is the same idea between two cargo builds rather
+than two images, with no harness: `bench/profile_parity.py
+target/release target/agent` drives each build's own `oximg-ctl` over
+the committed fixtures (33 sources × 3 boxes × formats, 198 cells) and
+compares the bodies' sha256. It is what lets the `agent` profile stand
+in for release on behaviour; rerun it on both architectures when the
+profiles or the SIMD kernels change. Measured 2026-10-14: 0 of 198
+differ on amd64 (with and without avif) and on aarch64 (default
+features, emulated by QEMU on starship).
