@@ -6,8 +6,9 @@
 # start, or after ; & | ( or $(), with quotes kept, since a -f pattern is
 # usually quoted. Heredoc bodies are dropped first (shell_text.py), so a
 # commit message written through a heredoc never trips it. Known false
-# positive, accepted: a line inside a multi-line quoted string that starts
-# with `pkill … oximg` is blocked — write such a message with a heredoc.
+# positive, accepted: quoted text is matched too, so a quoted argument
+# with a kill-by-name after a line start, ;, &, |, ( or $( is blocked —
+# write such a message through a heredoc.
 # A guardrail, not a sandbox: `bash -c '…'` walks past it.
 #
 # The PR gate is not here: .githooks/pre-push enforces it on the pushed
