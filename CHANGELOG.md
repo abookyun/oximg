@@ -10,6 +10,17 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+### Added
+
+- **`oximg-ctl parity --against OTHER/oximg` compares two builds byte
+  for byte.** It requests the same cells as `matrix` (every fixture
+  that probes as an image, at three boxes, bare and `@webp`) from the
+  `--bin` build and then from OTHER, each on its own spawned server,
+  and compares the response bodies' sha256. Only a 200 on both sides
+  counts as compared; the same error on both is reported as skipped. It
+  exits 1 if any cell differs or none compared, and stops with an
+  `interrupted` error on Ctrl-C rather than reporting a partial run.
+
 ### Changed
 
 - **The linear-light half-size decode reads two neighbouring pixels per
