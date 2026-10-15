@@ -20,6 +20,22 @@ HTTP interface without notice.
   counts as compared; the same error on both is reported as skipped. It
   exits 1 if any cell differs or none compared, and stops with an
   `interrupted` error on Ctrl-C rather than reporting a partial run.
+- **Deployment targets: Cloud Run, Cloudflare Containers, Cloudflare
+  Workers.** [docs/deploy-targets.md](docs/deploy-targets.md) compares
+  them on measured billing per transform and cold start; `deploy/`
+  holds a deploy script or config for each. Cloudflare Containers runs
+  the released image behind a Worker that hashes URL paths across
+  instances, so request coalescing still works. The Workers build
+  (experimental) compiles the pipeline to wasm: output matches native
+  on the test fixtures at 3–6× the CPU, with no AVIF and no signing.
+
+### Fixed
+
+- **The pipeline no longer panics on `wasm32-unknown-unknown`.** Every
+  request there trapped in the stage timers (`std::time::Instant` has
+  no clock on that target). Building for it still takes a C sysroot and
+  two crate patches; see `deploy/cloudflare-workers/`. Native output is
+  unchanged.
 
 ### Changed
 

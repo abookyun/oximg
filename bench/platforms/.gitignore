@@ -1,0 +1,4 @@
+origin/public/
+origin/node_modules/
+origin/.wrangler/
+origin/.cloudflare/

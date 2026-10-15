@@ -1,6 +1,7 @@
 mod panic_guard;
 pub mod pipeline;
 
+pub(crate) mod clock;
 pub(crate) mod config;
 
 /// Strict validation of every OXIMG_* runtime knob — the server
