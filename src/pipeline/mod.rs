@@ -1101,7 +1101,7 @@ pub fn fetch_gcs(bucket: &str, key: &str) -> Result<Vec<u8>, Error> {
 #[cfg(feature = "server")]
 pub fn fetch_s3(bucket: &str, key: &str) -> Result<Vec<u8>, Error> {
     clear_fetch_time();
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     let (bucket, key) = (bucket.to_string(), key.to_string());
     let result = block_on_fetch(async move { fetch_s3_async(&bucket, &key).await });
     record_fetch_time(t0.elapsed().as_secs_f64());
