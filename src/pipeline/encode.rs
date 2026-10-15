@@ -651,9 +651,9 @@ pub(super) fn icc_app2_chunks(icc: &[u8]) -> impl Iterator<Item = Vec<u8>> + '_ 
 /// jpegli encode via its libjpeg-compatible API (symbols are
 /// `jpegli_`-prefixed, so it links alongside mozjpeg without conflicts).
 /// OXIMG_JPEG_PROGRESSIVE=0 selects sequential jpegli (SOF1, extended
-/// sequential, which is how jpegli marks it; not baseline SOF0): a few percent
-/// larger output, but the entropy pass at finish_compress shrinks,
-/// which is the fused path's only serial tail.
+/// sequential, which is how jpegli marks it; not baseline SOF0) with
+/// optimized Huffman tables: a few percent larger output at 512 px and
+/// up, for about a quarter less encoder CPU than the scan script.
 pub(super) fn jpegli_progressive() -> bool {
     crate::config::config().jpegli_progressive
 }
