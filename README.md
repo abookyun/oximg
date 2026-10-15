@@ -686,8 +686,17 @@ which makes it `OXIMG_MAX_ANIM_WORK`, not the canvas, that bounds it.
 
 ## Deployment
 
+The primary hosted targets are **Cloud Run**, **Cloudflare Containers**
+and **Cloudflare Workers** (experimental, wasm). Render, Railway and
+Fly.io are next. [Deployment targets](docs/deploy-targets.md) compares
+them with measured cost per transform and cold start, and
+[`deploy/`](deploy/) holds a deploy script or config for each.
+
 Per-platform guides live in [`docs/`](docs/):
 
+- [Cloudflare Containers & Workers](docs/deploy-cloudflare.md) — the
+  released image behind a Worker with URL-hashed instances, the
+  container-sleep pitfall, and what the wasm build can and cannot do.
 - [Docker / docker-compose](docs/deploy-docker.md) — tag pinning
   (`latest` rebuilds on every main push), read-only mounts, remote
   origins, graceful `docker stop`, building tuned images.

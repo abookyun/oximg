@@ -6,6 +6,28 @@ is stateless, and drains gracefully on the SIGTERM Cloud Run sends at
 scale-down. The same shape applies to AWS App Runner / Fargate and
 Azure Container Apps.
 
+Cloud Run is one of the primary targets; [deploy-targets.md](deploy-targets.md)
+has its measured cost per transform and cold start next to Cloudflare.
+
+## Quick deploy: private GCS bucket
+
+[`deploy/cloud-run/deploy.sh`](../deploy/cloud-run/deploy.sh) deploys
+the released image with sources in a private bucket in the same
+region. This is the shape that was measured.
+
+```sh
+GCP_PROJECT=my-project BUCKET=my-originals deploy/cloud-run/deploy.sh
+```
+
+It creates the bucket if missing (uniform access, public access
+prevention), deploys `OXIMG_SOURCE_BASE_URL=gs://$BUCKET`, and grants
+the service account `roles/storage.objectViewer` on that bucket only.
+oximg reads `gs://` with the metadata-server token, so no key is
+involved. `REGION` (default `us-south1`), `SERVICE`, `IMAGE`, `CPU`,
+`MEMORY`, `CONCURRENCY`, `MAX_INSTANCES` and `METRICS=1` override the
+defaults. Measured 2026-10-14: a cold start from zero instances
+answered in 0.51 s, with container startup at 56–145 ms.
+
 ## Source mode: use a remote origin
 
 Serverless containers have no durable local disk, so skip `IMAGES_DIR`
@@ -13,7 +35,7 @@ and point `OXIMG_SOURCE_BASE_URL` at where the originals live:
 
 ```sh
 gcloud run deploy oximg \
-  --image=docker.io/oximg/oximg:0.8.2 \
+  --image=docker.io/oximg/oximg:0.14.0 \
   --set-env-vars=OXIMG_SOURCE_BASE_URL=https://storage.googleapis.com/my-bucket \
   --cpu=2 --memory=1Gi \
   --concurrency=8 \

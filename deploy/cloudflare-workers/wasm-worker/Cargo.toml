@@ -1,0 +1,22 @@
+[package]
+name = "oximg-wasm"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Standalone: not a member of the root package's (absent) workspace.
+[workspace]
+
+# A wasip1 reactor: no wasm-bindgen, just C-ABI exports that
+# src/index.js drives.
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+oximg = { path = "../../..", default-features = false }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

@@ -1071,7 +1071,7 @@ pub fn s3_startup(bucket: &str, prefix: Option<&str>) -> Result<(), String> {
 #[cfg(feature = "server")]
 pub fn fetch_url(url: &str) -> Result<Vec<u8>, Error> {
     clear_fetch_time();
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     let owned = url.to_string();
     let result = block_on_fetch(async move { fetch_url_async(&owned).await });
     record_fetch_time(t0.elapsed().as_secs_f64());
@@ -1086,7 +1086,7 @@ pub fn fetch_url(url: &str) -> Result<Vec<u8>, Error> {
 #[cfg(feature = "server")]
 pub fn fetch_gcs(bucket: &str, key: &str) -> Result<Vec<u8>, Error> {
     clear_fetch_time();
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     let (bucket, key) = (bucket.to_string(), key.to_string());
     let result = block_on_fetch(async move { fetch_gcs_async(&bucket, &key).await });
     record_fetch_time(t0.elapsed().as_secs_f64());

@@ -81,7 +81,7 @@ fn fused_decode_loop<R: std::io::BufRead, T: Send>(
 
         // Decode loop on the request thread: read a chunk, hand it to
         // the worker, reuse buffers the worker has drained.
-        let t_decode = std::time::Instant::now();
+        let t_decode = crate::clock::Instant::now();
         // Set when the loop stops *only* because the worker's receiver
         // was dropped (worker already failed/returned). In that case
         // the worker holds the root cause; a genuine decode error does

@@ -26,6 +26,30 @@ HTTP interface without notice.
   `~/.aws` profile files are not read. Signed in-tree with `hmac` and
   `sha2`, already dependencies. The library gets `process_s3` and
   friends next to the `gcs` ones.
+- **`oximg-ctl parity --against OTHER/oximg` compares two builds byte
+  for byte.** It requests the same cells as `matrix` (every fixture
+  that probes as an image, at three boxes, bare and `@webp`) from the
+  `--bin` build and then from OTHER, each on its own spawned server,
+  and compares the response bodies' sha256. Only a 200 on both sides
+  counts as compared; the same error on both is reported as skipped. It
+  exits 1 if any cell differs or none compared, and stops with an
+  `interrupted` error on Ctrl-C rather than reporting a partial run.
+- **Deployment targets: Cloud Run, Cloudflare Containers, Cloudflare
+  Workers.** [docs/deploy-targets.md](docs/deploy-targets.md) compares
+  them on measured billing per transform and cold start; `deploy/`
+  holds a deploy script or config for each. Cloudflare Containers runs
+  the released image behind a Worker that hashes URL paths across
+  instances, so request coalescing still works. The Workers build
+  (experimental) compiles the pipeline to wasm: output matches native
+  on the test fixtures at 3–6× the CPU, with no AVIF and no signing.
+
+### Fixed
+
+- **The pipeline no longer panics on `wasm32-unknown-unknown`.** Every
+  request there trapped in the stage timers (`std::time::Instant` has
+  no clock on that target). Building for it still takes a C sysroot and
+  two crate patches; see `deploy/cloudflare-workers/`. Native output is
+  unchanged.
 
 ### Changed
 
