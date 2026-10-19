@@ -39,6 +39,27 @@ HTTP interface without notice.
 
 ### Changed
 
+- **4:2:0 and 4:2:2 JPEGs decoded at full scale are read as raw YCbCr**
+  on x86 CPUs with AVX-512 VBMI (AMD Zen 4 and later, Intel Ice Lake
+  and later). libjpeg no longer upsamples the chroma or converts the
+  color. Instead, the resize kernel replicates the chroma, converts to
+  RGB and applies the sRGB-to-linear lookup in one pass while staging
+  each row. Serial and fused decodes both take this path. Output is
+  bit-identical.
+
+  It applies wherever the decode stays at full scale: reductions below
+  the linear half-size decode's 4x, every 4:2:2 source, and
+  `OXIMG_LINEAR_SHRINK=0`. Measured on DIV2K, Zen 4, q80. Each figure
+  is the change in user cycles per request for the h75 and q92 sets:
+
+  | fit | server | cycles |
+  |---|---|---|
+  | 1024 | one logical CPU | -2.9%, -2.4% |
+  | 1024 | fused, on one SMT pair | -4.9%, -3.8% |
+  | 512, `OXIMG_LINEAR_SHRINK=0` | one logical CPU | -4.1%, -3.7% |
+
+  At fit 512 with the defaults, DIV2K takes the half-size decode, and
+  its cycles do not change.
 - **The linear-light half-size decode reads two neighbouring pixels per
   table lookup.** Two horizontal neighbours sum through one 64K-entry
   table instead of two 256-entry ones. Output is bit-identical. Decode
