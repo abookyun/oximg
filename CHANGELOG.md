@@ -45,13 +45,16 @@ HTTP interface without notice.
   time per DIV2K image on that path drops 0.23 ms (Intel i7-1360P) and
   0.18 ms (Apple M2), about 4% of the decode.
 - **Small JPEG outputs are written sequential** ([#61]). An output of
-  at most 20,000 pixels (a 160x120 thumbnail is 19,200) now gets one
+  at most 12,000 pixels (a 128x85 thumbnail is 10,880) now gets one
   sequential scan instead of the progressive scan script, because at
   that size the scan headers cost more than progressive coding saves.
   Pixels are identical. On a 762-image mixed corpus at q80, fit-128
-  photos are 0.9% smaller and the repo's small fixtures 7.2% smaller;
+  photos are 0.7% smaller and the repo's small fixtures 7.2% smaller;
   larger outputs are unchanged. Server CPU at fit 128 drops about
-  0.5%. `OXIMG_JPEG_SEQUENTIAL_PIXELS` moves the threshold, and `0`
+  0.5%. The break-even is near 12,000 pixels: across the corpus,
+  sequential output is 2.2% smaller below 8,000 pixels, 0.8% smaller
+  at 8,000-12,000 and 0.6% larger at 16,000-20,000, grayscale and text
+  most. `OXIMG_JPEG_SEQUENTIAL_PIXELS` moves the threshold, and `0`
   restores progressive everywhere.
 
 ### Fixed

@@ -332,7 +332,7 @@ pub(crate) fn validate() -> Result<(), String> {
 }
 
 /// OXIMG_JPEG_SEQUENTIAL_PIXELS when unset.
-pub(crate) const DEFAULT_SEQUENTIAL_PIXELS: u64 = 20_000;
+pub(crate) const DEFAULT_SEQUENTIAL_PIXELS: u64 = 12_000;
 
 pub(crate) fn config() -> &'static Config {
     static CONFIG: OnceLock<Config> = OnceLock::new();
