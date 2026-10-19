@@ -67,8 +67,10 @@ SCANS = [
 ]
 BASE = "P/aq-444"
 # The encode time, or the fused decode+encode total where the two
-# interleave (JPEG sources).
-TIMING = re.compile(r"(?:encode|total)=([\d.]+)ms")
+# interleave (JPEG sources). Other routes' `total=` lines (cmyk,
+# streamed) time the decode only, so they stay unmeasured.
+ENCODE_MS = re.compile(r"\bencode=([\d.]+)ms")
+FUSED_MS = re.compile(r"^timing fused[^(]*\(.*\btotal=([\d.]+)ms", re.M)
 
 
 def sh(*cmd, env=None):
@@ -109,7 +111,7 @@ def run_item(job):
                 out = work / "tmp" / f"{it['id']}-{q}-{label}-{scan}.jpg"
                 env = dict(base_env, **extra, **penv)
                 r = sh(binary, "resize", it["src"], it["target"], 0, out, "-q", q, "-f", "jpg", env=env)
-                m = TIMING.search(r.stderr)  # absent on the exact-size path
+                m = ENCODE_MS.search(r.stderr) or FUSED_MS.search(r.stderr)
                 ms = float(m[1]) if m else None
                 cell[scan] = (out, out.stat().st_size, ms)
             out = cell["S"][0]
