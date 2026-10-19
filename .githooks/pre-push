@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# pre-push: an agent pushes only commits `scripts/check.sh full` passed.
+#
+# Applies when CLAUDECODE is set (Claude Code's shells); a person's push
+# goes straight through. Each pushed commit must be the HEAD recorded in
+# target/check/last.json, by a full run that passed on a clean tree —
+# unless, against origin/main, it touches only agent files, site/, and
+# Markdown the build does not read. Enabled per clone by
+# `git config core.hooksPath .githooks` (the SessionStart hook sets it
+# when nothing else is configured).
+set -uo pipefail
+
+[[ -n "${CLAUDECODE:-}" ]] || exit 0
+
+root=$(git rev-parse --show-toplevel) || exit 1
+last="$root/target/check/last.json"
+zero=0000000000000000000000000000000000000000
+
+# Agent files, the site (CI skips it), and prose cannot break the build —
+# except the Markdown src/config.rs reads with include_str! and checks
+# against the code: README.md and docs/features/.
+touches_code() {
+  local base
+  base=$(git merge-base origin/main "$1" 2>/dev/null) || return 0
+  [[ -n $(git diff --name-only "$base" "$1" | awk '
+    /^README\.md$/ || /^docs\/features\// { print; next }
+    /^\.claude\// || /^\.cursor\// || /^\.grok\// || /^site\// || /\.md$/ { next }
+    { print }') ]]
+}
+
+status=0
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+  [[ "$local_sha" == "$zero" ]] && continue # a branch deletion
+  touches_code "$local_sha" || continue
+  why=""
+  if [[ ! -f "$last" ]]; then
+    why="no target/check/last.json"
+  elif ! grep -q "\"head\": \"$local_sha\"" "$last"; then
+    why="the last check ran on another commit"
+  elif ! grep -q '"mode": "full"' "$last"; then
+    why="the last check was quick, not full"
+  elif ! grep -q '"ok": true' "$last"; then
+    why="the last full check failed"
+  elif ! grep -q '"dirty": false' "$last"; then
+    why="the last full check ran on a dirty tree"
+  fi
+  if [[ -n "$why" ]]; then
+    echo "pre-push: ${local_sha:0:7} needs scripts/check.sh full to pass on it first ($why)." >&2
+    status=1
+  fi
+done
+exit $status

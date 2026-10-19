@@ -50,3 +50,17 @@ are the same bytes for metadata-free sources: 18 URLs (3 sources × 4
 same-format cells + 6 cross-format) hashed across two images. This
 doubles as the no-regression gate for refactors — the whole 0.4.x
 refactor series shipped under it.
+
+`oximg-ctl parity` is the same idea between two cargo builds rather
+than two images, with no harness: `./target/release/oximg-ctl parity
+--against target/agent/oximg` spawns each build's server in turn over
+the committed fixtures (every file that probes as an image, at 100x100,
+333x0, and 64x64, bare and `@webp`) and compares the bodies' sha256.
+Only cells both builds answer with 200 count as compared; the same
+error on both sides is reported as skipped. It is what lets the `agent`
+profile stand in for release on behaviour; rerun it on both
+architectures when the profiles or the SIMD kernels change. Measured
+2026-10-14, 0 differing in every run: amd64 with avif, 192 compared;
+amd64 default features, 132; aarch64 default features under QEMU on
+starship, 132 (AVIF there unchecked: bookworm's SVT-AV1 is below the
+4.1 floor).

@@ -7,5 +7,5 @@ module Oximg
   # names a binary it does not carry. `Oximg.version` reports what the
   # resolved executable actually is, which can differ when it comes
   # from PATH.
-  VERSION = "0.13.0"
+  VERSION = "0.14.0"
 end

@@ -45,6 +45,28 @@ checks.
 build. The AWS run itself is pending
 ([#63](https://github.com/oximg/oximg/issues/63)).
 
+**0.14.0** (2026-10-02). This adds the linear-light half-size luma
+decode for 4:2:0 sources reduced about 3.8x or more, which this cell
+is ([#60](https://github.com/oximg/oximg/issues/60)).
+
+It was measured on an Intel i7-1360P, because starship was busy with
+unrelated builds that invalidated two runs there. The harness shape
+is the same. The server is pinned to P-cores: one SMT pair or two
+physical cores. k6 runs on E-cores 8-13 and nginx on 14-15. The
+machine was on AC with the battery full. Configurations rotated each
+round; all 30 cells had 0 failed checks.
+
+| server | SMT pair, 2 VUs | SMT pair, 8 VUs | 2 cores, 2 VUs | 2 cores, 8 VUs |
+|---|---|---|---|---|
+| oximg 0.13.0 | 95.5 (20.4) | 86.8 (22.9) | 110.5 (16.3) | 114.5 (16.9) |
+| **oximg 0.14.0** | **119.6** (16.2) | **113.3** (17.5) | **146.7** (12.5) | **140.2** (13.8) |
+| imgproxy 4.0.17 | 97.8 (18.9) | 91.5 (21.3) | 119.4 (14.9) | 109.5 (17.4) |
+
+0.14.0 leads imgproxy by 1.22-1.28x here and does 22-33% more req/s
+than 0.13.0. Output averages 45.0 KB per image, against 45.6 KB for
+0.13.0 and 42.6 KB for imgproxy. The two tables come from different
+CPUs, so compare within a table, not across them.
+
 ## Linux x86_64 (AMD Ryzen 7 8745HS, 8C/16T, Arch Linux)
 
 All servers as Docker containers: oximg (this repo's Dockerfile),
@@ -136,7 +158,7 @@ plasma source, identical 500x333 outputs:
 SSIM2 scores this table's own outputs against a linear-light Lanczos
 reference of the plasma source (differences above ~2 points are
 generally perceptible; both oximg profiles decode to identical pixels
-— baseline vs progressive jpegli differ only in entropy layout).
+— sequential (SOF1) vs progressive jpegli differ only in entropy layout).
 Smooth synthetic noise is the content where oximg's supersampled
 linear-light resize matters least; on the real-photo corpus the same
 q80 comparison is **77.5 / 72.1 / 67.3 vs imgproxy's 71.2 / 60.1 /
@@ -149,7 +171,7 @@ Both oximg rows are the auto overlap gate composing one pipeline:
 decode fused with resize+encode on a second thread below saturation,
 one core per request at saturation — serial and fused stream through
 the same SIMD row kernel, so a URL's bytes never depend on load. The
-speed profile is `OXIMG_JPEG_PROGRESSIVE=0` (baseline jpegli: entropy
+speed profile is `OXIMG_JPEG_PROGRESSIVE=0` (sequential jpegli, SOF1: entropy
 coding leaves the latency tail and per-request CPU drops ~1.2 ms):
 output lands at libjpeg-turbo size for this source at unchanged
 quality, ahead of imgproxy at every concurrency in this table.

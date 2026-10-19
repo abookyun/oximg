@@ -448,7 +448,7 @@ Used by:
 ## Apache License 2.0
 
 Used by:
-- [oximg 0.13.0](https://github.com/oximg/oximg)
+- [oximg 0.14.0](https://github.com/oximg/oximg)
 - [cmov 0.5.4](https://github.com/RustCrypto/utils)
 - [ctutils 0.4.2](https://github.com/RustCrypto/utils)
 - [utf8_iter 1.0.4](https://github.com/hsivonen/utf8_iter)
@@ -3713,7 +3713,7 @@ Used by:
 - [percent-encoding 2.3.2](https://github.com/servo/rust-url/)
 - [pkg-config 0.3.33](https://github.com/rust-lang/pkg-config-rs)
 - [png 0.18.1](https://github.com/image-rs/image-png)
-- [rustls 0.23.45](https://github.com/rustls/rustls)
+- [rustls 0.23.46](https://github.com/rustls/rustls)
 - [signal-hook-registry 1.4.8](https://github.com/vorner/signal-hook)
 - [smallvec 1.15.2](https://github.com/servo/rust-smallvec)
 - [socket2 0.6.4](https://github.com/rust-lang/socket2)

@@ -913,7 +913,7 @@ mod tests {
                     apply_orientation(&src, w, h, 3, Orientation(o), &mut dst);
                 }
                 let n = 200;
-                let t = std::time::Instant::now();
+                let t = crate::clock::Instant::now();
                 for _ in 0..n {
                     apply_orientation(&src, w, h, 3, Orientation(o), &mut dst);
                 }

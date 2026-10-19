@@ -1411,7 +1411,7 @@ pub(crate) mod testkit {
             let mut ring = vec![0f32; 3 * plane];
             let mut best = f64::MAX;
             for _ in 0..15 {
-                let t = std::time::Instant::now();
+                let t = crate::clock::Instant::now();
                 for y in (0..rows - rows % b).step_by(b) {
                     // SAFETY: after K::detect(); rows y..y + b are staged.
                     unsafe {

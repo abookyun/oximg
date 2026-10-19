@@ -10,6 +10,33 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+### Added
+
+- **`oximg-ctl parity --against OTHER/oximg` compares two builds byte
+  for byte.** It requests the same cells as `matrix` (every fixture
+  that probes as an image, at three boxes, bare and `@webp`) from the
+  `--bin` build and then from OTHER, each on its own spawned server,
+  and compares the response bodies' sha256. Only a 200 on both sides
+  counts as compared; the same error on both is reported as skipped. It
+  exits 1 if any cell differs or none compared, and stops with an
+  `interrupted` error on Ctrl-C rather than reporting a partial run.
+- **Deployment targets: Cloud Run, Cloudflare Containers, Cloudflare
+  Workers.** [docs/deploy-targets.md](docs/deploy-targets.md) compares
+  them on measured billing per transform and cold start; `deploy/`
+  holds a deploy script or config for each. Cloudflare Containers runs
+  the released image behind a Worker that hashes URL paths across
+  instances, so request coalescing still works. The Workers build
+  (experimental) compiles the pipeline to wasm: output matches native
+  on the test fixtures at 3–6× the CPU, with no AVIF and no signing.
+
+### Fixed
+
+- **The pipeline no longer panics on `wasm32-unknown-unknown`.** Every
+  request there trapped in the stage timers (`std::time::Instant` has
+  no clock on that target). Building for it still takes a C sysroot and
+  two crate patches; see `deploy/cloudflare-workers/`. Native output is
+  unchanged.
+
 ### Changed
 
 - **4:2:0 and 4:2:2 JPEGs decoded at full scale are read as raw YCbCr**
@@ -31,6 +58,72 @@ HTTP interface without notice.
 
   Sources decoded at a reduced DCT scale (`OXIMG_DCT_MARGIN`) are
   unchanged.
+- **The linear-light half-size decode reads two neighbouring pixels per
+  table lookup.** Two horizontal neighbours sum through one 64K-entry
+  table instead of two 256-entry ones. Output is bit-identical. Decode
+  time per DIV2K image on that path drops 0.23 ms (Intel i7-1360P) and
+  0.18 ms (Apple M2), about 4% of the decode.
+
+## [0.14.0] - 2026-10-02
+
+Large JPEG reductions get cheaper ([#60], part of [#64]). A 4:2:0 or
+grayscale source reduced about 3.8x or more decodes luma at half size,
+averaged in linear light. Responses for those requests change bytes;
+every other response is byte-identical to 0.13.0, including all the
+test fixtures. Library and HTTP APIs are unchanged. The jpegli encoder
+change tried for this release ([#61]) was reverted before shipping: it
+made small and graphic outputs larger and worse.
+
+On imgproxy's benchmark shape (100 DIV2K photographs, fit 512 q80, k6),
+measured against 0.13.0 and imgproxy 4.0.17 in rotated rounds. The
+host was an Intel i7-1360P: the server ran on P-cores, and k6 and
+nginx on E-cores. Each cell is the mean of 3 rounds at 2 VUs and 2 at
+8 VUs, and all 30 cells passed every check:
+
+| | one SMT pair, 2 VUs | one SMT pair, 8 VUs | two cores, 2 VUs | two cores, 8 VUs |
+|---|---|---|---|---|
+| 0.13.0 | 95.5 req/s | 86.8 | 110.5 | 114.5 |
+| **0.14.0** | **119.6** | **113.3** | **146.7** | **140.2** |
+| imgproxy 4.0.17 | 97.8 | 91.5 | 119.4 | 109.5 |
+
+0.14.0 does 22-33% more req/s than 0.13.0 at 19-23% less server CPU
+per request, and 1.22-1.28x imgproxy. Output averages 45.0 KB per
+image, against 45.6 KB for 0.13.0 and 42.6 KB for imgproxy.
+
+Known edge case: a periodic high-contrast pattern loses SSIMULACRA2 at
+large reductions. A 32 px checkerboard reduced 5x into 400 px scores
+79.1 against 84.5 for a full decode. Other content stayed close:
+- text scored better (83.5 against 81.1);
+- a gradient banner and a plasma were within 0.3 either way;
+- DIV2K photographs averaged 0.34 lower at 3.98x (the worst image
+  0.99 lower), and within 0.1 from 5.3x up.
+
+`OXIMG_LINEAR_SHRINK=0` restores the full decode.
+
+### Changed
+
+- **Large reductions of 4:2:0 and grayscale JPEGs decode luma at half
+  size, averaged in linear light** ([#60]). This applies only when
+  `OXIMG_DCT_MARGIN` is unset and the half-size decode still leaves at
+  least 1.9x for the resampler, a reduction of about 3.8x or more, such
+  as a 2040-wide photo into 512.
+  - **What changes:** luma runs the full 8x8 IDCT a full decode runs,
+    and each 2x2 is averaged through the sRGB transfer function.
+    libjpeg's own reduced IDCT averages in gamma space. Chroma, which
+    4:2:0 stores at half size, decodes at its stored resolution.
+    Smaller reductions, 4:2:2 and 4:4:4 sources, CMYK, and anything
+    with a margin set decode exactly as before.
+  - **Quality:** against a lossless ground truth (100 DIV2K
+    photographs, q92 4:2:0, linear-light reference, `dct_sweep.py`),
+    the cost is 0.34 SSIMULACRA2 at 3.98x and 0.32 at 4x, with no
+    image below -1.0. From 5.3x up it is within ±0.1. libjpeg's own
+    1/2 costs 2.7 there, and 24 on its worst image. 4:2:2 and 4:4:4
+    are excluded because measured there it cost 0.94 and 0.69, with
+    worst images at -6.6 and -4.1.
+  - **CPU:** server time per request at fit 512 on DIV2K drops 11-14%
+    on Zen 4 and about 12% on Apple M2.
+  - Output bytes change for the affected requests.
+    `OXIMG_LINEAR_SHRINK=0` restores the full decode.
 
 ## [0.13.0] - 2026-10-01
 
@@ -177,6 +270,7 @@ NEON changes alter pixels. Library and HTTP APIs are unchanged.
 [#53]: https://github.com/oximg/oximg/pull/53
 [#54]: https://github.com/oximg/oximg/pull/54
 [#60]: https://github.com/oximg/oximg/issues/60
+[#61]: https://github.com/oximg/oximg/issues/61
 
 ## [0.12.0] - 2026-09-29
 
@@ -1649,7 +1743,8 @@ did, in any output format.
   concurrency pinned to the core count — published to crates.io via
   Trusted Publishing.
 
-[unreleased]: https://github.com/oximg/oximg/compare/v0.13.0...HEAD
+[unreleased]: https://github.com/oximg/oximg/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/oximg/oximg/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/oximg/oximg/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/oximg/oximg/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/oximg/oximg/compare/v0.10.1...v0.11.0

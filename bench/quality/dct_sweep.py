@@ -85,6 +85,16 @@ def scale_num(src_w, src_h, dst_w, dst_h, margin):
 
 UNREACHABLE = "unreachable"
 
+# The row for the shipped default: no margin, the linear-light 1/2
+# shrink where it applies (issue #60), full decode elsewhere.
+LINEAR = "linear"
+
+
+def linear_shrink_applies(src_w, src_h, dst_w, dst_h):
+    """src/pipeline/mod.rs `linear_shrink_applies`."""
+    hw, hh = -(-src_w // 2), -(-src_h // 2)
+    return hw * 10 >= 19 * dst_w and hh * 10 >= 19 * dst_h
+
 
 def margin_for(src_w, src_h, dst_w, dst_h, k):
     """The OXIMG_DCT_MARGIN that makes dct_scale_num pick exactly k:
@@ -113,6 +123,9 @@ def run_cell(job):
     env["OXIMG_TIMING"] = "1"
     if a["margin"] is not None:
         env["OXIMG_DCT_MARGIN"] = f"{a['margin']:.6f}"
+    if a["k"] == 8:
+        # k=8 is the plain full decode, the baseline every row pairs with.
+        env["OXIMG_LINEAR_SHRINK"] = "0"
     out = pathlib.Path(a["out"])
     r = sh(a["bin"], "resize", a["src"], a["target"], 0, out, "-q", a["quality"], env=env)
     m = TIMING.search(r.stderr)
@@ -139,9 +152,10 @@ def run_cell(job):
 
 
 def make_source(a):
-    truth, served, q = a
+    truth, served, q, sampling, progressive = a
     if not pathlib.Path(served).exists():
-        sh("magick", truth, "-quality", q, "-sampling-factor", "2x2", served)
+        interlace = ["-interlace", "JPEG"] if progressive else []
+        sh("magick", truth, "-quality", q, "-sampling-factor", sampling, *interlace, served)
     return served
 
 
@@ -151,6 +165,12 @@ def main():
     ap.add_argument("--ratios", default="2,3,4,5.3,6,8,14")
     ap.add_argument("--quality", type=int, default=80)
     ap.add_argument("--src-quality", type=int, default=92)
+    ap.add_argument("--ks", default="1,2,3,4,5,6,7,8,linear",
+                    help="numerators to sweep, plus 'linear' for the default policy")
+    ap.add_argument("--sampling", default="2x2",
+                    help="chroma sampling of the served JPEG: 2x2, 2x1 or 1x1")
+    ap.add_argument("--progressive", action="store_true",
+                    help="serve progressive JPEGs")
     ap.add_argument("--bin", default=str(ROOT / "target/release/oximg"))
     ap.add_argument("--jobs", type=int, default=os.cpu_count())
     ap.add_argument("--work", default="/tmp/dct-sweep")
@@ -166,6 +186,9 @@ def main():
     for sub in ("src", "out", "ref"):
         (work / sub).mkdir(parents=True, exist_ok=True)
     ratios = [float(r) for r in args.ratios.split(",")]
+    ks = [LINEAR if k == LINEAR else int(k) for k in args.ks.split(",")]
+    if 8 not in ks:
+        ks.append(8)
 
     # Cached sources and references are keyed by the truth's content,
     # not its name: a rerun over changed truths, or another corpus with
@@ -173,7 +196,9 @@ def main():
     tags = [hashlib.sha256(t.read_bytes()).hexdigest()[:16] for t in truths]
     with ProcessPoolExecutor(args.jobs) as pool:
         served = list(pool.map(make_source, [
-            (t, work / "src" / f"{tag}-q{args.src_quality}.jpg", args.src_quality)
+            (t, work / "src" / f"{tag}-q{args.src_quality}-{args.sampling}"
+             f"{'-prog' if args.progressive else ''}.jpg",
+             args.src_quality, args.sampling, args.progressive)
             for t, tag in zip(truths, tags)
         ]))
         jobs, skipped = [], {}
@@ -182,8 +207,14 @@ def main():
             for ratio in ratios:
                 target = round(src_w / ratio)
                 dst_w, dst_h = fit_dims(src_w, src_h, target)
-                for k in range(1, 9):
-                    m = margin_for(src_w, src_h, dst_w, dst_h, k)
+                for k in ks:
+                    if k == LINEAR:
+                        m = None
+                        # The policy is 4:2:0-only (and grayscale).
+                        kd = 4 if args.sampling == "2x2" and linear_shrink_applies(
+                            src_w, src_h, dst_w, dst_h) else 8
+                    else:
+                        m, kd = margin_for(src_w, src_h, dst_w, dst_h, k), k
                     if m == UNREACHABLE:
                         skipped[(ratio, k)] = skipped.get((ratio, k), 0) + 1
                         continue
@@ -191,7 +222,7 @@ def main():
                         "bin": args.bin, "src": str(src), "truth": str(truth),
                         "stem": truth.stem, "tag": tag, "ratio": ratio, "k": k, "margin": m,
                         "target": target, "quality": args.quality,
-                        "expect_decoded": (-(-src_w * k // 8), -(-src_h * k // 8)),
+                        "expect_decoded": (-(-src_w * kd // 8), -(-src_h * kd // 8)),
                         "out": str(work / "out" / f"{tag}-{ratio}-{k}.jpg"),
                         "refdir": str(work / "ref"),
                     })
@@ -202,20 +233,22 @@ def main():
     for r in results:
         by.setdefault((r["ratio"], r["k"]), {})[r["stem"]] = r
     summary = []
-    print(f"\nSSIMULACRA2 by DCT numerator; served q{args.src_quality} 4:2:0, "
-          f"output q{args.quality}; paired against the full decode (k=8)\n")
+    print(f"\nSSIMULACRA2 by DCT numerator; served q{args.src_quality} {args.sampling}"
+          f"{' progressive' if args.progressive else ''}, output q{args.quality}; "
+          "paired against the full decode (k=8); L = the default policy\n")
     for ratio in ratios:
         full = by.get((ratio, 8), {})
         print(f"## {ratio:g}x  (n={len(full)})")
         print("   k   lin mean  d mean  worst  <-2   srgb mean  d mean  worst  <-2      KB")
-        for k in range(1, 9):
+        for k in sorted(ks, key=lambda k: 9 if k == LINEAR else k):
+            label = "L" if k == LINEAR else str(k)
             cell = by.get((ratio, k))
             if not cell:
                 if (ratio, k) in skipped:
-                    print(f"   {k}   unreachable for {skipped[(ratio, k)]} images")
+                    print(f"   {label}   unreachable for {skipped[(ratio, k)]} images")
                 continue
             row = {"ratio": ratio, "k": k, "n": len(cell)}
-            line = f"   {k}"
+            line = f"   {label}"
             for kind in ("lin", "srgb"):
                 d = [cell[s][kind] - full[s][kind] for s in cell if s in full]
                 mean = statistics.mean(c[kind] for c in cell.values())
@@ -239,7 +272,9 @@ def main():
     # a later run against this one) stay in the work directory.
     pathlib.Path(args.out).write_text(json.dumps({
         "method": {"truth": f"{len(truths)} lossless PNGs ({pathlib.Path(args.truth).name})",
-                   "served": f"q{args.src_quality} 4:2:0", "quality": args.quality,
+                   "served": f"q{args.src_quality} {args.sampling}"
+                             f"{' progressive' if args.progressive else ''}",
+                   "quality": args.quality, "default_row": "k=linear (OXIMG_LINEAR_SHRINK)",
                    "references": ["linear-light Lanczos", "sRGB Lanczos"]},
         "cells": [rounded(c) for c in summary],
     }, indent=1) + "\n")

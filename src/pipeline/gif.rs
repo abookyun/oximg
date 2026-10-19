@@ -78,16 +78,16 @@ fn process_gif_src(
         return Ok(out);
     }
     let timing = crate::config::config().timing;
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     let (src_w, src_h, channels) = first_frame_into_chunk8(s, src, p)?;
     let t_dec = t0.elapsed();
 
-    let t1 = std::time::Instant::now();
+    let t1 = crate::clock::Instant::now();
     let (dst_w, dst_h) = fit_dims(src_w, src_h, p.max_width, p.max_height);
     resize_pixels_to(s, channels, src_w, src_h, dst_w, dst_h, p)?;
     let t_resize = t1.elapsed();
 
-    let t2 = std::time::Instant::now();
+    let t2 = crate::clock::Instant::now();
     let out = encode_output(s, dst_w, dst_h, channels, target, p, None)?;
     if timing {
         eprintln!(
@@ -377,7 +377,7 @@ fn try_animated(s: &mut Scratch, src: &[u8], p: &Resolved) -> Result<Option<Vec<
     let mut dirty = true;
     let (mut t_frames, mut t_encode) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
     loop {
-        let t = std::time::Instant::now();
+        let t = crate::clock::Instant::now();
         // A frame whose payload fails to decode ends the animation. The
         // scan above counted it from metadata alone, so this is where
         // truncation and corruption actually surface, and "show what
@@ -395,10 +395,10 @@ fn try_animated(s: &mut Scratch, src: &[u8], p: &Resolved) -> Result<Option<Vec<
         t_frames += t.elapsed();
 
         if emitted == 0 || (dirty && index % step == 0) {
-            let t = std::time::Instant::now();
+            let t = crate::clock::Instant::now();
             resize_pixels_to(s, 4, cw, ch, out_w, out_h, p)?;
             t_frames += t.elapsed();
-            let t = std::time::Instant::now();
+            let t = crate::clock::Instant::now();
             enc.add(&s.out8[..out_w * out_h * 4], ts)
                 .context(ServerFault)?;
             t_encode += t.elapsed();
@@ -410,7 +410,7 @@ fn try_animated(s: &mut Scratch, src: &[u8], p: &Resolved) -> Result<Option<Vec<
         // the previous frame's duration absorbs it.
         ts = ts.saturating_add(delay_ms(delay) as i32);
 
-        let t = std::time::Instant::now();
+        let t = crate::clock::Instant::now();
         // Disposal happens after the frame has been shown, and prepares
         // the canvas the next frame draws onto.
         match dispose {
@@ -434,7 +434,7 @@ fn try_animated(s: &mut Scratch, src: &[u8], p: &Resolved) -> Result<Option<Vec<
     if emitted < 2 {
         return Ok(None);
     }
-    let t = std::time::Instant::now();
+    let t = crate::clock::Instant::now();
     let out = enc.finish(ts).context(ServerFault)?;
     t_encode += t.elapsed();
     if cfg.timing {

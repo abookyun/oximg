@@ -1,0 +1,8 @@
+vendor/
+rust-worker/target/
+rust-worker/build/
+wasm-worker/target/
+wasm-worker/build/
+node_modules/
+.wrangler/
+.cloudflare/

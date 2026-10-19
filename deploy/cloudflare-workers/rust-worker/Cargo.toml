@@ -1,0 +1,27 @@
+[package]
+name = "oximg-cf-worker"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Standalone: not a member of the root package's (absent) workspace.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+worker = "0.8.7"
+oximg = { path = "../../..", default-features = false }
+console_error_panic_hook = "0.1.7"
+
+[patch.crates-io]
+# libc-crate gaps on wasm32-unknown-unknown; ../vendor.sh creates these
+# from the registry copies plus ../patches/.
+mozjpeg = { path = "../vendor/mozjpeg" }
+jpegli-sys = { path = "../vendor/jpegli-sys" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

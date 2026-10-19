@@ -301,6 +301,16 @@ fn dct_scale_num(
     8
 }
 
+/// Whether the default decode takes the linear-light 1/2 shrink
+/// (`jpeg_dec::DecompressStarted::linear_shrink`): only when the half-size
+/// decode still leaves at least 1.9x for the resampler in both
+/// dimensions, a reduction of about 3.8x or more. (1.9 rather than 2
+/// so that a 2040-wide photo fit into 512, 3.98x, qualifies.) Smaller
+/// reductions decode at full size.
+fn linear_shrink_applies(src_w: usize, src_h: usize, dst_w: usize, dst_h: usize) -> bool {
+    src_w.div_ceil(2) * 10 >= 19 * dst_w && src_h.div_ceil(2) * 10 >= 19 * dst_h
+}
+
 fn dct_margin() -> Option<f64> {
     crate::config::config().dct_margin
 }
@@ -1033,7 +1043,7 @@ pub fn gcs_startup() -> Result<(), String> {
 #[cfg(feature = "server")]
 pub fn fetch_url(url: &str) -> Result<Vec<u8>, Error> {
     clear_fetch_time();
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     let owned = url.to_string();
     let result = block_on_fetch(async move { fetch_url_async(&owned).await });
     record_fetch_time(t0.elapsed().as_secs_f64());
@@ -1048,7 +1058,7 @@ pub fn fetch_url(url: &str) -> Result<Vec<u8>, Error> {
 #[cfg(feature = "server")]
 pub fn fetch_gcs(bucket: &str, key: &str) -> Result<Vec<u8>, Error> {
     clear_fetch_time();
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     let (bucket, key) = (bucket.to_string(), key.to_string());
     let result = block_on_fetch(async move { fetch_gcs_async(&bucket, &key).await });
     record_fetch_time(t0.elapsed().as_secs_f64());

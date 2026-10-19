@@ -1,9 +1,10 @@
 [package]
 name = "oximg"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
-# The fuzz harness and the website are repo tools, not crate content.
-exclude = ["fuzz/", "site/"]
+# The fuzz harness, the website, the local gate, and the agent
+# instructions are repo tools, not crate content.
+exclude = ["fuzz/", "site/", "deploy/", "scripts/", ".githooks/", ".claude/", ".cursor/", ".grok/", "AGENTS.md", "CLAUDE.md"]
 # Bounded by pic-scale (1.89); verified by the CI msrv job.
 rust-version = "1.90"
 description = "High-performance image compression: library, CLI, and self-hostable server (PoC)."
@@ -12,6 +13,11 @@ readme = "README.md"
 repository = "https://github.com/oximg/oximg"
 keywords = ["image", "jpeg", "resize", "compression", "server"]
 categories = ["multimedia::images", "web-programming::http-server"]
+
+[build-dependencies]
+# Compiles src/pipeline/linear_shrink.c; already in the tree via every
+# -sys crate here.
+cc = "1"
 
 [dependencies]
 avif-parse = { version = "2", optional = true }
@@ -65,6 +71,19 @@ codegen-units = 1
 # Note: panic = "abort" must NOT be set; the libjpeg error handlers (the
 # mozjpeg crate's and src/pipeline/jpeg_dec.rs) rely on unwinding.
 
+# The edit-build-test loop: release codegen without fat LTO, so a
+# one-line edit relinks in seconds instead of rebuilding for ~100 s.
+# Output matches release byte for byte on every fixture cell both
+# answer with 200 (oximg-ctl parity: 192 cells on amd64 with avif;
+# 132 with default features, on amd64 and on QEMU-emulated aarch64), but
+# every performance number still comes from `--release`
+# (bench/METHODOLOGY.md).
+[profile.agent]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 pic-scale = "0.7"
 
@@ -93,7 +112,7 @@ required-features = ["server"]
 # the server binary so `cargo test` builds both together.
 [[bin]]
 name = "oximg-ctl"
-path = "src/bin/oximg-ctl.rs"
+path = "src/bin/oximg-ctl/main.rs"
 required-features = ["server"]
 
 # Benchmark/dev tools live under bench/tools/ (kept out of examples/,

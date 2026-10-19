@@ -369,6 +369,176 @@ fn unknown_png_effort_warns_and_uses_the_default() {
     }
 }
 
+/// A 1600x1200 photo-like JPEG for the decode-scale policy, with chroma
+/// sampled at the given pixel sizes ((2, 2) is 4:2:0).
+fn policy_source(name: &str, chroma: (u8, u8)) -> std::path::PathBuf {
+    let (w, h) = (1600, 1200);
+    let mut seed = 0x9E3779B9u32;
+    let mut px = Vec::with_capacity(w * h * 3);
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..3 {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                px.push((x * 170 / w + y * 50 / h + c * 5 + (seed >> 28) as usize) as u8);
+            }
+        }
+    }
+    let mut comp = mozjpeg::Compress::new(mozjpeg::ColorSpace::JCS_RGB);
+    comp.set_size(w, h);
+    comp.set_quality(90.0);
+    comp.set_chroma_sampling_pixel_sizes(chroma, chroma);
+    let mut started = comp.start_compress(Vec::new()).unwrap();
+    started.write_scanlines(&px).unwrap();
+    let path = tmp(name);
+    std::fs::write(&path, started.finish().unwrap()).unwrap();
+    path
+}
+
+/// The same 1600x1200 scene as a single-component grayscale JPEG.
+fn policy_source_gray(name: &str) -> std::path::PathBuf {
+    let (w, h) = (1600, 1200);
+    let mut seed = 0x9E3779B9u32;
+    let mut px = Vec::with_capacity(w * h);
+    for y in 0..h {
+        for x in 0..w {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            px.push((x * 170 / w + y * 50 / h + (seed >> 28) as usize) as u8);
+        }
+    }
+    let mut comp = mozjpeg::Compress::new(mozjpeg::ColorSpace::JCS_GRAYSCALE);
+    comp.set_size(w, h);
+    comp.set_quality(90.0);
+    let mut started = comp.start_compress(Vec::new()).unwrap();
+    started.write_scanlines(&px).unwrap();
+    let path = tmp(name);
+    std::fs::write(&path, started.finish().unwrap()).unwrap();
+    path
+}
+
+/// Grayscale sources take the same policy as 4:2:0: half size at 4x
+/// and at the boundary, full size past it, below it, and when off.
+#[test]
+fn linear_shrink_policy_covers_grayscale() {
+    let src = policy_source_gray("policy-gray.jpg");
+    let (full, half) = ((1600, 1200), (800, 600));
+    assert_eq!(decode_size(&src, 400, &[]).0, half);
+    assert_eq!(decode_size(&src, 420, &[]).0, half);
+    assert_eq!(decode_size(&src, 421, &[]).0, full);
+    let (dims, on) = decode_size(&src, 533, &[]);
+    assert_eq!(dims, full);
+    let (_, off) = decode_size(&src, 533, &[("OXIMG_LINEAR_SHRINK", "0")]);
+    assert!(on == off, "below 1.9x left, the output must not change");
+    assert_eq!(
+        decode_size(&src, 400, &[("OXIMG_LINEAR_SHRINK", "0")]).0,
+        full
+    );
+    std::fs::remove_file(&src).ok();
+}
+
+/// Resize `src` to `width` wide with OXIMG_TIMING on; returns the
+/// decoded size the timing line reports and the output bytes.
+fn decode_size(
+    src: &std::path::Path,
+    width: u32,
+    env: &[(&str, &str)],
+) -> ((usize, usize), Vec<u8>) {
+    // Named after the source too: the policy tests run in parallel.
+    let out = tmp(&format!(
+        "out-{}-{width}-{}.jpg",
+        src.file_stem().unwrap().to_string_lossy(),
+        env.len()
+    ));
+    let mut cmd = bin();
+    cmd.args(["resize"])
+        .arg(src)
+        .args([&width.to_string(), "0"])
+        .arg(&out)
+        .env("OXIMG_TIMING", "1");
+    for k in [
+        "OXIMG_DCT_MARGIN",
+        "OXIMG_LINEAR_SHRINK",
+        "OXIMG_RESIZE",
+        "OXIMG_RESIZE_BACKEND",
+    ] {
+        cmd.env_remove(k);
+    }
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let output = cmd.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let line = stderr
+        .lines()
+        .find(|l| l.starts_with("timing "))
+        .unwrap_or_else(|| panic!("no timing line: {stderr}"));
+    let dims = &line[line.find('(').unwrap() + 1..];
+    let (w, rest) = dims.split_once('x').unwrap();
+    let h: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    let bytes = std::fs::read(&out).unwrap();
+    std::fs::remove_file(&out).ok();
+    ((w.parse().unwrap(), h.parse().unwrap()), bytes)
+}
+
+/// The default decode takes the linear-light 1/2 shrink once the half
+/// size leaves at least 1.9x for the resampler, and decodes at full
+/// size otherwise, when disabled, under the sRGB resize, or when a
+/// margin is asked for.
+#[test]
+fn linear_shrink_policy_picks_the_decode_size() {
+    let src = policy_source("policy.jpg", (2, 2));
+    let full = (1600, 1200);
+    let half = (800, 600);
+    // 4x, the last width inside the 1.9x boundary (420x315: 8000 >= 19 * 420
+    // and 6000 >= 19 * 315), and the first one past it.
+    assert_eq!(decode_size(&src, 400, &[]).0, half);
+    assert_eq!(decode_size(&src, 420, &[]).0, half);
+    assert_eq!(decode_size(&src, 421, &[]).0, full);
+    // Below the threshold the default is exactly the full decode.
+    let (dims, default_3x) = decode_size(&src, 533, &[]);
+    assert_eq!(dims, full);
+    let (_, off_3x) = decode_size(&src, 533, &[("OXIMG_LINEAR_SHRINK", "0")]);
+    assert!(
+        default_3x == off_3x,
+        "below 1.9x left, the output must not change"
+    );
+    // Off switches.
+    assert_eq!(
+        decode_size(&src, 400, &[("OXIMG_LINEAR_SHRINK", "0")]).0,
+        full
+    );
+    assert_eq!(decode_size(&src, 400, &[("OXIMG_RESIZE", "srgb")]).0, full);
+    // A margin keeps libjpeg's own scaling: same size, different pixels.
+    let (dims, stock) = decode_size(&src, 400, &[("OXIMG_DCT_MARGIN", "2.0")]);
+    assert_eq!(dims, half);
+    let (_, linear) = decode_size(&src, 400, &[]);
+    assert!(stock != linear, "a margin must not take the linear shrink");
+    std::fs::remove_file(&src).ok();
+    // 4:2:2 and 4:4:4 chroma decode at full size at any reduction.
+    for chroma in [(2, 1), (1, 1)] {
+        let src = policy_source(&format!("policy-{}x{}.jpg", chroma.0, chroma.1), chroma);
+        assert_eq!(decode_size(&src, 400, &[]).0, full, "{chroma:?}");
+        std::fs::remove_file(&src).ok();
+    }
+}
+
+#[test]
+fn linear_shrink_knob_is_fail_closed() {
+    let out = tmp("bad-shrink.jpg");
+    let output = bin()
+        .args(["resize", &fixture("photo.jpg"), "100", "100"])
+        .arg(&out)
+        .env("OXIMG_LINEAR_SHRINK", "off")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!out.exists(), "nothing may be written on a fatal config");
+}
+
 /// The fallback is scoped to effort: its fail-closed neighbours in the
 /// same table still refuse to start.
 #[test]

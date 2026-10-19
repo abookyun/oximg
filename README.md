@@ -14,8 +14,9 @@ imgproxy's official benchmark harness, run on
 the same AWS instance types as their published results, oximg led
 every format cell on both x86-64 and Graviton (2026-07, a pre-0.11
 build) while resizing in linear light at measurably higher output
-quality; 0.13.0 still leads on JPEG by 7-13% on a Zen 4 re-run, with
-AWS pending (see [Benchmarks](#benchmarks)).
+quality. On the same harness shape re-run locally, 0.14.0 leads
+imgproxy 4.0.17 on JPEG by 1.22-1.28x (Intel i7-1360P), with AWS
+pending (see [Benchmarks](#benchmarks)).
 
 ## Features
 
@@ -44,13 +45,19 @@ AWS pending (see [Benchmarks](#benchmarks)).
   16-bit samples with Lanczos3, JPEG sources are decoded at full size
   so the whole reduction is the resampler's, and alpha is premultiplied
   across the resample — the properties behind the SSIMULACRA2 scores in
-  [Benchmarks](#benchmarks). Shrink-on-load is available
-  (`OXIMG_DCT_MARGIN`) and off by default: it buys decode time with
-  quality. Against a lossless ground truth (100 DIV2K photographs,
-  linear-light reference), full decode scores best at every ratio from
-  2x to 14x, and the 3/8
-  scale the old default picked at 5.3x costs 6.4 SSIMULACRA2 points on
-  average, for the same output size and the same bytes.
+  [Benchmarks](#benchmarks). The one exception is a reduction large
+  enough that a half-size decode of a 4:2:0 source still leaves 1.9x
+  for the resampler.
+  There luma decodes at 1/2 through a linear-light 2x2 average of the
+  full IDCT (`OXIMG_LINEAR_SHRINK`). That costs 0.3 SSIMULACRA2 at
+  4x and nothing measurable from 5.3x up, where libjpeg's own 1/2
+  costs 2.7. libjpeg's shrink-on-load (`OXIMG_DCT_MARGIN`) is
+  available and off by default: it buys decode time with quality.
+  Against a lossless ground truth (100 DIV2K photographs, linear-light
+  reference), full decode scores best at every ratio from 2x to 14x,
+  and the 3/8 scale the old default picked at 5.3x costs 6.4
+  SSIMULACRA2 points on average, for the same output size and the
+  same bytes.
 - **Performance as architecture, not flags**: per-arch row-streaming
   SIMD resize kernels (AVX2 on x86-64, NEON on aarch64, both verified
   against an f64 reference), JPEG decode fused with resize+encode on a
@@ -76,7 +83,7 @@ combines with any encode column:
 
 | Format | Decode | Encode |
 |---|---|---|
-| JPEG | baseline & progressive, grayscale; streaming, full-size decode (shrink-on-load opt-in) | jpegli progressive (default), mozjpeg profiles via `PRESET` |
+| JPEG | baseline, extended sequential (SOF1) & progressive, grayscale; streaming, full-size decode (4:2:0 luma at 1/2 in linear light from ~3.8x; libjpeg shrink-on-load opt-in) | jpegli progressive (default) or sequential (SOF1, `OXIMG_JPEG_PROGRESSIVE=0`), mozjpeg profiles via `PRESET` |
 | PNG | palette / grayscale / 16-bit, normalized to RGB(A)8 | lossless RGB(A); opt-in palette quantization (`OXIMG_PNG_QUANTIZE`) |
 | WebP | lossy & lossless, alpha | lossy (`OXIMG_WEBP_QUALITY`, 75), alpha; output is scaled to fit WebP's 16383 px limit |
 | AVIF (`--features avif`) | dav1d: 8/10/12-bit, all subsamplings, alpha | SVT-AV1: 10-bit 4:2:0, tune=ssim, alpha as auxiliary image |
@@ -161,9 +168,12 @@ extraction entirely, so it also selects the naive conversion.
 ```
 source bytes (local file or HTTP origin)
   → format sniff → decode
-      JPEG: mozjpeg streaming decode at full size (shrink-on-load is
-            opt-in via OXIMG_DCT_MARGIN; CMYK/YCCK keep it at 1.7x,
-            where it caps a staged frame instead of costing quality)
+      JPEG: libjpeg-turbo streaming decode at full size; luma at 1/2
+            via a linear-light 2x2 average when that still leaves 1.9x
+            for the resampler (OXIMG_LINEAR_SHRINK). libjpeg's own
+            shrink-on-load is opt-in via OXIMG_DCT_MARGIN; CMYK/YCCK
+            keep it at 1.7x, where it caps a staged frame instead of
+            costing quality
       PNG:  png crate (palette/gray/16-bit normalized to RGB(A)8)
       WebP: libwebp
       AVIF: dav1d (8/10/12-bit, all subsamplings, alpha, bilinear chroma upsampling)
@@ -192,10 +202,13 @@ layer (axum/tokio) only does queueing and IO.
 imgproxy's official harness (DIV2K corpus over nginx, fit into 512x512,
 k6, all defaults) on the AWS instance types behind imgproxy's published
 numbers — req/s, higher is better, p95 in parentheses. Measured
-2026-07-05 on a pre-0.11 build. Since 0.11.0, JPEG sources decode at
-full size, so the JPEG column and the JPEG-source cells overstate
-current releases. On the same harness shape on a Ryzen 7 8745HS
-(2026-10-01), 0.13.0 leads imgproxy 4.0.17 by 7-13% on JPEG→JPEG
+2026-07-05 on a pre-0.11 build, whose JPEG decode policy differs from
+today's. 0.11-0.13 decoded JPEG sources at full size, and 0.14 takes
+a linear-light half-size luma decode for 4:2:0 sources reduced about
+3.8x or more. The JPEG column and the JPEG-source cells are therefore
+not current numbers. On the same harness shape, re-run locally on an
+Intel i7-1360P (2026-10-02), 0.14.0 leads imgproxy 4.0.17 by
+1.22-1.28x on JPEG→JPEG
 ([BENCH.md](BENCH.md#jpeg-sources-since-011-2026-10)). An AWS
 re-measurement is pending
 ([#63](https://github.com/oximg/oximg/issues/63)).
@@ -511,7 +524,7 @@ never silently falls back to a default.
 |---|---|---|
 | `QUALITY` | `80` | JPEG quality |
 | `PRESET` | `jpegli` | `fast` = mozjpeg baseline, `small` = mozjpeg trellis+progressive |
-| `OXIMG_JPEG_PROGRESSIVE` | `1` | `0` = baseline jpegli: a few percent larger output for lower latency; with `OXIMG_OVERLAP` this is the speed profile (~-13% single-request latency, ~+9% saturated throughput) |
+| `OXIMG_JPEG_PROGRESSIVE` | `1` | `0` = sequential jpegli (SOF1, extended sequential; not baseline SOF0): a few percent larger output for lower latency; with `OXIMG_OVERLAP` this is the speed profile (~-13% single-request latency, ~+9% saturated throughput) |
 | `OXIMG_WEBP_QUALITY` | `75` | WebP quality |
 | `OXIMG_WEBP_EFFORT` | `2` | libwebp `method` |
 | `OXIMG_AVIF_QUALITY` | `55` | AVIF quality (libavif semantics; chosen by operating point, see [bench/quality/QUALITY.md](bench/quality/QUALITY.md)) |
@@ -618,14 +631,24 @@ which makes it `OXIMG_MAX_ANIM_WORK`, not the canvas, that bounds it.
 | `OXIMG_OVERLAP` | `auto` | JPEG decode fused with resize+encode on a second thread (~-20% single-request latency); `auto` fuses while `2 x active requests <= visible CPUs`. Bytes are identical either way |
 | `OXIMG_PAR` | `1` | Resize threads per request |
 | `OXIMG_DCT_MARGIN` | unset | Decode-size headroom over the target: shrink-on-load, off by default. It is a **speed** knob. Scored against a lossless ground truth (100 DIV2K photographs, linear-light Lanczos reference, [dct_sweep.py](bench/quality/dct_sweep.py)), full decode is the best cell at every ratio from 2x to 14x. On a 5.3x downscale the 1.7 that used to be the default selects libjpeg's 3/8 scale: 6.4 SSIMULACRA2 points below a full decode on average, 42 on the worst image, for the same output size and the same bytes. The 1/2 scale costs 7.1 points at 2x and 2.7 at 4x. Only 6/8 stays within 0.5 at every ratio where it is reachable. Against an sRGB-space reference the 1/4 and 1/2 scales score higher than a full decode instead, so the reference decides that comparison ([#60](https://github.com/oximg/oximg/issues/60)). Set it to trade quality for decode time on large sources. The **buffered** paths ignore the default and keep 1.7 — CMYK/YCCK JPEG and WebP stage a whole frame at the decode size, so there the shrink caps peak RSS (WebP 21.7 MB against 133.9 MB full-size) rather than costing throughput; an explicit value still applies to them |
+| `OXIMG_LINEAR_SHRINK` | `1` | With `OXIMG_DCT_MARGIN` unset, a 4:2:0 or grayscale JPEG whose half-size decode still leaves 1.9x for the resampler decodes luma at 1/2 scale. That is a reduction of about 3.8x or more, e.g. a 2040-wide photo into 512. The decode keeps the full 8x8 IDCT a full decode runs and averages each 2x2 in linear light, instead of running libjpeg's gamma-space 4x4 IDCT. Against a lossless ground truth (100 DIV2K photographs, q92 4:2:0 sources, linear-light reference) it costs 0.3 SSIMULACRA2 on average at 4x (worst image -0.99) and nothing measurable from 5.3x up; libjpeg's own 1/2 costs 2.7 (worst 24). Server CPU per request at fit 512 drops 11-14% on Zen 4 and about 12% on Apple M2. Smaller reductions are untouched, and so are 4:2:2 and 4:4:4 sources: their reduced chroma pairs badly with linear luma (4x: -0.94 and -0.69 on average, worst images -6.6 and -4.1). `0` decodes at full size for every reduction |
 | `OXIMG_WEBP_DECODE_THREADS` | `1` | `0` disables libwebp's two-thread decode pipelining |
 | `OXIMG_AVIF_DECODE_THREADS` | arch-dependent | dav1d workers: 2 on x86-64 (SMT absorbs the second thread), 1 on aarch64 |
 | `OXIMG_TIMING` | unset | Print per-stage timing lines to stderr |
 
 ## Deployment
 
+The primary hosted targets are **Cloud Run**, **Cloudflare Containers**
+and **Cloudflare Workers** (experimental, wasm). Render, Railway and
+Fly.io are next. [Deployment targets](docs/deploy-targets.md) compares
+them with measured cost per transform and cold start, and
+[`deploy/`](deploy/) holds a deploy script or config for each.
+
 Per-platform guides live in [`docs/`](docs/):
 
+- [Cloudflare Containers & Workers](docs/deploy-cloudflare.md) — the
+  released image behind a Worker with URL-hashed instances, the
+  container-sleep pitfall, and what the wasm build can and cannot do.
 - [Docker / docker-compose](docs/deploy-docker.md) — tag pinning
   (`latest` rebuilds on every main push), read-only mounts, remote
   origins, graceful `docker stop`, building tuned images.

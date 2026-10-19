@@ -71,8 +71,8 @@ knob is a startup error, never a silent default.
 
 ```ruby
 Oximg.available?  #=> true
-Oximg.executable  #=> "/…/gems/oximg-0.10.1-arm64-darwin/exe/oximg"
-Oximg.version     #=> "0.10.1"   # the binary's version, not the gem's
+Oximg.executable  #=> "/…/gems/oximg-0.14.0-arm64-darwin/exe/oximg"
+Oximg.version     #=> "0.14.0"   # the binary's version, not the gem's
 ```
 
 The gem shells out to that binary — one process per image, which is
