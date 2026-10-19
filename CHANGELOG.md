@@ -10,6 +10,35 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-19
+
+Small JPEG outputs get smaller ([#61]). An output of at most 12,000
+pixels (a 128x85 thumbnail) is now written sequential instead of
+progressive, and every sequential output carries optimized Huffman
+tables. Pixels are identical to 0.14.0. Across the test fixtures at
+five sizes, 108 of 330 responses change bytes, all of them JPEGs of
+at most 12,000 pixels with identical decoded pixels, and fixture JPEG
+bytes drop 3.3% in total. Every other fixture response is
+byte-identical to 0.14.0, and larger outputs do not change. Library
+and HTTP APIs are unchanged.
+
+On imgproxy's benchmark shape (100 DIV2K photographs, fit 512 q80,
+k6, 2 VUs), measured on a Ryzen 7 8745HS (Zen 4) in 3 rotated rounds
+per cell, all cells passing every check:
+
+| | one SMT pair | two cores |
+|---|---|---|
+| 0.14.0 | 155.0 req/s | 194.9 |
+| **0.15.0** | **158.2** | **197.6** |
+| imgproxy 4.0.17 | 120.9 | 159.6 |
+
+0.15.0 does 1.4-2.0% more req/s than 0.14.0 at 1.8-2.0% less server
+CPU per request, from the linear-light shrink's pair table, and
+1.24-1.31x imgproxy. Output averages 44,994 bytes per image, the same
+as 0.14.0 (imgproxy 42,571). The harness ran on f1c65b4, one commit
+before the 12,000-pixel threshold, which does not apply to these
+512-pixel outputs.
+
 ### Added
 
 - **`oximg-ctl parity --against OTHER/oximg` compares two builds byte
@@ -28,14 +57,6 @@ HTTP interface without notice.
   instances, so request coalescing still works. The Workers build
   (experimental) compiles the pipeline to wasm: output matches native
   on the test fixtures at 3–6× the CPU, with no AVIF and no signing.
-
-### Fixed
-
-- **The pipeline no longer panics on `wasm32-unknown-unknown`.** Every
-  request there trapped in the stage timers (`std::time::Instant` has
-  no clock on that target). Building for it still takes a C sysroot and
-  two crate patches; see `deploy/cloudflare-workers/`. Native output is
-  unchanged.
 
 ### Changed
 
@@ -80,6 +101,11 @@ HTTP interface without notice.
 
 ### Fixed
 
+- **The pipeline no longer panics on `wasm32-unknown-unknown`.** Every
+  request there trapped in the stage timers (`std::time::Instant` has
+  no clock on that target). Building for it still takes a C sysroot and
+  two crate patches; see `deploy/cloudflare-workers/`. Native output is
+  unchanged.
 - **Sequential jpegli output (`OXIMG_JPEG_PROGRESSIVE=0`) uses
   optimized Huffman tables.** jpegli's defaults left it on the standard
   tables, which made sequential files 11-58% larger than progressive
@@ -89,6 +115,10 @@ HTTP interface without notice.
   on large graphics (Zen 4). Pixels are unchanged. The same defaults
   were behind the size regression in [#79], which was reverted before
   it shipped.
+- **Remote-source fetches use rustls 0.23.46.** 0.23.45 cached the
+  key-share group a server picked before the handshake was
+  authenticated, so an on-path attacker could downgrade later
+  connections to that host to classical-only key exchange.
 
 ## [0.14.0] - 2026-10-02
 
@@ -1770,7 +1800,8 @@ did, in any output format.
   concurrency pinned to the core count — published to crates.io via
   Trusted Publishing.
 
-[unreleased]: https://github.com/oximg/oximg/compare/v0.14.0...HEAD
+[unreleased]: https://github.com/oximg/oximg/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/oximg/oximg/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/oximg/oximg/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/oximg/oximg/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/oximg/oximg/compare/v0.11.0...v0.12.0
