@@ -1065,11 +1065,16 @@ fn jpegli_scan_script_and_the_sequential_cases() {
         let (sof, scans) = common::jpeg_scans(&s.get(url).unwrap().2);
         assert_eq!((sof, scans), (0xC2, script.clone()), "{url}");
     }
-    // The default threshold covers a 100x75 thumbnail.
+    // The default threshold (12000) covers a 100x75 thumbnail but not
+    // 160x120 (19200), where sequential stops paying for itself.
     let s = Server::start(&[]);
     for url in small {
         let (sof, _) = common::jpeg_scans(&s.get(url).unwrap().2);
         assert_eq!(sof, 0xC1, "default {url}: not sequential");
+    }
+    for url in ["/resize/160/120/photo.jpg", "/resize/160/120/rgb.png@jpg"] {
+        let (sof, _) = common::jpeg_scans(&s.get(url).unwrap().2);
+        assert_eq!(sof, 0xC2, "default {url}: not progressive");
     }
     let s = Server::start(&[("OXIMG_JPEG_PROGRESSIVE", "0".into())]);
     for url in large.iter().chain(&small) {
