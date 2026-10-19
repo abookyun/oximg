@@ -57,11 +57,13 @@ PIXELS = [
     ("noaq-420", {"OXIMG_X_AQ": "0", "OXIMG_X_SAMPLING": "420"}),
 ]
 # Sequential with jpegli's default fixed Huffman tables, sequential
-# with optimized tables, and progressive (always optimized).
+# with optimized tables, and progressive (always optimized). P pins
+# OXIMG_JPEG_SEQUENTIAL_PIXELS=0: on builds that have it, the default
+# writes small outputs sequential, which would mislabel the baseline.
 SCANS = [
     ("S", {"OXIMG_JPEG_PROGRESSIVE": "0"}),
     ("O", {"OXIMG_JPEG_PROGRESSIVE": "0", "OXIMG_X_OPT": "1"}),
-    ("P", {}),
+    ("P", {"OXIMG_JPEG_SEQUENTIAL_PIXELS": "0"}),
 ]
 BASE = "P/aq-444"
 # The encode time, or the fused decode+encode total where the two
