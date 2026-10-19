@@ -47,17 +47,19 @@ HTTP interface without notice.
   each row. Serial and fused decodes both take this path. Output is
   bit-identical.
 
-  Measured on DIV2K, Zen 4, fit 512 q80, at the default full decode.
-  Each figure is the change in user cycles and instructions per
-  request for the h75 and q92 sets:
+  It applies wherever the decode stays at full scale: reductions below
+  the linear half-size decode's 4x, every 4:2:2 source, and
+  `OXIMG_LINEAR_SHRINK=0`. Measured on DIV2K, Zen 4, q80. Each figure
+  is the change in user cycles per request for the h75 and q92 sets:
 
-  | server | cycles | instructions |
+  | fit | server | cycles |
   |---|---|---|
-  | one logical CPU | -3.0%, -3.2% | -5.4%, -4.5% |
-  | fused, on one SMT pair | -3.0%, -2.1% | -5.4%, -4.4% |
+  | 1024 | one logical CPU | -2.9%, -2.4% |
+  | 1024 | fused, on one SMT pair | -4.9%, -3.8% |
+  | 512, `OXIMG_LINEAR_SHRINK=0` | one logical CPU | -4.1%, -3.7% |
 
-  Sources decoded at a reduced DCT scale (`OXIMG_DCT_MARGIN`) are
-  unchanged.
+  At fit 512 with the defaults, DIV2K takes the half-size decode, and
+  its cycles do not change.
 - **The linear-light half-size decode reads two neighbouring pixels per
   table lookup.** Two horizontal neighbours sum through one 64K-entry
   table instead of two 256-entry ones. Output is bit-identical. Decode
