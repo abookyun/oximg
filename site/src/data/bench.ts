@@ -33,7 +33,7 @@ export const harness = {
   // These are pre-0.11 results; the JPEG cells are not current numbers
   // (BENCH.md, "JPEG sources since 0.11", has the re-runs).
   caveat:
-    "Measured on a pre-0.11 build. On a 2026-10 local re-run of the JPEG cell (Intel i7-1360P), 0.14.0 leads imgproxy 4.0.17 by 1.22–1.28×",
+    "Measured on a pre-0.11 build. On a 2026-10 local re-run of the JPEG cell (AMD Ryzen 7 8745HS), 0.15.0 leads imgproxy 4.0.17 by 1.24–1.31×",
   caveatSource: `${REPO}/BENCH.md#jpeg-sources-since-011-2026-10`,
   runs: [
     {
