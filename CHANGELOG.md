@@ -10,6 +10,13 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Remote-source fetches no longer trust the distrusted emSign
+  roots.** webpki-roots 1.0.10 drops emSign ECC Root CA - G3, and
+  rustls-webpki 0.103.16 stops accepting certificate paths through
+  distrusted intermediates (RUSTSEC-2026-0381, RUSTSEC-2026-0382).
+
 ## [0.15.0] - 2026-10-19
 
 Small JPEG outputs get smaller ([#61]). An output of at most 12,000
