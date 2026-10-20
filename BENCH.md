@@ -67,6 +67,29 @@ than 0.13.0. Output averages 45.0 KB per image, against 45.6 KB for
 0.13.0 and 42.6 KB for imgproxy. The two tables come from different
 CPUs, so compare within a table, not across them.
 
+**0.15.0** (2026-10-19), back on the Ryzen 7 8745HS. Its changes
+for this cell are the linear-light shrink's pair-table lookup
+([#84](https://github.com/oximg/oximg/pull/84)); this cell's outputs
+are byte-identical to 0.14.0. Same shape as the 0.13.0 table: server
+on one SMT pair or two physical cores, k6 and nginx on 7,15, rotated
+order, 3 rounds at 2 VUs, all 18 cells with 0 failed checks. The
+binary was f1c65b4, one commit before the 12,000-pixel sequential
+threshold and before #77's raw YCbCr path. Neither applies here:
+512-pixel outputs are above the threshold, and DIV2K at fit 512 takes
+the half-size decode rather than the full-scale decode #77 speeds up.
+
+| server | SMT pair, 2 VUs | 2 cores, 2 VUs |
+|---|---|---|
+| oximg 0.14.0 | 155.0 (12.6) | 194.9 (8.9) |
+| **oximg 0.15.0** | **158.2** (12.3) | **197.6** (8.7) |
+| imgproxy 4.0.17 | 120.9 (15.3) | 159.6 (11.0) |
+
+0.15.0 leads imgproxy by 1.24-1.31x here and does 1.4-2.0% more req/s
+than 0.14.0 at 1.8-2.0% less CPU per request. Output averages 44,994
+bytes per image for both oximg releases and 42,571 for imgproxy.
+Against the 0.13.0 table on the same CPU (2026-10-01), imgproxy is
+within 5% and oximg is 1.16-1.28x faster.
+
 ## Linux x86_64 (AMD Ryzen 7 8745HS, 8C/16T, Arch Linux)
 
 All servers as Docker containers: oximg (this repo's Dockerfile),
