@@ -14,9 +14,9 @@ imgproxy's official benchmark harness, run on
 the same AWS instance types as their published results, oximg led
 every format cell on both x86-64 and Graviton (2026-07, a pre-0.11
 build) while resizing in linear light at measurably higher output
-quality. On the same harness shape re-run locally, 0.14.0 leads
-imgproxy 4.0.17 on JPEG by 1.22-1.28x (Intel i7-1360P), with AWS
-pending (see [Benchmarks](#benchmarks)).
+quality. On the same harness shape re-run locally, 0.15.0 leads
+imgproxy 4.0.17 on JPEG by 1.24-1.31x (AMD Ryzen 7 8745HS, Zen 4),
+with AWS pending (see [Benchmarks](#benchmarks)).
 
 ## Features
 
@@ -209,8 +209,8 @@ today's. 0.11-0.13 decoded JPEG sources at full size, and 0.14 takes
 a linear-light half-size luma decode for 4:2:0 sources reduced about
 3.8x or more. The JPEG column and the JPEG-source cells are therefore
 not current numbers. On the same harness shape, re-run locally on an
-Intel i7-1360P (2026-10-02), 0.14.0 leads imgproxy 4.0.17 by
-1.22-1.28x on JPEG→JPEG
+AMD Ryzen 7 8745HS (Zen 4, 2026-10-19), 0.15.0 leads imgproxy 4.0.17
+by 1.24-1.31x on JPEG→JPEG
 ([BENCH.md](BENCH.md#jpeg-sources-since-011-2026-10)). An AWS
 re-measurement is pending
 ([#63](https://github.com/oximg/oximg/issues/63)).
