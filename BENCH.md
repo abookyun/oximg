@@ -185,10 +185,10 @@ generally perceptible; both oximg profiles decode to identical pixels
 — sequential (SOF1) vs progressive jpegli differ only in entropy layout).
 Smooth synthetic noise is the content where oximg's supersampled
 linear-light resize matters least; on the real-photo corpus the same
-q80 comparison is **77.5 / 72.1 / 67.3 vs imgproxy's 71.2 / 60.1 /
-49.7** for 768px/2000px/4000px sources — +6 to +18 points, with
-imgproxy unable to close it at any byte cost (63.8 KB at q90 still
-scores 76.0 vs oximg's 77.5 from 34.0 KB). Full protocol and sweeps
+q80 comparison on 0.15.0 is **77.5 / 77.1 / 75.9 vs imgproxy 4.0.17's
+71.2 / 65.8 / 56.2** for 768px/2000px/4000px sources, +6 to +20
+points. imgproxy passes oximg's q80 score only at q90: 78.7 from
+62.5 KB, against oximg's 77.5 from 34.2 KB. Full protocol and sweeps
 in [bench/quality/QUALITY.md](bench/quality/QUALITY.md).
 
 Both oximg rows are the auto overlap gate composing one pipeline:

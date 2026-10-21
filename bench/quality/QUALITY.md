@@ -27,10 +27,14 @@ be reproduced by the harness that claimed it. Both are fixed, so the
 numbers below differ from earlier revisions for that reason as well as
 the decode-scale change described under Group B.
 
-Contenders: oximg (this repo), imgproxy (Homebrew 4.0.9 and Docker
-v4.0.11 produce identical scores) with per-URL `quality:N`, imagor
-v1.9.2 (Docker), sharp 0.34 with bundled libvips (`mozjpeg:false/true`),
-and ImageMagick's plain libjpeg-turbo encode.
+Contenders: oximg (this repo), imgproxy with per-URL `quality:N`,
+imagor v1.9.2 (Docker), sharp with bundled libvips
+(`mozjpeg:false/true`), and ImageMagick's plain libjpeg-turbo encode.
+Group B was last run (2026-10-21) with imgproxy 4.0.17 (Homebrew) and
+sharp 0.35.3. Group A's table is from the earlier run, which used
+imgproxy 4.0.9 (Homebrew 4.0.9 and Docker v4.0.11 produce identical
+scores) and sharp 0.34; the 2026-10 run reproduced its oximg-jpegli
+figures (-9.6% at S=70, -12.2% at S=80).
 
 ## Group A — encoder isolation
 
@@ -51,24 +55,49 @@ CPU of the mozjpeg trellis path (`PRESET=small`).
 
 ## Group B — end-to-end (q80, scored vs linear-light reference)
 
-> Measured before 0.14.0. 0.14 decodes 4:2:0 sources reduced about
-> 3.8x or more through a linear-light half-size luma decode
-> ([#60](https://github.com/oximg/oximg/issues/60)), which can move the
-> medium (2000px into 500) and large (4000px into 500) rows if their
-> sources are 4:2:0. The Kodak row (768px into 500) is not affected.
-> Not yet re-run.
+Re-run on oximg 0.15.0 (main at 4ccb5f0 and later), imgproxy 4.0.17
+(Homebrew) and sharp 0.35.3, 2026-10-21. All 3456 outputs matched the
+reference dimensions.
 
 | Source | oximg (defaults, jpegli) | oximg `PRESET=fast` | imgproxy default | sharp default | imagor 1.9.2* |
 |---|---|---|---|---|---|
 | Kodak 768px (n=24) | **77.5** | 76.0 | 71.2 | 71.2 | 71.2 |
-| medium 2000px (n=12) | **77.5** | 76.4 | 65.8 | 65.8 | 60.1 |
-| large 4000px (n=12) | **77.3** | 76.1 | 56.2 | 58.0 | 51.6 |
+| medium 2000px (n=12) | **77.1** | 76.3 | 65.8 | 65.8 | 60.1 |
+| large 4000px (n=12) | **75.9** | 74.9 | 56.2 | 58.0 | 51.6 |
 
 \* imagor is not driven by `run.py`; its column is carried over from the
 earlier 3-image run and is on the old corpus.
 
-**Shrink-on-load was the ceiling here, not the encoder.** These rows
-were 77.5 / 74.7 / 71.4 until 2026-08, when JPEG shrink-on-load stopped
+**What changed since the 0.13 run.** The medium and large rows dropped
+0.4 and 1.4 points (they were 77.5 and 77.3). Their sources are 4:2:0,
+reduced 4x and 8x into 500 px, so 0.14's linear-light half-size luma
+decode ([#60](https://github.com/oximg/oximg/issues/60)) applies to
+them. With `OXIMG_LINEAR_SHRINK=0` the same build scores 77.54 and
+77.30, the old rows exactly. imgproxy's and sharp's scores are
+unchanged on newer releases. So the whole delta is that decode:
+
+| q80, jpegli | default | `OXIMG_LINEAR_SHRINK=0` | delta (worst image) |
+|---|---|---|---|
+| medium, 4x | 77.07 (33.6 KB) | 77.54 (34.2 KB) | −0.46 (−0.91) |
+| large, 8x | 75.90 (34.1 KB) | 77.30 (34.2 KB) | −1.40 (−2.67) |
+
+That is more than the decode's own measurement, which found −0.3 at 4x
+and nothing measurable from 5.3x up (`dct_sweep.py`, 100 DIV2K
+photographs). The two corpora differ in a way that matters here:
+- **dct_sweep.py scores against a lossless truth.** Its sources are
+  encoded from DIV2K PNGs at q92.
+- **This harness has no lossless original.** It scores against a
+  Lanczos resize of the served JPEG itself, and the large sources are
+  q75. That reference carries the source's compression artifacts at
+  full resolution, so it favours the decode that keeps them, i.e. the
+  full decode.
+
+Read the large-row drop as an upper bound against a biased reference,
+not as a measured loss. Either way, oximg stays 11-20 points ahead of
+imgproxy on these rows.
+
+**Shrink-on-load was the ceiling here, not the encoder** (the 0.11
+history). These rows were 77.5 / 74.7 / 71.4 until 2026-08, when JPEG shrink-on-load stopped
 being the default (see the `OXIMG_DCT_MARGIN` row in the README):
 decoding at full size and handing the whole reduction to the resampler
 is worth +2.8 points on the medium group and +5.9 on the large one, for
@@ -77,23 +106,23 @@ corpus, once with `OXIMG_DCT_MARGIN=1.7` — every competitor's score is
 identical across the two runs, which is the control that makes the
 oximg delta attributable.
 
-Note what the shape of the new column says: oximg now scores ~77.4 on
+Note what the shape of the 0.11-0.13 column said: oximg scored ~77.4 on
 all three groups, where before it fell away as sources got larger. The
 resize is no longer measurably lossy against the linear-light ground
 truth at any ratio in the corpus, so what is left is the encoder — the
 Group A number.
 
-At q80 oximg produces 33.9 KB (Kodak group mean, jpegli default);
-imgproxy reaches a lower score (76.0) at q90 with 63.8 KB.
+At q80 oximg produces 34.2 KB (Kodak group mean, jpegli default) at
+77.5. imgproxy 4.0.17 passes that score only at q90: 78.7, from 62.5 KB,
+1.8x the bytes. (imgproxy 4.0.9 scored 76.0 at q90 in the earlier run.)
 
 The speed profile (`OXIMG_JPEG_PROGRESSIVE=0`, see BENCH.md) scores
-**identically to the default on all 30 corpus images** — sequential (SOF1) and
-progressive jpegli encode the same quantized coefficients, differing
-only in entropy layout — at +9-11% bytes (Kodak group: 37.2 KB vs
-34.0 KB; imgproxy produces 35.0 KB at 71.2). That comparison was made
-on the 30-image corpus and at the old decode default; the property it
-rests on (identical coefficients, different entropy layout) is not one
-the decode scale can touch, but the byte figures are from that run.
+**identically to the default on all 48 corpus images**. Sequential
+(SOF1) and progressive jpegli encode the same quantized coefficients,
+differing only in entropy layout. On 0.15.0, whose sequential output
+has optimized Huffman tables, it costs +1.5% bytes on Kodak (34.7 KB
+against 34.2 KB) and +2.3% on medium and large. Before 0.15 it used the
+standard tables and cost +9-11%.
 
 Scores with oximg's quality-reducing knobs (`OXIMG_RESIZE=srgb
 OXIMG_DCT_MARGIN=1.0`) are ~60 on the medium group — the same level as

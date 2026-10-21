@@ -233,10 +233,10 @@ JPEG sources at a reduced DCT scale, and were not re-run in 2026-10:
 | AVIF | 44.6 (57 ms) | 44.9 | **56.5** (46 ms) | 52.7 |
 
 At the same time, output quality is higher, not traded away:
-end-to-end JPEG at the same q80 scores +6 to +18 SSIMULACRA2 over
+end-to-end JPEG at the same q80 scores +6 to +20 SSIMULACRA2 over
 imgproxy (77.5 vs 71.2 on the Kodak corpus, the gap widening with
-source size — and imgproxy at q90 with twice the bytes still scores
-lower), pure resize quality (lossless PNG path) scores 97.6 vs 81.9,
+source size; imgproxy passes it only at q90, with 1.8x the bytes),
+pure resize quality (lossless PNG path) scores 97.6 vs 81.9,
 and the AVIF default produces smaller files than imgproxy's default
 at +6.7 SSIMULACRA2.
 
