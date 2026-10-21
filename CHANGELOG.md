@@ -12,6 +12,11 @@ HTTP interface without notice.
 
 ### Fixed
 
+- **Parallel resize no longer rejects valid dimensions with HTTP 422.**
+  Clamp band crops to the remaining source height so floating-point
+  rounding at the bottom edge cannot overflow it (for example,
+  200×150 → 156×117 with `OXIMG_PAR=4`).
+
 - **Remote-source fetches no longer trust the distrusted emSign
   roots.** webpki-roots 1.0.10 drops emSign ECC Root CA - G3, and
   rustls-webpki 0.103.16 stops accepting certificate paths through

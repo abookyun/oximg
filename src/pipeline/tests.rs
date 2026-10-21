@@ -595,6 +595,24 @@ fn band_resize_matches_single_thread() {
 }
 
 #[test]
+fn band_resize_keeps_fractional_bottom_inside_source() {
+    // Both shapes round the last band's bottom past the source height.
+    for (sw, sh, dw, dh) in [(200, 150, 156, 117), (24, 1600, 16, 1067)] {
+        for px in [
+            PixelType::U8x3,
+            PixelType::U8x4,
+            PixelType::U16x3,
+            PixelType::U16x4,
+        ] {
+            let src = vec![0x55; sw * sh * px.size()];
+            let mut dst = vec![0; dw * dh * px.size()];
+            resize_bands(&src, sw, sh, &mut dst, dw, dh, px, 4, &mut None).unwrap();
+            assert!(dst.iter().all(|&v| v == 0x55), "{sw}x{sh} {px:?}");
+        }
+    }
+}
+
+#[test]
 fn luts_roundtrip_every_srgb_value() {
     // back(fwd(v)) must be the identity for all 256 sRGB values, or
     // unresized regions would shift colors through the linear path.

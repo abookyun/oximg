@@ -233,6 +233,25 @@ fn get_resizes_photo_and_probes_the_body() {
 }
 
 #[test]
+fn get_parallel_resize_with_fractional_band_boundaries() {
+    // 150 / 117 makes the last band's bottom round to 150.00000000000003.
+    let (code, v) = run(&[
+        "--env",
+        "OXIMG_PAR=4",
+        "get",
+        "/resize/156/156/photo.jpg",
+        "--expect",
+        "200",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["status"], 200);
+    assert_eq!(v["content_type"], "image/jpeg");
+    assert_eq!(v["probe"]["width"], 156);
+    assert_eq!(v["probe"]["height"], 117);
+}
+
+#[test]
 fn get_maps_error_classes() {
     let (code, v) = run(&["get", "/resize/0/0/photo.jpg"]);
     assert_eq!(code, 0, "a 400 is a successful observation: {v}");
