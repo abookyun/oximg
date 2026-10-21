@@ -255,8 +255,8 @@ need its own measured table:
 
 ```sh
 cargo build --release --example qcli
-cd bench/quality && npm i
-# corpus: Kodak PNGs from r0k.us + pinned picsum IDs; see run.py
+cd bench/quality && npm i --no-save sharp@0.35
+./fetch_corpus.sh   # Kodak from r0k.us + 12 pinned picsum IDs, verified by corpus.sha256
 IMGPROXY_BIND=:8082 IMGPROXY_LOCAL_FILESYSTEM_ROOT=$PWD/corpus imgproxy &
 python3 run.py /tmp/qwork && python3 analyze.py /tmp/qwork/results.csv
 # cross-format sweep (needs --features avif):
