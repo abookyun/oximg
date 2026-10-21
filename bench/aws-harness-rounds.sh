@@ -20,13 +20,13 @@ cd ~/benchmark
 OUT=~/out63; mkdir -p $OUT
 exec > >(tee -a $OUT/run.log) 2>&1
 
-if ! grep -q oximg docker-compose.yml; then
-  git apply ~/image-servers-benchmark.patch
-  # VUS override for phase B; unset keeps the harness's -u $(nproc).
-  sed -i 's/run -u \$\$(nproc)/run -u $${VUS:-$$(nproc)}/' Makefile
-  # python:3-slim is Python 3.15, where pillow-avif-plugin fails to build.
-  sed -i 's/^FROM python:3-slim$/FROM python:3.13-slim/' thumbor/Dockerfile
-fi
+grep -q oximg docker-compose.yml || git apply ~/image-servers-benchmark.patch
+# VUS override for phase B; unset keeps the harness's -u $(nproc).
+sed -i 's/run -u \$\$(nproc)/run -u $${VUS:-$$(nproc)}/' Makefile
+# python:3-slim is Python 3.15, where pillow-avif-plugin fails to build.
+sed -i 's/^FROM python:3-slim$/FROM python:3.13-slim/' thumbor/Dockerfile
+grep -q 'VUS:-' Makefile
+grep -q '^FROM python:3.13-slim$' thumbor/Dockerfile
 rm -f dataset.zip
 
 for t in $NEW $OLD; do docker pull -q oximg/oximg:$t; done
