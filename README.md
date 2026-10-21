@@ -11,12 +11,12 @@ self-hostable HTTP server (PoC). JPEG, PNG, WebP — and AVIF with the
 animated WebP); sources are format-sniffed by magic bytes and re-encoded
 in their own format (GIF, having no encoder here, becomes WebP). On
 imgproxy's official benchmark harness, run on
-the same AWS instance types as their published results, oximg led
-every format cell on both x86-64 and Graviton (2026-07, a pre-0.11
-build) while resizing in linear light at measurably higher output
-quality. On the same harness shape re-run locally, 0.15.0 leads
-imgproxy 4.0.17 on JPEG by 1.24-1.31x (AMD Ryzen 7 8745HS, Zen 4),
-with AWS pending (see [Benchmarks](#benchmarks)).
+the same AWS instance types as their published results (2026-10),
+0.15.0 does 1.24-1.26x imgproxy 4.0.17's JPEG req/s on c7i.large and
+1.51-1.53x on c7g.large over three rounds, while resizing in linear
+light at measurably higher output quality. Single runs of the other
+formats put it ahead on PNG and WebP on both and on AVIF on Graviton,
+and level on AVIF on x86-64 (see [Benchmarks](#benchmarks)).
 
 ## Features
 
@@ -204,29 +204,27 @@ layer (axum/tokio) only does queueing and IO.
 imgproxy's official harness (DIV2K corpus over nginx, fit into 512x512,
 k6, all defaults) on the AWS instance types behind imgproxy's published
 numbers — req/s, higher is better, p95 in parentheses. Measured
-2026-07-05 on a pre-0.11 build, whose JPEG decode policy differs from
-today's. 0.11-0.13 decoded JPEG sources at full size, and 0.14 takes
-a linear-light half-size luma decode for 4:2:0 sources reduced about
-3.8x or more. The JPEG column and the JPEG-source cells are therefore
-not current numbers. On the same harness shape, re-run locally on an
-AMD Ryzen 7 8745HS (Zen 4, 2026-10-19), 0.15.0 leads imgproxy 4.0.17
-by 1.24-1.31x on JPEG→JPEG
-([BENCH.md](BENCH.md#jpeg-sources-since-011-2026-10)). An AWS
-re-measurement is pending
-([#63](https://github.com/oximg/oximg/issues/63)).
+2026-10-21 on the released 0.15.0 image against imgproxy 4.0.17,
+imagor 1.9.13 and thumbor 7.8.0, all checks 100%
+([BENCH.md](BENCH.md#official-harness-on-real-aws-hardware-c7ilarge-and-c7glarge)).
+The table cells are single 5-minute runs. On JPEG, three rotated rounds
+put 0.15.0 at 1.24-1.26x imgproxy on c7i.large and 1.51-1.53x on
+c7g.large. AVIF on c7i, 16.5 against 16.2, is a tie within instance
+variance.
 
 | c7i.large (x86-64) | JPEG | PNG | WebP | AVIF |
 |---|---|---|---|---|
-| oximg | **78.7** (33 ms) | **32.8** (79 ms) | **30.9** (92 ms) | **15.6** (181 ms) |
-| best of imgproxy/imagor/thumbor | 67.0 | 15.5 | 20.3 | 15.2 |
+| oximg | **88.5** (29 ms) | **34.6** (75 ms) | **32.5** (88 ms) | **16.5** (174 ms) |
+| best of imgproxy/imagor/thumbor | 71.9 | 16.3 | 21.5 | 16.2 |
 
 | c7g.large (Graviton3) | JPEG | PNG | WebP | AVIF |
 |---|---|---|---|---|
-| oximg | **91.2** (28 ms) | **39.0** (66 ms) | **41.5** (70 ms) | **23.4** (124 ms) |
-| best of imgproxy/imagor/thumbor | 68.0 | 22.1 | 25.4 | 20.3 |
+| oximg | **101.0** (25 ms) | **40.8** (63 ms) | **42.5** (68 ms) | **24.8** (119 ms) |
+| best of imgproxy/imagor/thumbor | 65.7 | 21.9 | 25.4 | 19.9 |
 
 Cross-format cells (our harness extension; JPEG sources, oximg vs
-imgproxy):
+imgproxy). These are from 2026-07 on a pre-0.11 build, which decoded
+JPEG sources at a reduced DCT scale, and were not re-run in 2026-10:
 
 | JPEG→ | c7i oximg | c7i imgproxy | c7g oximg | c7g imgproxy |
 |---|---|---|---|---|
