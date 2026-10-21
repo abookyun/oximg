@@ -9,8 +9,8 @@ const caveats = [
     body: "16.5 req/s against imgproxy's 16.2 in a single run — within instance variance, not a lead.",
   },
   {
-    title: "JPEG on c7i.large misses our own 1.3× target",
-    body: "1.24–1.26× imgproxy over 3 rounds, against 1.51–1.53× on c7g.large. On one SMT core the overlapped decode competes with the request path.",
+    title: "JPEG on c7i.large depends on the instance",
+    body: "1.24–1.26× imgproxy on one c7i.large and 1.33× on a second, against 1.51–1.53× on c7g.large. Both c7i instances had the same CPU; we report the range.",
   },
   {
     title: "AVIF defaults target fidelity, not bytes",
