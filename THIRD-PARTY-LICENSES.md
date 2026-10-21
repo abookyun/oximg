@@ -448,7 +448,7 @@ Used by:
 ## Apache License 2.0
 
 Used by:
-- [oximg 0.14.0](https://github.com/oximg/oximg)
+- [oximg 0.15.0](https://github.com/oximg/oximg)
 - [cmov 0.5.4](https://github.com/RustCrypto/utils)
 - [ctutils 0.4.2](https://github.com/RustCrypto/utils)
 - [utf8_iter 1.0.4](https://github.com/hsivonen/utf8_iter)
@@ -5138,7 +5138,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## Community Data License Agreement Permissive 2.0
 
 Used by:
-- [webpki-roots 1.0.8](https://github.com/rustls/webpki-roots)
+- [webpki-roots 1.0.10](https://github.com/rustls/webpki-roots)
 
 ```
 # Community Data License Agreement - Permissive - Version 2.0
@@ -5361,7 +5361,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ## ISC License
 
 Used by:
-- [rustls-webpki 0.103.15](https://github.com/rustls/webpki)
+- [rustls-webpki 0.103.16](https://github.com/rustls/webpki)
 
 ```
 Except as otherwise noted, this project is licensed under the following

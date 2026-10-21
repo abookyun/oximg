@@ -5,8 +5,12 @@ import BenchChart from "./BenchChart.astro";
 // wins is not believed. Each item is stated in README.md or BENCH.md.
 const caveats = [
   {
-    title: "JPEG → AVIF on c7i.large is a tie",
-    body: "44.6 req/s against imgproxy's 44.9 — within run-to-run variance, not a lead.",
+    title: "AVIF on c7i.large is a tie",
+    body: "16.5 req/s against imgproxy's 16.2 in a single run — within instance variance, not a lead.",
+  },
+  {
+    title: "JPEG on c7i.large misses our own 1.3× target",
+    body: "1.24–1.26× imgproxy over 3 rounds, against 1.51–1.53× on c7g.large. On one SMT core the overlapped decode competes with the request path.",
   },
   {
     title: "AVIF defaults target fidelity, not bytes",
@@ -26,9 +30,9 @@ const caveats = [
       <h2>Measured on their harness, on their hardware.</h2>
       <p>
         imgproxy publishes numbers from its own benchmark on AWS c7i and c7g instances. We ran
-        the same harness, unmodified, on the same instance types — every server re-measured
-        together in one run, in 2026-07 on a pre-0.11 build. A local re-run of the JPEG cell
-        on 0.14.0 is linked under the chart; the AWS re-run is in progress.
+        the same harness on the same instance types, every server from its released image,
+        re-measured together on 2026-10-21 with oximg 0.15.0. The only changes to the harness
+        are an oximg service and a Python pin that thumbor needs to build.
       </p>
     </header>
 
