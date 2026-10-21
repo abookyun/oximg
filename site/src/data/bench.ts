@@ -33,7 +33,7 @@ export const harness = {
   // Every cell is a single 5-minute run. JPEG was also run in 3 rotated
   // rounds at 2 and 8 VUs (BENCH.md, same section).
   caveat:
-    "One run per cell; over 3 rounds, JPEG is 1.24–1.26× imgproxy on c7i.large and 1.51–1.53× on c7g.large",
+    "One run per cell; over 3 rounds, JPEG is 1.24–1.26× imgproxy on this c7i.large (1.33× on a second one) and 1.51–1.53× on c7g.large",
   caveatSource: `${REPO}/BENCH.md#official-harness-on-real-aws-hardware-c7ilarge-and-c7glarge`,
   runs: [
     {
