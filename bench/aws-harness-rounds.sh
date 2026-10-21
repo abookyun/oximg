@@ -13,7 +13,10 @@
 #
 # The instance's 8 GB root disk fits the images and the dataset, but
 # not thumbor's build on top of a pulled dataset.zip, so the zip goes.
-set -uo pipefail
+# Setup and image selection abort on any error; a failed cell tears the
+# stack down and stops the run, so no result is ever recorded against a
+# stale image or with leftover containers competing for the CPUs.
+set -euo pipefail
 NEW=${NEW:-0.15.0}
 OLD=${OLD:-0.14.0}
 cd ~/benchmark
@@ -41,17 +44,25 @@ docker pull -q ghcr.io/cshum/imagor:latest
 } > $OUT/versions.txt
 cat $OUT/versions.txt
 
-oximg_as() { docker tag oximg/oximg:$1 oximg:bench; }
+trap 'docker compose down > /dev/null 2>&1 || true' EXIT
+
+oximg_as() {
+  docker tag oximg/oximg:$1 oximg:bench
+  [ "$(docker image inspect -f '{{.Id}}' oximg:bench)" = "$(docker image inspect -f '{{.Id}}' oximg/oximg:$1)" ]
+}
 
 cell() {  # label tool format [VUS]
-  local label=$1 tool=$2 fmt=$3
+  local label=$1 tool=$2 fmt=$3 rc=0
   echo "=== $label $(date -u +%H:%M:%S)"
-  if [ "$tool" = oximg ]; then
-    VUS=${4:-} make up k6 down TOOL=oximg FORMAT=$fmt COMPOSE_ARGS="-d --wait" > $OUT/$label.log 2>&1
-  else
-    VUS=${4:-} make bench-$tool FORMAT=$fmt > $OUT/$label.log 2>&1
+  # What `make bench-<tool>` does, minus its trailing `down`, which make
+  # skips when `up` or `k6` fails.
+  VUS=${4:-} make up k6 TOOL=$tool FORMAT=$fmt COMPOSE_ARGS="-d --wait" > $OUT/$label.log 2>&1 || rc=$?
+  docker compose down >> $OUT/$label.log 2>&1 || true
+  grep -E "checks_succeeded|http_reqs" $OUT/$label.log | head -2 || true
+  if [ $rc -ne 0 ]; then
+    echo "FAILED $label: make exited $rc (see $OUT/$label.log)"
+    exit 1
   fi
-  grep -E "checks_succeeded|http_reqs" $OUT/$label.log | head -2
 }
 
 oximg_as $NEW
