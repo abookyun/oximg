@@ -419,7 +419,10 @@ The harness was changed in three ways:
 The full table: one 5-minute cell per server and format, at 2 VUs (the
 harness default), with the server order rotated per format. Values are
 req/s with p95 in parentheses, and every cell passed 100% of its
-checks.
+checks. Each non-JPEG cell is **a single run**, short of
+[METHODOLOGY.md](bench/METHODOLOGY.md)'s interleaved rounds, so read a
+gap there smaller than the ~3% instance-to-instance variance as a tie.
+JPEG has its own rounds below.
 
 c7i.large (Intel Xeon Platinum 8488C, 2 vCPU = one SMT core):
 
@@ -467,9 +470,10 @@ Notes:
   shrink. Neither the 12,000-pixel sequential threshold nor #77's raw
   YCbCr path applies here: these outputs are 512 px, and DIV2K at fit
   512 takes the half-size decode.
-- **AVIF on c7i is the closest cell**: 16.5 against 16.2, inside the
-  ~3% instance-to-instance variance that earlier same-run anchors
-  bounded.
+- **AVIF on c7i is a tie**: 16.5 against 16.2 in single runs, inside
+  the ~3% instance-to-instance variance that earlier same-run anchors
+  bounded. The other non-JPEG leads are single runs too, but large
+  ones: PNG 1.9-2.1x, WebP 1.5-1.7x, AVIF on c7g 1.25x.
 - [bench/aws-harness-rounds.sh](bench/aws-harness-rounds.sh) is the
   loop that produced these tables. Run it on the instance, from the
   harness checkout. One deviation: the thumbor row ran after phase B,

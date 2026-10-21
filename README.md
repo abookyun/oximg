@@ -11,12 +11,12 @@ self-hostable HTTP server (PoC). JPEG, PNG, WebP — and AVIF with the
 animated WebP); sources are format-sniffed by magic bytes and re-encoded
 in their own format (GIF, having no encoder here, becomes WebP). On
 imgproxy's official benchmark harness, run on
-the same AWS instance types as their published results, 0.15.0 leads
-every format cell on both x86-64 and Graviton (2026-10; AVIF on x86-64
-only by 2%, within instance variance) while resizing
-in linear light at measurably higher output quality. On JPEG it does
-1.24-1.26x imgproxy 4.0.17's req/s on c7i.large and 1.51-1.53x on
-c7g.large (see [Benchmarks](#benchmarks)).
+the same AWS instance types as their published results (2026-10),
+0.15.0 does 1.24-1.26x imgproxy 4.0.17's JPEG req/s on c7i.large and
+1.51-1.53x on c7g.large over three rounds, while resizing in linear
+light at measurably higher output quality. Single runs of the other
+formats put it ahead on PNG and WebP on both and on AVIF on Graviton,
+and level on AVIF on x86-64 (see [Benchmarks](#benchmarks)).
 
 ## Features
 
@@ -207,8 +207,10 @@ numbers — req/s, higher is better, p95 in parentheses. Measured
 2026-10-21 on the released 0.15.0 image against imgproxy 4.0.17,
 imagor 1.9.13 and thumbor 7.8.0, all checks 100%
 ([BENCH.md](BENCH.md#official-harness-on-real-aws-hardware-c7ilarge-and-c7glarge)).
-On JPEG, three rotated rounds put 0.15.0 at 1.24-1.26x imgproxy on
-c7i.large and 1.51-1.53x on c7g.large.
+The table cells are single 5-minute runs. On JPEG, three rotated rounds
+put 0.15.0 at 1.24-1.26x imgproxy on c7i.large and 1.51-1.53x on
+c7g.large. AVIF on c7i, 16.5 against 16.2, is a tie within instance
+variance.
 
 | c7i.large (x86-64) | JPEG | PNG | WebP | AVIF |
 |---|---|---|---|---|
