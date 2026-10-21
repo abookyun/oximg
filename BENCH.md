@@ -16,8 +16,9 @@ Two load patterns are reported where relevant:
 ## JPEG sources since 0.11 (2026-10)
 
 **Most tables below were measured in 2026-07, before 0.11.0.** That
-includes the Linux and macOS sections, both runs of imgproxy's harness
-(local and AWS c7/c8/c9), and the cross-format cells. 0.11.0 stopped
+includes the Linux and macOS sections, the local run of imgproxy's
+harness, the AWS c8i/c9g run and the cross-format cells. The AWS
+c7i/c7g tables were re-measured on 0.15.0 in 2026-10. 0.11.0 stopped
 decoding JPEG sources at a reduced DCT scale by default (see
 [Decode scale](#decode-scale-the-throughputquality-frontier-2026-08)),
 which made every cell whose *source* is a JPEG slower: JPEG→JPEG,
@@ -42,8 +43,8 @@ checks.
 
 0.13.0 leads imgproxy by 7-13% here. The 2026-07 AWS run showed
 1.17-1.34x on its JPEG column, so read that column as the pre-0.11
-build. The AWS run itself is pending
-([#63](https://github.com/oximg/oximg/issues/63)).
+build. The AWS c7 run was redone on 0.15.0 in 2026-10
+([below](#official-harness-on-real-aws-hardware-c7ilarge-and-c7glarge)).
 
 **0.14.0** (2026-10-02). This adds the linear-light half-size luma
 decode for 4:2:0 sources reduced about 3.8x or more, which this cell
@@ -396,54 +397,85 @@ target encode outside the decode wall.
 
 ## Official harness on real AWS hardware (c7i.large and c7g.large)
 
-> Measured 2026-07-05 on a pre-0.11 build. The JPEG column and the
-> JPEG-source cross-format cells overstate current releases; see
-> [JPEG sources since 0.11](#jpeg-sources-since-011-2026-10). Re-measuring
-> on AWS is [#63](https://github.com/oximg/oximg/issues/63).
+The harness ran on the instance types imgproxy publishes its results
+on, deployed with the harness's own CloudFormation template: Ubuntu
+24.04, Docker, us-east-1, measured 2026-10-21 ([#63](https://github.com/oximg/oximg/issues/63)).
+Every server ran from a published image or package:
+- oximg 0.15.0 and 0.14.0 from Docker Hub
+  (`oximg/oximg@sha256:8afd4b15…` and `@sha256:f787a37d…`);
+- imgproxy 4.0.17 (`darthsim/imgproxy@sha256:3a7d7c5d…`);
+- imagor 1.9.13;
+- thumbor 7.8.0.
 
-The same harness run unmodified on the instance types imgproxy uses for
-its published results, deployed with the harness's own CloudFormation
-template (Ubuntu 24.04, Docker, k6 with 2 VUs for 5 minutes per cell,
-all defaults). req/s (p95); all runs 100% successful checks. All four
-servers re-measured together per instance in one wholesale run
-(2026-07-05, fresh instances, oximg built from source at the
-cross-format + fused-overlap state).
+The harness was changed in three ways:
+- [bench/image-servers-benchmark.patch](bench/image-servers-benchmark.patch)
+  adds the oximg service;
+- a `VUS` override of the Makefile's `-u $(nproc)`, used only for the
+  8-VU rounds;
+- thumbor's Dockerfile is pinned to `python:3.13-slim`. Upstream's
+  `python:3-slim` is now Python 3.15, for which `pillow-avif-plugin`
+  fails to build.
 
-c7i.large (x86-64, 2 vCPU = one SMT core):
+The full table: one 5-minute cell per server and format, at 2 VUs (the
+harness default), with the server order rotated per format. Values are
+req/s with p95 in parentheses, and every cell passed 100% of its
+checks.
+
+c7i.large (Intel Xeon Platinum 8488C, 2 vCPU = one SMT core):
 
 | Server | JPEG | PNG | WebP | AVIF |
 |---|---|---|---|---|
-| oximg (defaults) | **78.7** (33 ms) | **32.8** (79 ms) | **30.9** (92 ms) | **15.6** (181 ms) |
-| imgproxy | 67.0 (40 ms) | 14.3 (187 ms) | 20.3 (136 ms) | 15.2 (190 ms) |
-| imagor 1.9.2 | 58.7 (44 ms) | 15.5 (174 ms) | 17.7 (152 ms) | 10.1 (283 ms) |
-| thumbor 7.x | 50.0 (50 ms) | 8.7 (304 ms) | 14.0 (187 ms) | 12.1 (225 ms) |
+| **oximg 0.15.0** | **88.5** (29 ms) | **34.6** (75 ms) | **32.5** (88 ms) | **16.5** (174 ms) |
+| imgproxy 4.0.17 | 71.9 (38 ms) | 15.1 (176 ms) | 21.5 (129 ms) | 16.2 (179 ms) |
+| imagor 1.9.13 | 63.7 (41 ms) | 16.3 (165 ms) | 18.6 (143 ms) | 10.7 (270 ms) |
+| thumbor 7.8.0 | 53.2 (47 ms) | 9.1 (293 ms) | 14.5 (180 ms) | 12.5 (219 ms) |
 
-c7g.large (Graviton3, 2 physical cores):
+c7g.large (Graviton3, Neoverse-V1, 2 physical cores):
 
 | Server | JPEG | PNG | WebP | AVIF |
 |---|---|---|---|---|
-| oximg (defaults) | **91.2** (28 ms) | **39.0** (66 ms) | **41.5** (70 ms) | **23.4** (124 ms) |
-| imgproxy | 68.0 (39 ms) | 21.0 (123 ms) | 25.4 (110 ms) | 20.3 (139 ms) |
-| imagor 1.9.2 | 57.5 (44 ms) | 22.1 (115 ms) | 19.7 (133 ms) | 13.7 (204 ms) |
-| thumbor 7.x | 63.2 (41 ms) | 12.5 (210 ms) | 20.2 (129 ms) | 14.7 (196 ms) |
+| **oximg 0.15.0** | **101.0** (25 ms) | **40.8** (63 ms) | **42.5** (68 ms) | **24.8** (119 ms) |
+| imgproxy 4.0.17 | 65.7 (40 ms) | 20.9 (125 ms) | 25.4 (111 ms) | 19.9 (143 ms) |
+| imagor 1.9.13 | 55.8 (45 ms) | 21.9 (117 ms) | 19.3 (133 ms) | 13.4 (209 ms) |
+| thumbor 7.8.0 | 59.4 (43 ms) | 12.3 (212 ms) | 20.1 (130 ms) | 14.6 (198 ms) |
+
+JPEG, the cell the 0.11-0.15 decode changes touched, was then run in 3
+rounds per instance. Each round ran oximg 0.15.0, oximg 0.14.0 and
+imgproxy in rotated order, at 2 and at 8 VUs. Values are the mean
+req/s with the range over rounds, and every cell passed 100% of its
+checks.
+
+| | 0.15.0 | 0.14.0 | imgproxy 4.0.17 | 0.15.0 / imgproxy |
+|---|---|---|---|---|
+| c7i, 2 VUs | **89.3** (88.6-90.4) | 87.6 (87.3-88.1) | 72.0 (71.5-72.9) | **1.24x** |
+| c7i, 8 VUs | **90.1** (89.4-90.6) | 88.1 (87.9-88.3) | 71.7 (71.5-72.0) | **1.26x** |
+| c7g, 2 VUs | **100.3** (100.1-100.5) | 99.5 (99.3-99.8) | 65.7 (65.5-65.9) | **1.53x** |
+| c7g, 8 VUs | **103.3** (103.1-103.7) | 102.4 (102.3-102.5) | 68.5 (68.1-68.9) | **1.51x** |
 
 Notes:
 
-- Deltas vs the previous tables (2026-06, retired by this run): JPEG
-  on c7g jumped 81.3 → 91.2 — the fused-path scratch-pool fix (kernel
-  scratch now returns to the request thread's pool instead of dying
-  with the ephemeral worker's TLS) landed in between; the remaining
-  oximg cells and every competitor cell moved within the ~3%
-  instance-to-instance variance the same-run anchors bound (e.g.
-  imgproxy JPEG 68.4 → 67.0/68.0, AVIF 15.6 → 15.2 and 20.1 → 20.3).
-- The AVIF cells reflect the current defaults and the pinned SVT-AV1
-  revision. dav1d's in-frame threading works on Graviton3 (1.9x on two
-  cores, verified against dav1d 1.4.1/1.5.1/1.5.3 with minimal
-  repros).
-- History of what previous re-measures covered (encoder upgrade,
-  index-free scalar conversion paths, architecture-aware decode-thread
-  default, counter-guided aarch64 work) is in the git log of this
-  file.
+- **#63's target was ≥1.3x imgproxy on both instances.** c7g meets it.
+  c7i does not, at 1.24-1.26x. That is the ratio the local Zen 4 runs
+  measured (1.24-1.31x). #63 flagged the one-SMT-core topology as the
+  likely gap: oximg's fused decode thread competes with the request
+  path for the same core.
+- **Against 2026-07** (a pre-0.11 build, retired by this run), oximg's
+  JPEG cell rose from 78.7 to 88.5 on c7i and from 91.2 to 101.0 on
+  c7g. imgproxy moved from 67.0 to 71.9 and from 68.0 to 65.7. The
+  other oximg cells rose 2-6%.
+- **0.15.0 over 0.14.0 is +0.8-2.3% on JPEG**, from the pair-table
+  shrink. Neither the 12,000-pixel sequential threshold nor #77's raw
+  YCbCr path applies here: these outputs are 512 px, and DIV2K at fit
+  512 takes the half-size decode.
+- **AVIF on c7i is the closest cell**: 16.5 against 16.2, inside the
+  ~3% instance-to-instance variance that earlier same-run anchors
+  bounded.
+- [bench/aws-harness-rounds.sh](bench/aws-harness-rounds.sh) is the
+  loop that produced these tables. Run it on the instance, from the
+  harness checkout. One deviation: the thumbor row ran after phase B,
+  once its build was fixed and disk space freed (the template's 8 GB
+  root disk filled up). In the script, thumbor runs in its place in
+  the rotation.
 
 ## Newer instance generations (c8i.large and c9g.large)
 
