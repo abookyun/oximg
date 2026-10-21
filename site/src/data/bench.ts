@@ -30,56 +30,56 @@ export const harness = {
   title: "imgproxy's official benchmark harness",
   workload: "DIV2K corpus over nginx, fit into 512×512, k6 2 VUs × 5 min, all defaults",
   source: `${REPO}/BENCH.md#official-harness-on-real-aws-hardware-c7ilarge-and-c7glarge`,
-  // These are pre-0.11 results; the JPEG cells are not current numbers
-  // (BENCH.md, "JPEG sources since 0.11", has the re-runs).
+  // Every cell is a single 5-minute run. JPEG was also run in 3 rotated
+  // rounds at 2 and 8 VUs (BENCH.md, same section).
   caveat:
-    "Measured on a pre-0.11 build. On a 2026-10 local re-run of the JPEG cell (AMD Ryzen 7 8745HS), 0.15.0 leads imgproxy 4.0.17 by 1.24–1.31×",
-  caveatSource: `${REPO}/BENCH.md#jpeg-sources-since-011-2026-10`,
+    "One run per cell; over 3 rounds, JPEG is 1.24–1.26× imgproxy on c7i.large and 1.51–1.53× on c7g.large",
+  caveatSource: `${REPO}/BENCH.md#official-harness-on-real-aws-hardware-c7ilarge-and-c7glarge`,
   runs: [
     {
       id: "c7i",
       instance: "c7i.large",
       arch: "x86-64 · 2 vCPU",
-      measured: "2026-07-05 on a pre-0.11 build",
+      measured: "2026-10-21 on 0.15.0",
       rows: [
         {
           server: "oximg",
           ours: true,
           cells: {
-            JPEG: { rps: 78.7, p95ms: 33 },
-            PNG: { rps: 32.8, p95ms: 79 },
-            WebP: { rps: 30.9, p95ms: 92 },
-            AVIF: { rps: 15.6, p95ms: 181 },
+            JPEG: { rps: 88.5, p95ms: 29 },
+            PNG: { rps: 34.6, p95ms: 75 },
+            WebP: { rps: 32.5, p95ms: 88 },
+            AVIF: { rps: 16.5, p95ms: 174 },
           },
         },
         {
-          server: "imgproxy",
+          server: "imgproxy 4.0.17",
           ours: false,
           cells: {
-            JPEG: { rps: 67.0, p95ms: 40 },
-            PNG: { rps: 14.3, p95ms: 187 },
-            WebP: { rps: 20.3, p95ms: 136 },
-            AVIF: { rps: 15.2, p95ms: 190 },
+            JPEG: { rps: 71.9, p95ms: 38 },
+            PNG: { rps: 15.1, p95ms: 176 },
+            WebP: { rps: 21.5, p95ms: 129 },
+            AVIF: { rps: 16.2, p95ms: 179 },
           },
         },
         {
-          server: "imagor 1.9.2",
+          server: "imagor 1.9.13",
           ours: false,
           cells: {
-            JPEG: { rps: 58.7, p95ms: 44 },
-            PNG: { rps: 15.5, p95ms: 174 },
-            WebP: { rps: 17.7, p95ms: 152 },
-            AVIF: { rps: 10.1, p95ms: 283 },
+            JPEG: { rps: 63.7, p95ms: 41 },
+            PNG: { rps: 16.3, p95ms: 165 },
+            WebP: { rps: 18.6, p95ms: 143 },
+            AVIF: { rps: 10.7, p95ms: 270 },
           },
         },
         {
-          server: "thumbor 7.x",
+          server: "thumbor 7.8.0",
           ours: false,
           cells: {
-            JPEG: { rps: 50.0, p95ms: 50 },
-            PNG: { rps: 8.7, p95ms: 304 },
-            WebP: { rps: 14.0, p95ms: 187 },
-            AVIF: { rps: 12.1, p95ms: 225 },
+            JPEG: { rps: 53.2, p95ms: 47 },
+            PNG: { rps: 9.1, p95ms: 293 },
+            WebP: { rps: 14.5, p95ms: 180 },
+            AVIF: { rps: 12.5, p95ms: 219 },
           },
         },
       ],
@@ -88,46 +88,46 @@ export const harness = {
       id: "c7g",
       instance: "c7g.large",
       arch: "Graviton3 · 2 cores",
-      measured: "2026-07-05 on a pre-0.11 build",
+      measured: "2026-10-21 on 0.15.0",
       rows: [
         {
           server: "oximg",
           ours: true,
           cells: {
-            JPEG: { rps: 91.2, p95ms: 28 },
-            PNG: { rps: 39.0, p95ms: 66 },
-            WebP: { rps: 41.5, p95ms: 70 },
-            AVIF: { rps: 23.4, p95ms: 124 },
+            JPEG: { rps: 101.0, p95ms: 25 },
+            PNG: { rps: 40.8, p95ms: 63 },
+            WebP: { rps: 42.5, p95ms: 68 },
+            AVIF: { rps: 24.8, p95ms: 119 },
           },
         },
         {
-          server: "imgproxy",
+          server: "imgproxy 4.0.17",
           ours: false,
           cells: {
-            JPEG: { rps: 68.0, p95ms: 39 },
-            PNG: { rps: 21.0, p95ms: 123 },
-            WebP: { rps: 25.4, p95ms: 110 },
-            AVIF: { rps: 20.3, p95ms: 139 },
+            JPEG: { rps: 65.7, p95ms: 40 },
+            PNG: { rps: 20.9, p95ms: 125 },
+            WebP: { rps: 25.4, p95ms: 111 },
+            AVIF: { rps: 19.9, p95ms: 143 },
           },
         },
         {
-          server: "imagor 1.9.2",
+          server: "imagor 1.9.13",
           ours: false,
           cells: {
-            JPEG: { rps: 57.5, p95ms: 44 },
-            PNG: { rps: 22.1, p95ms: 115 },
-            WebP: { rps: 19.7, p95ms: 133 },
-            AVIF: { rps: 13.7, p95ms: 204 },
+            JPEG: { rps: 55.8, p95ms: 45 },
+            PNG: { rps: 21.9, p95ms: 117 },
+            WebP: { rps: 19.3, p95ms: 133 },
+            AVIF: { rps: 13.4, p95ms: 209 },
           },
         },
         {
-          server: "thumbor 7.x",
+          server: "thumbor 7.8.0",
           ours: false,
           cells: {
-            JPEG: { rps: 63.2, p95ms: 41 },
-            PNG: { rps: 12.5, p95ms: 210 },
-            WebP: { rps: 20.2, p95ms: 129 },
-            AVIF: { rps: 14.7, p95ms: 196 },
+            JPEG: { rps: 59.4, p95ms: 43 },
+            PNG: { rps: 12.3, p95ms: 212 },
+            WebP: { rps: 20.1, p95ms: 130 },
+            AVIF: { rps: 14.6, p95ms: 198 },
           },
         },
       ],
@@ -149,11 +149,11 @@ export interface Proof {
 // same-URL one, because request coalescing flatters the latter.
 export const proofs: Proof[] = [
   {
-    value: "91.2",
-    unit: "req/s",
+    value: "1.52",
+    unit: "×",
     label: "JPEG throughput",
-    versus: "imgproxy 68.0",
-    context: "c7g.large, official harness, pre-0.11 build",
+    versus: "101.0 vs imgproxy 65.7 req/s",
+    context: "c7g.large, official harness, 0.15.0, 3 rounds",
     source: harness.source,
   },
   {
