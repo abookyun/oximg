@@ -458,10 +458,17 @@ checks.
 Notes:
 
 - **#63's target was ≥1.3x imgproxy on both instances.** c7g meets it.
-  c7i does not, at 1.24-1.26x. That is the ratio the local Zen 4 runs
-  measured (1.24-1.31x). #63 flagged the one-SMT-core topology as the
-  likely gap: oximg's fused decode thread competes with the request
-  path for the same core.
+  On c7i the answer depends on the instance. This one measured
+  1.24-1.26x. A second fresh c7i.large (2026-10-21, #107) ran the
+  same images with the same cell method and measured oximg 110.0 /
+  109.7 against imgproxy 82.6 / 82.2, i.e. **1.33x**. Both were Xeon
+  Platinum 8488C, stepping 8, yet oximg was 23% faster and imgproxy
+  14% faster on the second instance. Read c7i as **1.24-1.33x across
+  instances**. The same run ruled out the suspects:
+  - The one-SMT-core topology: a Zen 4 SMT pair with nginx and k6
+    co-located measures 1.37-1.38x.
+  - The Intel-only 512-bit horizontal pass: the same clock either
+    way, and the 256-bit pass is within 0.6-1.2%.
 - **Against 2026-07** (a pre-0.11 build, retired by this run), oximg's
   JPEG cell rose from 78.7 to 88.5 on c7i and from 91.2 to 101.0 on
   c7g. imgproxy moved from 67.0 to 71.9 and from 68.0 to 65.7. The
