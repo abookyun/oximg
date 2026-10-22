@@ -16,17 +16,30 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 C=$HERE/corpus
 PICSUM=(1015 1018 1024 1039 1043 1050 1062 110 111 116 129 164)
 
+# Each file appears under its final name only once complete, so an
+# interrupted run leaves nothing a rerun would mistake for done.
+fetch() {  # url path
+  [ -s "$2" ] && return
+  curl -fsSL -o "$2.part" "$1"
+  mv "$2.part" "$2"
+}
+derive() {  # in out magick-args...
+  local in=$1 out=$2
+  shift 2
+  [ -s "$out" ] && return
+  magick "$in" "$@" "${out%.jpg}.part.jpg"
+  mv "${out%.jpg}.part.jpg" "$out"
+}
+
 if [ "${1:-}" != --verify-only ]; then
   mkdir -p "$C/png" "$C/src" "$C/large" "$C/medium"
   for i in $(seq -w 1 24); do
-    f=$C/png/kodim$i.png
-    [ -s "$f" ] || curl -fsSL -o "$f" "http://r0k.us/graphics/kodak/kodak/kodim$i.png"
-    [ -s "$C/src/kodim$i.jpg" ] || magick "$f" -quality 97 -sampling-factor 1x1 "$C/src/kodim$i.jpg"
+    fetch "http://r0k.us/graphics/kodak/kodak/kodim$i.png" "$C/png/kodim$i.png"
+    derive "$C/png/kodim$i.png" "$C/src/kodim$i.jpg" -quality 97 -sampling-factor 1x1
   done
   for id in "${PICSUM[@]}"; do
-    f=$C/large/picsum-$id.jpg
-    [ -s "$f" ] || curl -fsSL -o "$f" "https://picsum.photos/id/$id/4000/2667"
-    [ -s "$C/medium/picsum-$id.jpg" ] || magick "$f" -resize 2000x1334 -quality 95 "$C/medium/picsum-$id.jpg"
+    fetch "https://picsum.photos/id/$id/4000/2667" "$C/large/picsum-$id.jpg"
+    derive "$C/large/picsum-$id.jpg" "$C/medium/picsum-$id.jpg" -resize 2000x1334 -quality 95
   done
 fi
 
