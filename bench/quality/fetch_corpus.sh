@@ -43,16 +43,33 @@ if [ "${1:-}" != --verify-only ]; then
   done
 fi
 
-bad=0
+# Read the manifest directly: a missing or unreadable one must fail the
+# run, not verify zero files. Comment lines fall to the default case.
+bad=0 n=0 listed=()
 while read -r kind path want; do
   case $kind in
     file) got=$(shasum -a 256 "$C/$path" | cut -c1-64) ;;
     pixels) got=$(magick "$C/$path" ppm:- | shasum -a 256 | cut -c1-64) ;;
     *) continue ;;
   esac
+  n=$((n + 1))
+  listed+=("$path")
   if [ "$got" != "$want" ]; then
     echo "MISMATCH $kind $path" >&2
     bad=$((bad + 1))
   fi
-done < <(grep -v '^#' "$HERE/corpus.sha256")
-[ $bad -eq 0 ] && echo "corpus OK ($(grep -c '^[fp]' "$HERE/corpus.sha256") entries)" || { echo "$bad mismatches" >&2; exit 1; }
+done < "$HERE/corpus.sha256"
+[ $n -gt 0 ] || { echo "no entries in corpus.sha256" >&2; exit 1; }
+
+# run.py reads every *.jpg under src/, medium/ and large/, hidden ones
+# included, so an extra file would change the benchmark's inputs.
+while IFS= read -r f; do
+  rel=${f#"$C/"}
+  case " ${listed[*]} " in
+    *" $rel "*) ;;
+    *) echo "UNLISTED $rel" >&2; bad=$((bad + 1)) ;;
+  esac
+done < <(find "$C/src" "$C/medium" "$C/large" -name '*.jpg' 2>/dev/null)
+
+[ $bad -eq 0 ] || { echo "$bad problems" >&2; exit 1; }
+echo "corpus OK ($n entries)"
