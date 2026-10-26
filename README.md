@@ -375,13 +375,17 @@ filename is taken literally on this route (no `@fmt` token).
   (AWS S3, Cloudflare R2, MinIO), read with static keys from
   `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (plus
   `AWS_SESSION_TOKEN` for temporary keys). `AWS_REGION` is required.
+  AWS China regions use the `.amazonaws.com.cn` endpoint automatically.
   For R2 and MinIO, set `OXIMG_S3_ENDPOINT` too. An `http://` endpoint
   logs a warning at boot, because session tokens and images then
-  travel unencrypted. At boot, oximg asks
-  for a key that does not exist and expects 404, so a wrong endpoint,
-  region or key refuses to start. A 403 `AccessDenied` only warns:
+  travel unencrypted. At boot, oximg probes a key under the configured
+  prefix, shortening the probe name if necessary to fit S3's 1024-byte
+  key limit. Explicit endpoint, region and credential errors stop startup.
+  A 403 `AccessDenied` only warns:
   AWS sends it when the key lacks `s3:ListBucket`, and R2 when the
-  bucket does not exist. Temporary keys are not refreshed: when
+  bucket does not exist. The probe therefore does not prove that objects
+  are readable; missing `s3:GetObject` can still fail at request time.
+  Temporary keys are not refreshed: when
   `AWS_SESSION_TOKEN` expires, every fetch answers 500 until the
   process restarts with new keys. The `~/.aws` profile files are not
   read. To use a profile, export it with
@@ -554,13 +558,13 @@ never silently falls back to a default.
 |---|---|---|
 | `OXIMG_SOURCE_BASE_URL` | unset | `https://…`, `gs://bucket[/prefix]` or `s3://bucket[/prefix]` (see [Serving](#serving)) |
 | `OXIMG_GCS_ENDPOINT` | `https://storage.googleapis.com` | Override for Private Service Connect or emulators; `GCE_METADATA_HOST` is honored the same way for the token source |
-| `OXIMG_S3_ENDPOINT` | `https://s3.<AWS_REGION>.amazonaws.com` | `s3://` endpoint as `scheme://host[:port]`, for R2 (`https://<account-id>.r2.cloudflarestorage.com`), MinIO, or another S3-compatible store |
+| `OXIMG_S3_ENDPOINT` | AWS regional endpoint (`.amazonaws.com.cn` for `cn-*`) | `s3://` endpoint as `scheme://host[:port]`, for R2 (`https://<account-id>.r2.cloudflarestorage.com`), MinIO, or another S3-compatible store |
 | `OXIMG_S3_PATH_STYLE` | `1` with `OXIMG_S3_ENDPOINT` or for a bucket name with a `.`, else `0` | `1` puts the bucket in the path (`host/bucket/key`), `0` in the host name (`bucket.host/key`). MinIO only accepts path style by default |
 | `AWS_REGION` | unset | Required for `s3://`: the bucket's region, which the signature includes. R2 accepts `auto`. ECS sets it for you |
 | `AWS_ACCESS_KEY_ID` | unset | `s3://` access key |
 | `AWS_SECRET_ACCESS_KEY` | unset | `s3://` secret key |
 | `AWS_SESSION_TOKEN` | unset | `s3://` session token, for temporary keys only |
-| `OXIMG_UPSTREAM_TIMEOUT` | `30` | Seconds for the whole origin fetch — bounds how long a stalled upstream can hold a fetch slot (and its buffer); timeouts answer 504, distinct from other upstream failures' 502 |
+| `OXIMG_UPSTREAM_TIMEOUT` | `30` | Seconds for the whole origin fetch, including credentials, retries/backoff and body download (fetch-slot queueing is excluded) — bounds how long a stalled upstream can hold a fetch slot (and its buffer); timeouts answer 504, distinct from other upstream failures' 502 |
 | `OXIMG_UPSTREAM_CONNECT_TIMEOUT` | `5` | Seconds to establish the origin connection |
 | `OXIMG_MAX_SOURCE_BYTES` | 64 MiB | Compressed-size cap; over-limit remote sources answer 413 |
 | `OXIMG_MAX_SRC_PIXELS` | 64,000,000 | Cheap sanity guard on source dimensions, enforced after each format's header parse; over-cap sources answer 413. Not a memory budget — see the next row |

@@ -44,7 +44,7 @@ Pass extras to a spawned server with `oximg-ctl --env KEY=VAL …`.
 | `OXIMG_SOURCE_BASE_URL` | unset | `https://…`, `gs://bucket[/prefix]` or `s3://bucket[/prefix]` |
 | `OXIMG_GCS_ENDPOINT` | GCS default | Emulator / PSC; read per `gs://` request, not fail-closed at boot |
 | `GCE_METADATA_HOST` | Google metadata | GCS auth emulator / PSC; read when fetching or refreshing the metadata token (including the startup credential probe) |
-| `OXIMG_S3_ENDPOINT` | AWS for `AWS_REGION` | `scheme://host[:port]` of an S3-compatible store (R2, MinIO) |
+| `OXIMG_S3_ENDPOINT` | AWS for `AWS_REGION` (China uses `.amazonaws.com.cn`) | `scheme://host[:port]` of an S3-compatible store (R2, MinIO) |
 | `OXIMG_S3_PATH_STYLE` | `1` with a custom endpoint or for a bucket name with a `.`, else `0` | `0`/`1`: bucket in the path or in the host name |
 | `AWS_REGION` | unset | Required for `s3://`; signed into every request. R2 accepts `auto` |
 | `AWS_ACCESS_KEY_ID` | unset | `s3://` static key |
@@ -85,7 +85,7 @@ Pass extras to a spawned server with `oximg-ctl --env KEY=VAL …`.
 | `OXIMG_MAX_DECODED_BYTES` | unset | Estimated decode allocation → 413 |
 | `OXIMG_LOG_DECODED_BYTES_ABOVE` | unset | Name expensive decodes; still serve |
 | `OXIMG_UPSTREAM_CONNECT_TIMEOUT` | `5` | Seconds |
-| `OXIMG_UPSTREAM_TIMEOUT` | `30` | Whole fetch; timeout → 504 |
+| `OXIMG_UPSTREAM_TIMEOUT` | `30` | Whole fetch including credentials, retry waits and body; timeout → 504 |
 | `OXIMG_OVERLAP` | `auto` | Fuse JPEG decode with resize+encode |
 | `OXIMG_GIF_ANIMATION` | `1` | `0` = still first frame |
 | `OXIMG_MAX_ANIM_FRAMES` | `200` | Over → still 200, not 413 |

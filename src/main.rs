@@ -435,8 +435,8 @@ async fn async_main(workers: usize, fetch_limit: usize) -> anyhow::Result<()> {
         }
     }
     if let Some(SourceMode::S3 { bucket, prefix }) = &app.source {
-        // Fail closed at boot, like gs://. One signed GET of a missing
-        // key checks the endpoint, region and keys together.
+        // Reject confirmed setup/transport faults before listening.
+        // Ambiguous AccessDenied warns; it cannot establish read permission.
         if let Err(e) = pipeline::s3_startup(bucket, prefix.as_deref()) {
             eprintln!("oximg: fatal: {e}");
             std::process::exit(2);

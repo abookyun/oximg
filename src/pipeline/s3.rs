@@ -22,7 +22,8 @@
 //! remove them from the URL, and the signature would no longer match.
 //!
 //! Settings are read once, on first use. `AWS_REGION` is required.
-//! `OXIMG_S3_ENDPOINT` defaults to `https://s3.<region>.amazonaws.com`.
+//! `OXIMG_S3_ENDPOINT` defaults to the regional AWS endpoint, with
+//! `.amazonaws.com.cn` for China regions and `.amazonaws.com` otherwise.
 //! `OXIMG_S3_PATH_STYLE` is explained at `Settings::path_style`.
 //! Temporary keys are not refreshed. When `AWS_SESSION_TOKEN` expires,
 //! every fetch fails until the process restarts with new keys.
@@ -242,9 +243,7 @@ fn load_settings() -> Result<Settings, String> {
                 .into(),
         );
     }
-    let endpoint = custom
-        .clone()
-        .unwrap_or_else(|| format!("https://s3.{region}.amazonaws.com"));
+    let endpoint = custom.clone().unwrap_or_else(|| default_endpoint(&region));
     let (scheme, host) = parse_endpoint(&endpoint)?;
     // `config::validate` refuses other values at boot. A library caller
     // that skips it gets the default.
@@ -280,6 +279,15 @@ fn load_settings() -> Result<Settings, String> {
             session_token: aws_var(std::env::var("AWS_SESSION_TOKEN")),
         },
     })
+}
+
+fn default_endpoint(region: &str) -> String {
+    let suffix = if region.starts_with("cn-") {
+        "amazonaws.com.cn"
+    } else {
+        "amazonaws.com"
+    };
+    format!("https://s3.{region}.{suffix}")
 }
 
 /// Split an endpoint URL into its scheme and its `Host` value. Only
@@ -468,6 +476,8 @@ pub(crate) async fn fetch(bucket: &str, key: &str) -> Result<reqwest::Response> 
         Err(e) => !e.is_timeout() && (e.is_connect() || e.is_request()),
     };
     let resp = if retry {
+        // Release the failed response before waiting or opening another request.
+        drop(first);
         super::UPSTREAM_RETRIES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tokio::time::sleep(Duration::from_millis(100)).await;
         send_signed(s, &target).await
@@ -479,7 +489,7 @@ pub(crate) async fn fetch(bucket: &str, key: &str) -> Result<reqwest::Response> 
     if status.is_success() {
         return Ok(resp);
     }
-    let body = read_error_body(resp).await;
+    let body = read_error_body(resp).await?;
     Err(status_error(status, body.code.as_deref(), bucket))
 }
 
@@ -592,18 +602,29 @@ struct ErrorBody {
     message: Option<String>,
 }
 
-/// Error bodies are a few hundred bytes. We stop reading after this
-/// many, so a broken store cannot make us buffer a large body.
+/// Error bodies are a few hundred bytes. Larger answers are upstream
+/// faults; never classify a truncated error as a missing object or bad key.
 const ERROR_BODY_LIMIT: usize = 16 * 1024;
 
-async fn read_error_body(mut resp: reqwest::Response) -> ErrorBody {
-    let mut body = Vec::new();
-    while body.len() < ERROR_BODY_LIMIT
-        && let Ok(Some(chunk)) = resp.chunk().await
+async fn read_error_body(mut resp: reqwest::Response) -> Result<ErrorBody> {
+    let too_large = || {
+        anyhow::anyhow!("S3 error response exceeds the {ERROR_BODY_LIMIT}-byte limit")
+            .context(UpstreamFault)
+    };
+    if resp
+        .content_length()
+        .is_some_and(|len| len > ERROR_BODY_LIMIT as u64)
     {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(map_transport_err)? {
+        if chunk.len() > ERROR_BODY_LIMIT - body.len() {
+            return Err(too_large());
+        }
         body.extend_from_slice(&chunk);
     }
-    parse_error_body(&body)
+    Ok(parse_error_body(&body))
 }
 
 /// Read `<Code>` and `<Message>` from an S3 error body. These two
@@ -668,12 +689,36 @@ fn unescape_xml(text: &str) -> String {
 /// the probe still passes.
 const PROBE_KEY: &str = ".oximg-startup-probe";
 
-/// Boot probe: fail closed with a clear message instead of a 500 on the
-/// first cache miss. Unlike `gs://`, which only proves that credentials
-/// exist, a signed GET of a missing key also checks the endpoint, the
-/// region and the keys, and on AWS and MinIO the bucket. The expected
-/// answer is 404 `NoSuchKey`. The key is under the prefix, where reads
-/// go, so a key limited to that prefix passes.
+fn probe_key(prefix: Option<&str>) -> Result<String, String> {
+    let Some(prefix) = prefix.filter(|p| !p.is_empty()) else {
+        return Ok(PROBE_KEY.into());
+    };
+    if has_dot_segment(prefix.as_bytes()) {
+        return Err(format!(
+            "s3:// prefix {prefix:?} has a . or .. segment, which cannot be fetched as signed"
+        ));
+    }
+    let remaining = S3_MAX_KEY_BYTES
+        .checked_sub(prefix.len() + 1)
+        .filter(|remaining| *remaining > 0)
+        .ok_or_else(|| {
+            "s3:// prefix leaves no room for an object key within the 1024-byte S3 limit"
+                .to_string()
+        })?;
+    // A shorter probe may exist; that is fine. Never shorten to `.` because
+    // the URL parser would remove it, invalidating the signature.
+    let name = if remaining < PROBE_KEY.len() {
+        &PROBE_KEY[1..][..remaining]
+    } else {
+        PROBE_KEY
+    };
+    Ok(format!("{prefix}/{name}"))
+}
+
+/// Boot probe: reject confirmed setup and transport faults before listening.
+/// A signed GET under the prefix is expected to return 404 `NoSuchKey`
+/// (2xx also passes). Its name is shortened to fit the object key limit.
+/// The probe cannot establish object readability in every permission model.
 ///
 /// One answer only warns. 403 `AccessDenied` is what AWS sends for a
 /// missing key when the key lacks `s3:ListBucket`, and reads can still
@@ -688,15 +733,7 @@ pub(crate) fn startup(bucket: &str, prefix: Option<&str>) -> Result<(), String> 
              outside a trusted network."
         );
     }
-    if prefix.is_some_and(|p| has_dot_segment(p.as_bytes())) {
-        return Err(format!(
-            "s3:// prefix {prefix:?} has a . or .. segment, which cannot be fetched as signed"
-        ));
-    }
-    let key = match prefix {
-        Some(p) => format!("{p}/{PROBE_KEY}"),
-        None => PROBE_KEY.to_string(),
-    };
+    let key = probe_key(prefix)?;
     let target = Target::new(s, bucket, key.as_bytes());
     // `block_on_fetch` runs the future on another thread, so it must
     // own what it uses.
@@ -720,7 +757,9 @@ async fn probe(s: &'static Settings, bucket: String, target: Target) -> Result<(
     if status.is_success() {
         return Ok(());
     }
-    let body = read_error_body(resp).await;
+    let body = read_error_body(resp)
+        .await
+        .map_err(|e| fail(format!("could not read the {status} response: {e:#}")))?;
     match (status.as_u16(), body.code.as_deref()) {
         (404, Some("NoSuchKey")) => Ok(()),
         (403, Some("AccessDenied")) => {
@@ -1001,6 +1040,22 @@ mod tests {
     }
 
     #[test]
+    fn probe_key_fits_without_changing_the_prefix() {
+        assert_eq!(probe_key(None).unwrap(), PROBE_KEY);
+        assert_eq!(probe_key(Some("")).unwrap(), PROBE_KEY);
+        for n in [1003, 1004, 1006, 1022] {
+            let prefix = "p".repeat(n);
+            let key = probe_key(Some(&prefix)).unwrap();
+            assert!(key.starts_with(&format!("{prefix}/")));
+            assert_eq!(key.len(), 1024);
+            assert!(!has_dot_segment(key.as_bytes()));
+        }
+        for prefix in ["p".repeat(1023), "p".repeat(1024), "a/../b".into()] {
+            assert!(probe_key(Some(&prefix)).is_err());
+        }
+    }
+
+    #[test]
     fn endpoint_must_be_scheme_and_host() {
         assert_eq!(
             parse_endpoint("http://127.0.0.1:9000").unwrap(),
@@ -1020,6 +1075,25 @@ mod tests {
             "https://user:pw@host",
         ] {
             assert!(parse_endpoint(bad).is_err(), "{bad} should be refused");
+        }
+    }
+
+    #[test]
+    fn aws_endpoints_use_the_regions_partition() {
+        for (region, suffix) in [
+            ("us-east-1", "amazonaws.com"),
+            ("us-gov-west-1", "amazonaws.com"),
+            ("cn-north-1", "amazonaws.com.cn"),
+            ("cn-northwest-1", "amazonaws.com.cn"),
+        ] {
+            let endpoint = default_endpoint(region);
+            assert_eq!(endpoint, format!("https://s3.{region}.{suffix}"));
+            let (_, host) = parse_endpoint(&endpoint).unwrap();
+            let target = Target::new(&settings_for("https", &host, None), "pics", b"photo.jpg");
+            assert_eq!(
+                target.url,
+                format!("https://pics.s3.{region}.{suffix}/photo.jpg")
+            );
         }
     }
 
