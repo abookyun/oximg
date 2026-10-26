@@ -10,6 +10,28 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-26
+
+Private S3 buckets as an image source ([#11], [#86], [#88]):
+`OXIMG_SOURCE_BASE_URL=s3://bucket[/prefix]` reads AWS S3, Cloudflare
+R2 and MinIO with static keys. Verified against real AWS S3 in
+us-east-1 through the compiled server:
+- JPEG, PNG and a 4000 px photograph, keys with spaces and Unicode,
+  and temporary credentials all return 200.
+- A missing object is 404 with `s3:ListBucket`, and 500 without it, as
+  documented.
+- `..` does not escape the prefix.
+- A wrong region, a wrong secret or a missing bucket fails startup.
+- A 60 MB object under `OXIMG_UPSTREAM_TIMEOUT=1` answers 504 at
+  1.0 s.
+
+Remote fetches of every kind now keep to one deadline (see Fixed).
+Every other response is byte-identical to 0.16.0. Checked on
+starship (Zen 4):
+- all 330 local fixture cells;
+- 42 fixture cells through an HTTP origin, statuses included;
+- 120 DIV2K resizes.
+
 ### Added
 
 - **`s3://` source mode** ([#11]): `OXIMG_SOURCE_BASE_URL=s3://bucket[/prefix]`
@@ -26,7 +48,11 @@ HTTP interface without notice.
   one retry, as in `gs://`. Session tokens are not refreshed, and the
   `~/.aws` profile files are not read. Signed in-tree with `hmac` and
   `sha2`, already dependencies. The library gets `process_s3` and
-  friends next to the `gcs` ones.
+  friends next to the `gcs` ones. Error-body timeouts and interrupted
+  transfers answer 504 and 502. Error bodies over 16 KiB are upstream
+  failures. Startup probes fit long prefixes within S3's 1024-byte key
+  limit, and a prefix with no room for an object name is rejected at
+  startup.
 - **S3 test harness**: `cargo run --release --example s3-harness -- check`
   drives the compiled control CLI against a local signature-checking store.
   The same fault catalog runs in CI; `serve` exposes it for manual tests.
@@ -34,13 +60,10 @@ HTTP interface without notice.
 
 ### Fixed
 
-- Remote fetches now share one timeout across credentials, retries, backoff
-  and body download. Cancellation releases the fetch slot.
-- S3 error-body timeouts and interrupted transfers remain 504/502. Error
-  bodies above 16 KiB are upstream failures, never partially classified as
-  missing objects or invalid keys.
-- S3 startup probes fit long prefixes without exceeding the 1024-byte key
-  limit; prefixes with no room for an object name are rejected locally.
+- **`OXIMG_UPSTREAM_TIMEOUT` bounds the whole remote fetch.** For
+  `http(s)://`, `gs://` and `s3://` sources, it now covers credentials,
+  retries, backoff and the body download together, so a retry can no
+  longer run past it. Cancellation releases the fetch slot.
 
 ## [0.16.0] - 2026-10-26
 
@@ -1098,6 +1121,8 @@ from the #10 follow-up measurement.
   "correct" the observed-vs-billed mismatch.
 
 [#11]: https://github.com/oximg/oximg/issues/11
+[#88]: https://github.com/oximg/oximg/pull/88
+[#86]: https://github.com/oximg/oximg/pull/86
 
 ## [0.7.3] - 2026-08-03
 
@@ -1871,7 +1896,8 @@ did, in any output format.
   concurrency pinned to the core count — published to crates.io via
   Trusted Publishing.
 
-[unreleased]: https://github.com/oximg/oximg/compare/v0.16.0...HEAD
+[unreleased]: https://github.com/oximg/oximg/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/oximg/oximg/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/oximg/oximg/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/oximg/oximg/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/oximg/oximg/compare/v0.13.0...v0.14.0
