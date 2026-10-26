@@ -2978,10 +2978,31 @@ fn s3_harness_shuts_down_inflight_connections() {
             "/test-bucket/photo.jpg"
         ]
     );
+    // A connection the fake has accepted but not yet answered. Dropping
+    // the fake must close it, as it must the server's delayed body.
+    // (Probing the port with a fresh connect instead is racy under the
+    // parallel suite: another test can bind the freed port.)
+    let mut idle = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    idle.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
     let start = std::time::Instant::now();
     drop(s3);
     assert!(start.elapsed() < std::time::Duration::from_secs(2));
-    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
+    // EOF or a reset means the fake closed it; a read timeout means the
+    // connection outlived the fake.
+    let mut buf = [0u8; 1];
+    let read = std::io::Read::read(&mut idle, &mut buf);
+    assert!(
+        match &read {
+            Ok(n) => *n == 0,
+            Err(e) => !matches!(
+                e.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ),
+        },
+        "the fake left an accepted connection open: {read:?}"
+    );
 }
 
 /// Issue #11: the s3:// mode reads a private bucket with static keys.
