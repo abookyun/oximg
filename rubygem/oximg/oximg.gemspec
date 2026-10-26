@@ -15,7 +15,7 @@ Gem::Specification.new do |spec|
   DESC
   spec.homepage = "https://github.com/oximg/oximg"
   spec.license = "Apache-2.0"
-  spec.required_ruby_version = ">= 3.1"
+  spec.required_ruby_version = ">= 3.2"
 
   # Platform gems are built by dropping the matching release binary into
   # exe/ and setting this (see the rubygems job in

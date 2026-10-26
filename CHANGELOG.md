@@ -10,6 +10,12 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+### Changed
+
+- **The `oximg` and `oximg-rails` gems require Ruby 3.2 or later.** Ruby
+  3.1 reached end of life in 2025-03, and CI's current Ubuntu image has
+  no 3.1 build to test it on.
+
 ### Fixed
 
 - **Parallel resize no longer rejects valid dimensions with HTTP 422.**
