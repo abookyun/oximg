@@ -92,9 +92,20 @@ photographs). The two corpora differ in a way that matters here:
   full resolution, so it favours the decode that keeps them, i.e. the
   full decode.
 
-Read the large-row drop as an upper bound against a biased reference,
-not as a measured loss. Either way, oximg stays 11-20 points ahead of
-imgproxy on these rows.
+The source quality was not the cause. `dct_sweep.py` re-run with q75
+sources (2026-10-25, 100 DIV2K photographs, lossless truth, output
+q80) gives the default against a full decode as:
+
+| served | 4x | 5.3x | 8x |
+|---|---|---|---|
+| q75 | −0.31 (worst −1.22) | −0.08 (−0.65) | **+0.05** (−0.40) |
+| q92 | −0.32 (worst −0.94) | −0.08 (−0.73) | +0.03 (−0.40) |
+
+No image loses 2 points at any ratio. The 8x cell that drops 1.4 here
+is neutral against a lossless truth at q75 too. Read the large-row
+drop as this harness's reference favouring the full decode, not as a
+loss. Either way, oximg stays 11-20 points ahead of imgproxy on these
+rows.
 
 **Shrink-on-load was the ceiling here, not the encoder** (the 0.11
 history). These rows were 77.5 / 74.7 / 71.4 until 2026-08, when JPEG shrink-on-load stopped
