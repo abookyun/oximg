@@ -10,7 +10,7 @@ use std::time::Duration;
 
 pub fn origin() -> std::io::Result<S3> {
     let counts = Mutex::new(HashMap::<String, usize>::new());
-    S3::spawn(move |path, _| {
+    S3::spawn(move |path, request| {
         let mut counts = counts.lock().unwrap();
         let count = counts.entry(path.to_string()).or_default();
         *count += 1;
@@ -57,6 +57,17 @@ pub fn origin() -> std::io::Result<S3> {
         }
         if path.ends_with("/photo.jpg") || path.ends_with("/x") {
             return Reply::photo();
+        }
+        // Answers only a request carrying the configured session token, so
+        // a build that drops or alters AWS_SESSION_TOKEN fails the case.
+        // The fake's signature check already requires a present token to
+        // be signed. `request` is the lowercased request head.
+        if path == "/test-bucket/session.jpg" {
+            return if request.contains("\r\nx-amz-security-token: test-session-token\r\n") {
+                Reply::photo()
+            } else {
+                Reply::error("403 Forbidden", "InvalidToken")
+            };
         }
         match path {
             "/test-bucket/space%20name.jpg" | "/test-bucket/plus%2Bsign.jpg"
@@ -164,11 +175,13 @@ pub fn check(ctl: &Path) -> Result<Value> {
         case.wire_key = wire_key.into();
         cases.push(case);
     }
-    let mut session = Case::new("session-token", "photo.jpg", 200, 1);
+    let mut session = Case::new("session-token", "session.jpg", 200, 1);
     session
         .extra
         .push(("AWS_SESSION_TOKEN", "test-session-token"));
     cases.push(session);
+    // The same route without the token: proves the route discriminates.
+    cases.push(Case::new("session-token-missing", "session.jpg", 500, 1));
     let mut capped = Case::new("source-byte-cap", "photo.jpg", 413, 1);
     capped.extra.push(("OXIMG_MAX_SOURCE_BYTES", "1"));
     cases.push(capped);
