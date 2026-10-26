@@ -10,6 +10,12 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+### Changed
+
+- **The `oximg` and `oximg-rails` gems require Ruby 3.2 or later.** Ruby
+  3.1 reached end of life in 2025-03, and CI's current Ubuntu image has
+  no 3.1 build to test it on.
+
 ### Fixed
 
 - **Parallel resize no longer rejects valid dimensions with HTTP 422.**
@@ -21,6 +27,12 @@ HTTP interface without notice.
   roots.** webpki-roots 1.0.10 drops emSign ECC Root CA - G3, and
   rustls-webpki 0.103.16 stops accepting certificate paths through
   distrusted intermediates (RUSTSEC-2026-0381, RUSTSEC-2026-0382).
+
+- **Signature verification compares in constant time again.** ctutils
+  0.4.6, which hmac and sha2 use for their comparisons, fixes
+  non-constant-time mask generation and `u128` comparisons
+  (RUSTSEC-2026-0385). tokio 1.54.1 fixes `AsyncFd` constructors that
+  violated I/O safety (RUSTSEC-2026-0386).
 
 ## [0.15.0] - 2026-10-19
 

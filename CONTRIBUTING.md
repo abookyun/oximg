@@ -76,7 +76,7 @@ The [CI workflow](.github/workflows/ci.yml) gates every PR on:
 - **Coverage**: `cargo llvm-cov --release --features avif
   --fail-under-lines 80` — a collapse detector, not a target (the
   suite currently sits around 86%)
-- the **Ruby gem** suites on Ruby 3.1 and 3.4, plus the same suites
+- the **Ruby gem** suites on Ruby 3.2 and 3.4, plus the same suites
   against a musl build on Alpine
 - **License compliance**
   ([compliance.yml](.github/workflows/compliance.yml)):
@@ -135,7 +135,7 @@ cd rubygem/oximg && bundle install && bundle exec rake test
 cd ../oximg-rails && bundle install && bundle exec rake test
 ```
 
-Ruby >= 3.1 (the declared floor; CI also runs the current release).
+Ruby >= 3.2 (the declared floor; CI also runs the current release).
 Without a binary the integration tests skip rather than fail, so the
 unit halves stay runnable on a machine with no Rust toolchain;
 `OXIMG_BIN` points the gem at any other binary.
