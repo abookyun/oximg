@@ -185,10 +185,10 @@ generally perceptible; both oximg profiles decode to identical pixels
 — sequential (SOF1) vs progressive jpegli differ only in entropy layout).
 Smooth synthetic noise is the content where oximg's supersampled
 linear-light resize matters least; on the real-photo corpus the same
-q80 comparison is **77.5 / 72.1 / 67.3 vs imgproxy's 71.2 / 60.1 /
-49.7** for 768px/2000px/4000px sources — +6 to +18 points, with
-imgproxy unable to close it at any byte cost (63.8 KB at q90 still
-scores 76.0 vs oximg's 77.5 from 34.0 KB). Full protocol and sweeps
+q80 comparison on 0.15.0 is **77.5 / 77.1 / 75.9 vs imgproxy 4.0.17's
+71.2 / 65.8 / 56.2** for 768px/2000px/4000px sources, +6 to +20
+points. imgproxy passes oximg's q80 score only at q90: 78.7 from
+62.5 KB, against oximg's 77.5 from 34.2 KB. Full protocol and sweeps
 in [bench/quality/QUALITY.md](bench/quality/QUALITY.md).
 
 Both oximg rows are the auto overlap gate composing one pipeline:
@@ -458,10 +458,17 @@ checks.
 Notes:
 
 - **#63's target was ≥1.3x imgproxy on both instances.** c7g meets it.
-  c7i does not, at 1.24-1.26x. That is the ratio the local Zen 4 runs
-  measured (1.24-1.31x). #63 flagged the one-SMT-core topology as the
-  likely gap: oximg's fused decode thread competes with the request
-  path for the same core.
+  On c7i the answer depends on the instance. This one measured
+  1.24-1.26x. A second fresh c7i.large (2026-10-21, #107) ran the
+  same images with the same cell method and measured oximg 110.0 /
+  109.7 against imgproxy 82.6 / 82.2, i.e. **1.33x**. Both were Xeon
+  Platinum 8488C, stepping 8, yet oximg was 23% faster and imgproxy
+  14% faster on the second instance. Read c7i as **1.24-1.33x across
+  instances**. The same run ruled out the suspects:
+  - The one-SMT-core topology: a Zen 4 SMT pair with nginx and k6
+    co-located measures 1.37-1.38x.
+  - The Intel-only 512-bit horizontal pass: the same clock either
+    way, and the 256-bit pass is within 0.6-1.2%.
 - **Against 2026-07** (a pre-0.11 build, retired by this run), oximg's
   JPEG cell rose from 78.7 to 88.5 on c7i and from 91.2 to 101.0 on
   c7g. imgproxy moved from 67.0 to 71.9 and from 68.0 to 65.7. The

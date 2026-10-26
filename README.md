@@ -12,8 +12,8 @@ animated WebP); sources are format-sniffed by magic bytes and re-encoded
 in their own format (GIF, having no encoder here, becomes WebP). On
 imgproxy's official benchmark harness, run on
 the same AWS instance types as their published results (2026-10),
-0.15.0 does 1.24-1.26x imgproxy 4.0.17's JPEG req/s on c7i.large and
-1.51-1.53x on c7g.large over three rounds, while resizing in linear
+0.15.0 does 1.24-1.33x imgproxy 4.0.17's JPEG req/s on c7i.large
+(across two instances) and 1.51-1.53x on c7g.large, while resizing in linear
 light at measurably higher output quality. Single runs of the other
 formats put it ahead on PNG and WebP on both and on AVIF on Graviton,
 and level on AVIF on x86-64 (see [Benchmarks](#benchmarks)).
@@ -210,8 +210,9 @@ numbers — req/s, higher is better, p95 in parentheses. Measured
 imagor 1.9.13 and thumbor 7.8.0, all checks 100%
 ([BENCH.md](BENCH.md#official-harness-on-real-aws-hardware-c7ilarge-and-c7glarge)).
 The table cells are single 5-minute runs. On JPEG, three rotated rounds
-put 0.15.0 at 1.24-1.26x imgproxy on c7i.large and 1.51-1.53x on
-c7g.large. AVIF on c7i, 16.5 against 16.2, is a tie within instance
+put 0.15.0 at 1.24-1.26x imgproxy on this c7i.large and 1.51-1.53x on
+c7g.large. A second c7i.large measured 1.33x, so read c7i as
+1.24-1.33x across instances. AVIF on c7i, 16.5 against 16.2, is a tie within instance
 variance.
 
 | c7i.large (x86-64) | JPEG | PNG | WebP | AVIF |
@@ -234,10 +235,10 @@ JPEG sources at a reduced DCT scale, and were not re-run in 2026-10:
 | AVIF | 44.6 (57 ms) | 44.9 | **56.5** (46 ms) | 52.7 |
 
 At the same time, output quality is higher, not traded away:
-end-to-end JPEG at the same q80 scores +6 to +18 SSIMULACRA2 over
+end-to-end JPEG at the same q80 scores +6 to +20 SSIMULACRA2 over
 imgproxy (77.5 vs 71.2 on the Kodak corpus, the gap widening with
-source size — and imgproxy at q90 with twice the bytes still scores
-lower), pure resize quality (lossless PNG path) scores 97.6 vs 81.9,
+source size; imgproxy passes it only at q90, with 1.8x the bytes),
+pure resize quality (lossless PNG path) scores 97.6 vs 81.9,
 and the AVIF default produces smaller files than imgproxy's default
 at +6.7 SSIMULACRA2.
 

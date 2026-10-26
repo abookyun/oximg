@@ -27,6 +27,27 @@ HTTP interface without notice.
   `sha2`, already dependencies. The library gets `process_s3` and
   friends next to the `gcs` ones.
 
+## [0.16.0] - 2026-10-26
+
+A security and maintenance release.
+- **URL signature verification compares in constant time again** after
+  a ctutils advisory in the hmac/sha2 stack.
+- **Remote-source fetches drop the distrusted emSign roots.**
+- **The Ruby gems now require Ruby 3.2** (3.1 is end of life). This is
+  the reason for a minor version rather than a patch.
+
+Every response is byte-identical to 0.15.0. Checked on starship (Zen
+4): all 330 fixture cells (every fixture, 5 boxes, bare / `@webp` /
+`@jpg`) and 120 DIV2K resizes (40 photographs at fit 1024, 512 and 128).
+Library and HTTP APIs are unchanged. No code path that the published
+benchmarks run changed, and they were not re-run.
+
+### Changed
+
+- **The `oximg` and `oximg-rails` gems require Ruby 3.2 or later.** Ruby
+  3.1 reached end of life in 2025-03, and CI's current Ubuntu image has
+  no 3.1 build to test it on.
+
 ### Fixed
 
 - **Parallel resize no longer rejects valid dimensions with HTTP 422.**
@@ -38,6 +59,12 @@ HTTP interface without notice.
   roots.** webpki-roots 1.0.10 drops emSign ECC Root CA - G3, and
   rustls-webpki 0.103.16 stops accepting certificate paths through
   distrusted intermediates (RUSTSEC-2026-0381, RUSTSEC-2026-0382).
+
+- **Signature verification compares in constant time again.** ctutils
+  0.4.6, which hmac and sha2 use for their comparisons, fixes
+  non-constant-time mask generation and `u128` comparisons
+  (RUSTSEC-2026-0385). tokio 1.54.1 fixes `AsyncFd` constructors that
+  violated I/O safety (RUSTSEC-2026-0386).
 
 ## [0.15.0] - 2026-10-19
 
@@ -1829,7 +1856,8 @@ did, in any output format.
   concurrency pinned to the core count — published to crates.io via
   Trusted Publishing.
 
-[unreleased]: https://github.com/oximg/oximg/compare/v0.15.0...HEAD
+[unreleased]: https://github.com/oximg/oximg/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/oximg/oximg/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/oximg/oximg/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/oximg/oximg/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/oximg/oximg/compare/v0.12.0...v0.13.0

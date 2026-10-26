@@ -448,9 +448,9 @@ Used by:
 ## Apache License 2.0
 
 Used by:
-- [oximg 0.15.0](https://github.com/oximg/oximg)
+- [oximg 0.16.0](https://github.com/oximg/oximg)
 - [cmov 0.5.4](https://github.com/RustCrypto/utils)
-- [ctutils 0.4.2](https://github.com/RustCrypto/utils)
+- [ctutils 0.4.6](https://github.com/RustCrypto/utils)
 - [utf8_iter 1.0.4](https://github.com/hsivonen/utf8_iter)
 - [zeroize 1.9.0](https://github.com/RustCrypto/utils)
 
@@ -6219,7 +6219,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Used by:
 - [tokio-util 0.7.19](https://github.com/tokio-rs/tokio)
-- [tokio 1.52.3](https://github.com/tokio-rs/tokio)
+- [tokio 1.54.1](https://github.com/tokio-rs/tokio)
 
 ```
 MIT License

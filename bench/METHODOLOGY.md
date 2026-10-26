@@ -29,7 +29,16 @@ directory encode them.
    part of the workload.
 6. **Expect outliers.** A single 5-10% low round happens (ambient);
    two more rounds resolve it. Never conclude from one round.
-7. **Saturated cells move on work *removal* only.** Relocating work
+7. **Cloud instances: at least two per type.** Two fresh c7i.large
+   instances (same AMI, CPU model and stepping) measured the same
+   images 23% (oximg) and 14% (imgproxy) apart, moving the ratio from
+   1.24x to 1.33x (#107). One instance is one draw: report a ratio as
+   the range across instances.
+8. **Counting tools perturb the comparison.** `perf stat -a -G
+   <cgroup>` on the server container cost imgproxy ~8% and oximg ~4%
+   of throughput. Take cross-server req/s from runs without it; use
+   counted runs to compare builds of the same server.
+9. **Saturated cells move on work *removal* only.** Relocating work
    between threads changes latency, not saturated throughput; don't
    expect throughput wins from overlap changes.
 
