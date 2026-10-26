@@ -1,0 +1,6 @@
+name = "oximg-workers-rs"
+main = "build/index.js"
+compatibility_date = "2026-06-01"
+
+[build]
+command = "./build.sh"

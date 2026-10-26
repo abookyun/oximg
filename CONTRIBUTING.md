@@ -80,7 +80,7 @@ The [CI workflow](.github/workflows/ci.yml) gates every PR on:
 - **Coverage**: `cargo llvm-cov --release --features avif
   --fail-under-lines 80` — a collapse detector, not a target (the
   suite currently sits around 86%)
-- the **Ruby gem** suites on Ruby 3.1 and 3.4, plus the same suites
+- the **Ruby gem** suites on Ruby 3.2 and 3.4, plus the same suites
   against a musl build on Alpine
 - **License compliance**
   ([compliance.yml](.github/workflows/compliance.yml)):
@@ -100,6 +100,11 @@ cargo clippy --release --all-targets -- -D warnings
 cargo test --release
 ```
 
+`scripts/check.sh quick` runs the same three on the `agent` profile
+(release codegen without fat LTO, so an edit relinks in seconds instead
+of ~100 s); `scripts/check.sh full` runs everything CI's amd64 test job
+does, on release. Both print one JSON summary.
+
 ## Control CLI
 
 `oximg-ctl` is the JSON control plane over the real `oximg` binary:
@@ -108,9 +113,9 @@ matrix. stdout is one JSON object (except `--help` and `--version`).
 Docker images still copy only `oximg`. The compressed feature map (how
 to reach a behavior and what proof looks like) is
 [`docs/features/`](docs/features/). Agents must follow
-[`.grok/skills/verify/SKILL.md`](.grok/skills/verify/SKILL.md)
-(Cursor: [`.cursor/skills/verify-oximg/`](.cursor/skills/verify-oximg/)):
-`cargo test` green is not done until ctl JSON matches the map.
+[`.claude/skills/verify/SKILL.md`](.claude/skills/verify/SKILL.md)
+(the Cursor and Grok skills point there): `cargo test` green is not
+done until ctl JSON matches the map.
 
 ```sh
 cargo build --release                 # both oximg and oximg-ctl
@@ -134,7 +139,7 @@ cd rubygem/oximg && bundle install && bundle exec rake test
 cd ../oximg-rails && bundle install && bundle exec rake test
 ```
 
-Ruby >= 3.1 (the declared floor; CI also runs the current release).
+Ruby >= 3.2 (the declared floor; CI also runs the current release).
 Without a binary the integration tests skip rather than fail, so the
 unit halves stay runnable on a machine with no Rust toolchain;
 `OXIMG_BIN` points the gem at any other binary.

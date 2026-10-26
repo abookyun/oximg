@@ -11,12 +11,12 @@ self-hostable HTTP server (PoC). JPEG, PNG, WebP — and AVIF with the
 animated WebP); sources are format-sniffed by magic bytes and re-encoded
 in their own format (GIF, having no encoder here, becomes WebP). On
 imgproxy's official benchmark harness, run on
-the same AWS instance types as their published results, oximg led
-every format cell on both x86-64 and Graviton (2026-07, a pre-0.11
-build) while resizing in linear light at measurably higher output
-quality. On the same harness shape re-run locally, 0.14.0 leads
-imgproxy 4.0.17 on JPEG by 1.22-1.28x (Intel i7-1360P), with AWS
-pending (see [Benchmarks](#benchmarks)).
+the same AWS instance types as their published results (2026-10),
+0.15.0 does 1.24-1.33x imgproxy 4.0.17's JPEG req/s on c7i.large
+(across two instances) and 1.51-1.53x on c7g.large, while resizing in linear
+light at measurably higher output quality. Single runs of the other
+formats put it ahead on PNG and WebP on both and on AVIF on Graviton,
+and level on AVIF on x86-64 (see [Benchmarks](#benchmarks)).
 
 ## Features
 
@@ -70,8 +70,10 @@ pending (see [Benchmarks](#benchmarks)).
   memory stays at a fraction of imgproxy's under identical load
   ([BENCH.md](BENCH.md)).
 - **Tunable profiles**: the default maximizes quality per byte
-  (progressive jpegli); one env flip (`OXIMG_JPEG_PROGRESSIVE=0`)
-  trades ~10% output size for the lowest latency at unchanged pixels.
+  (progressive jpegli, sequential for thumbnails up to 12k pixels);
+  one env flip (`OXIMG_JPEG_PROGRESSIVE=0`) trades 2-3% output size on
+  photos (up to ~11% on graphics) for 5-28% less server CPU, at
+  unchanged pixels.
   `PRESET=fast|small` selects mozjpeg profiles instead.
 - **Self-contained deploys**: multi-arch Docker images
   (linux/amd64 + linux/arm64) on Docker Hub (`oximg/oximg`) and GHCR
@@ -85,7 +87,7 @@ combines with any encode column:
 
 | Format | Decode | Encode |
 |---|---|---|
-| JPEG | baseline, extended sequential (SOF1) & progressive, grayscale; streaming, full-size decode (4:2:0 luma at 1/2 in linear light from ~3.8x; libjpeg shrink-on-load opt-in) | jpegli progressive (default) or sequential (SOF1, `OXIMG_JPEG_PROGRESSIVE=0`), mozjpeg profiles via `PRESET` |
+| JPEG | baseline, extended sequential (SOF1) & progressive, grayscale; streaming, full-size decode (4:2:0 luma at 1/2 in linear light from ~3.8x; libjpeg shrink-on-load opt-in) | jpegli progressive (default; sequential up to 12k output pixels) or sequential (SOF1, `OXIMG_JPEG_PROGRESSIVE=0`), mozjpeg profiles via `PRESET` |
 | PNG | palette / grayscale / 16-bit, normalized to RGB(A)8 | lossless RGB(A); opt-in palette quantization (`OXIMG_PNG_QUANTIZE`) |
 | WebP | lossy & lossless, alpha | lossy (`OXIMG_WEBP_QUALITY`, 75), alpha; output is scaled to fit WebP's 16383 px limit |
 | AVIF (`--features avif`) | dav1d: 8/10/12-bit, all subsamplings, alpha | SVT-AV1: 10-bit 4:2:0, tune=ssim, alpha as auxiliary image |
@@ -189,7 +191,7 @@ source bytes (local file or HTTP origin)
        other formats resize full-frame: pic-scale on x86-64, the same
        in-tree kernel on aarch64)
   → encode in the source format (GIF sources: WebP, the default target)
-      JPEG: jpegli, progressive (PRESET=fast / PRESET=small select mozjpeg profiles)
+      JPEG: jpegli, progressive above 12k output pixels (PRESET=fast / PRESET=small select mozjpeg profiles)
       PNG:  png crate | WebP: libwebp | AVIF: SVT-AV1 (10-bit 4:2:0, tune=ssim)
       animated GIF: each frame composited, resized and streamed into
             libwebp's animation encoder (one canvas in memory, not N)
@@ -204,29 +206,28 @@ layer (axum/tokio) only does queueing and IO.
 imgproxy's official harness (DIV2K corpus over nginx, fit into 512x512,
 k6, all defaults) on the AWS instance types behind imgproxy's published
 numbers — req/s, higher is better, p95 in parentheses. Measured
-2026-07-05 on a pre-0.11 build, whose JPEG decode policy differs from
-today's. 0.11-0.13 decoded JPEG sources at full size, and 0.14 takes
-a linear-light half-size luma decode for 4:2:0 sources reduced about
-3.8x or more. The JPEG column and the JPEG-source cells are therefore
-not current numbers. On the same harness shape, re-run locally on an
-Intel i7-1360P (2026-10-02), 0.14.0 leads imgproxy 4.0.17 by
-1.22-1.28x on JPEG→JPEG
-([BENCH.md](BENCH.md#jpeg-sources-since-011-2026-10)). An AWS
-re-measurement is pending
-([#63](https://github.com/oximg/oximg/issues/63)).
+2026-10-21 on the released 0.15.0 image against imgproxy 4.0.17,
+imagor 1.9.13 and thumbor 7.8.0, all checks 100%
+([BENCH.md](BENCH.md#official-harness-on-real-aws-hardware-c7ilarge-and-c7glarge)).
+The table cells are single 5-minute runs. On JPEG, three rotated rounds
+put 0.15.0 at 1.24-1.26x imgproxy on this c7i.large and 1.51-1.53x on
+c7g.large. A second c7i.large measured 1.33x, so read c7i as
+1.24-1.33x across instances. AVIF on c7i, 16.5 against 16.2, is a tie within instance
+variance.
 
 | c7i.large (x86-64) | JPEG | PNG | WebP | AVIF |
 |---|---|---|---|---|
-| oximg | **78.7** (33 ms) | **32.8** (79 ms) | **30.9** (92 ms) | **15.6** (181 ms) |
-| best of imgproxy/imagor/thumbor | 67.0 | 15.5 | 20.3 | 15.2 |
+| oximg | **88.5** (29 ms) | **34.6** (75 ms) | **32.5** (88 ms) | **16.5** (174 ms) |
+| best of imgproxy/imagor/thumbor | 71.9 | 16.3 | 21.5 | 16.2 |
 
 | c7g.large (Graviton3) | JPEG | PNG | WebP | AVIF |
 |---|---|---|---|---|
-| oximg | **91.2** (28 ms) | **39.0** (66 ms) | **41.5** (70 ms) | **23.4** (124 ms) |
-| best of imgproxy/imagor/thumbor | 68.0 | 22.1 | 25.4 | 20.3 |
+| oximg | **101.0** (25 ms) | **40.8** (63 ms) | **42.5** (68 ms) | **24.8** (119 ms) |
+| best of imgproxy/imagor/thumbor | 65.7 | 21.9 | 25.4 | 19.9 |
 
 Cross-format cells (our harness extension; JPEG sources, oximg vs
-imgproxy):
+imgproxy). These are from 2026-07 on a pre-0.11 build, which decoded
+JPEG sources at a reduced DCT scale, and were not re-run in 2026-10:
 
 | JPEG→ | c7i oximg | c7i imgproxy | c7g oximg | c7g imgproxy |
 |---|---|---|---|---|
@@ -234,10 +235,10 @@ imgproxy):
 | AVIF | 44.6 (57 ms) | 44.9 | **56.5** (46 ms) | 52.7 |
 
 At the same time, output quality is higher, not traded away:
-end-to-end JPEG at the same q80 scores +6 to +18 SSIMULACRA2 over
+end-to-end JPEG at the same q80 scores +6 to +20 SSIMULACRA2 over
 imgproxy (77.5 vs 71.2 on the Kodak corpus, the gap widening with
-source size — and imgproxy at q90 with twice the bytes still scores
-lower), pure resize quality (lossless PNG path) scores 97.6 vs 81.9,
+source size; imgproxy passes it only at q90, with 1.8x the bytes),
+pure resize quality (lossless PNG path) scores 97.6 vs 81.9,
 and the AVIF default produces smaller files than imgproxy's default
 at +6.7 SSIMULACRA2.
 
@@ -576,7 +577,8 @@ never silently falls back to a default.
 |---|---|---|
 | `QUALITY` | `80` | JPEG quality |
 | `PRESET` | `jpegli` | `fast` = mozjpeg baseline, `small` = mozjpeg trellis+progressive |
-| `OXIMG_JPEG_PROGRESSIVE` | `1` | `0` = sequential jpegli (SOF1, extended sequential; not baseline SOF0): a few percent larger output for lower latency; with `OXIMG_OVERLAP` this is the speed profile (~-13% single-request latency, ~+9% saturated throughput) |
+| `OXIMG_JPEG_PROGRESSIVE` | `1` | `0` = sequential jpegli (SOF1, extended sequential; not baseline SOF0) with optimized Huffman tables, at every size: the speed profile. Same pixels; output +2.2% at fit 512 (up to +10.7% on graphics) for -5.5% server CPU at fit 512 and -28% on large graphics (Zen 4, single client) |
+| `OXIMG_JPEG_SEQUENTIAL_PIXELS` | `12000` | With progressive on, outputs of at most this many pixels are written sequential: on thumbnails that is both smaller and cheaper. `0` = progressive at every size |
 | `OXIMG_WEBP_QUALITY` | `75` | WebP quality |
 | `OXIMG_WEBP_EFFORT` | `2` | libwebp `method` |
 | `OXIMG_AVIF_QUALITY` | `55` | AVIF quality (libavif semantics; chosen by operating point, see [bench/quality/QUALITY.md](bench/quality/QUALITY.md)) |
@@ -690,8 +692,17 @@ which makes it `OXIMG_MAX_ANIM_WORK`, not the canvas, that bounds it.
 
 ## Deployment
 
+The primary hosted targets are **Cloud Run**, **Cloudflare Containers**
+and **Cloudflare Workers** (experimental, wasm). Render, Railway and
+Fly.io are next. [Deployment targets](docs/deploy-targets.md) compares
+them with measured cost per transform and cold start, and
+[`deploy/`](deploy/) holds a deploy script or config for each.
+
 Per-platform guides live in [`docs/`](docs/):
 
+- [Cloudflare Containers & Workers](docs/deploy-cloudflare.md) — the
+  released image behind a Worker with URL-hashed instances, the
+  container-sleep pitfall, and what the wasm build can and cannot do.
 - [Docker / docker-compose](docs/deploy-docker.md) — tag pinning
   (`latest` rebuilds on every main push), read-only mounts, remote
   origins, graceful `docker stop`, building tuned images.

@@ -42,13 +42,154 @@ HTTP interface without notice.
 - S3 startup probes fit long prefixes without exceeding the 1024-byte key
   limit; prefixes with no room for an object name are rejected locally.
 
+## [0.16.0] - 2026-10-26
+
+A security and maintenance release.
+- **URL signature verification compares in constant time again** after
+  a ctutils advisory in the hmac/sha2 stack.
+- **Remote-source fetches drop the distrusted emSign roots.**
+- **The Ruby gems now require Ruby 3.2** (3.1 is end of life). This is
+  the reason for a minor version rather than a patch.
+
+Every response is byte-identical to 0.15.0. Checked on starship (Zen
+4): all 330 fixture cells (every fixture, 5 boxes, bare / `@webp` /
+`@jpg`) and 120 DIV2K resizes (40 photographs at fit 1024, 512 and 128).
+Library and HTTP APIs are unchanged. No code path that the published
+benchmarks run changed, and they were not re-run.
+
 ### Changed
 
+- **The `oximg` and `oximg-rails` gems require Ruby 3.2 or later.** Ruby
+  3.1 reached end of life in 2025-03, and CI's current Ubuntu image has
+  no 3.1 build to test it on.
+
+### Fixed
+
+- **Parallel resize no longer rejects valid dimensions with HTTP 422.**
+  Clamp band crops to the remaining source height so floating-point
+  rounding at the bottom edge cannot overflow it (for example,
+  200×150 → 156×117 with `OXIMG_PAR=4`).
+
+- **Remote-source fetches no longer trust the distrusted emSign
+  roots.** webpki-roots 1.0.10 drops emSign ECC Root CA - G3, and
+  rustls-webpki 0.103.16 stops accepting certificate paths through
+  distrusted intermediates (RUSTSEC-2026-0381, RUSTSEC-2026-0382).
+
+- **Signature verification compares in constant time again.** ctutils
+  0.4.6, which hmac and sha2 use for their comparisons, fixes
+  non-constant-time mask generation and `u128` comparisons
+  (RUSTSEC-2026-0385). tokio 1.54.1 fixes `AsyncFd` constructors that
+  violated I/O safety (RUSTSEC-2026-0386).
+
+## [0.15.0] - 2026-10-19
+
+Small JPEG outputs get smaller ([#61]). An output of at most 12,000
+pixels (a 128x85 thumbnail) is now written sequential instead of
+progressive, and every sequential output carries optimized Huffman
+tables. Pixels are identical to 0.14.0. Across the test fixtures at
+five sizes, 108 of 330 responses change bytes, all of them JPEGs of
+at most 12,000 pixels with identical decoded pixels, and fixture JPEG
+bytes drop 3.3% in total. Every other fixture response is
+byte-identical to 0.14.0, and larger outputs do not change. Library
+and HTTP APIs are unchanged.
+
+On imgproxy's benchmark shape (100 DIV2K photographs, fit 512 q80,
+k6, 2 VUs), measured on a Ryzen 7 8745HS (Zen 4) in 3 rotated rounds
+per cell, all cells passing every check:
+
+| | one SMT pair | two cores |
+|---|---|---|
+| 0.14.0 | 155.0 req/s | 194.9 |
+| **0.15.0** | **158.2** | **197.6** |
+| imgproxy 4.0.17 | 120.9 | 159.6 |
+
+0.15.0 does 1.4-2.0% more req/s than 0.14.0 at 1.8-2.0% less server
+CPU per request, from the linear-light shrink's pair table, and
+1.24-1.31x imgproxy. Output averages 44,994 bytes per image, the same
+as 0.14.0 (imgproxy 42,571). The harness ran on f1c65b4, one commit
+before the 12,000-pixel threshold, which does not apply to these
+512-pixel outputs.
+
+### Added
+
+- **`oximg-ctl parity --against OTHER/oximg` compares two builds byte
+  for byte.** It requests the same cells as `matrix` (every fixture
+  that probes as an image, at three boxes, bare and `@webp`) from the
+  `--bin` build and then from OTHER, each on its own spawned server,
+  and compares the response bodies' sha256. Only a 200 on both sides
+  counts as compared; the same error on both is reported as skipped. It
+  exits 1 if any cell differs or none compared, and stops with an
+  `interrupted` error on Ctrl-C rather than reporting a partial run.
+- **Deployment targets: Cloud Run, Cloudflare Containers, Cloudflare
+  Workers.** [docs/deploy-targets.md](docs/deploy-targets.md) compares
+  them on measured billing per transform and cold start; `deploy/`
+  holds a deploy script or config for each. Cloudflare Containers runs
+  the released image behind a Worker that hashes URL paths across
+  instances, so request coalescing still works. The Workers build
+  (experimental) compiles the pipeline to wasm: output matches native
+  on the test fixtures at 3–6× the CPU, with no AVIF and no signing.
+
+### Changed
+
+- **4:2:0 and 4:2:2 JPEGs decoded at full scale are read as raw YCbCr**
+  on x86 CPUs with AVX-512 VBMI (AMD Zen 4 and later, Intel Ice Lake
+  and later). libjpeg no longer upsamples the chroma or converts the
+  color. Instead, the resize kernel replicates the chroma, converts to
+  RGB and applies the sRGB-to-linear lookup in one pass while staging
+  each row. Serial and fused decodes both take this path. Output is
+  bit-identical.
+
+  It applies wherever the decode stays at full scale: reductions below
+  the linear half-size decode's 4x, every 4:2:2 source, and
+  `OXIMG_LINEAR_SHRINK=0`. Measured on DIV2K, Zen 4, q80. Each figure
+  is the change in user cycles per request for the h75 and q92 sets:
+
+  | fit | server | cycles |
+  |---|---|---|
+  | 1024 | one logical CPU | -2.9%, -2.4% |
+  | 1024 | fused, on one SMT pair | -4.9%, -3.8% |
+  | 512, `OXIMG_LINEAR_SHRINK=0` | one logical CPU | -4.1%, -3.7% |
+
+  At fit 512 with the defaults, DIV2K takes the half-size decode, and
+  its cycles do not change.
 - **The linear-light half-size decode reads two neighbouring pixels per
   table lookup.** Two horizontal neighbours sum through one 64K-entry
   table instead of two 256-entry ones. Output is bit-identical. Decode
   time per DIV2K image on that path drops 0.23 ms (Intel i7-1360P) and
   0.18 ms (Apple M2), about 4% of the decode.
+- **Small JPEG outputs are written sequential** ([#61]). An output of
+  at most 12,000 pixels (a 128x85 thumbnail is 10,880) now gets one
+  sequential scan instead of the progressive scan script, because at
+  that size the scan headers cost more than progressive coding saves.
+  Pixels are identical. On a 762-image mixed corpus at q80, fit-128
+  photos are 0.7% smaller and the repo's small fixtures 7.2% smaller;
+  larger outputs are unchanged. Server CPU at fit 128 drops about
+  0.5%. The break-even is near 12,000 pixels: across the corpus,
+  sequential output is 2.2% smaller below 8,000 pixels, 0.8% smaller
+  at 8,000-12,000 and 0.6% larger at 16,000-20,000, grayscale and text
+  most. `OXIMG_JPEG_SEQUENTIAL_PIXELS` moves the threshold, and `0`
+  restores progressive everywhere.
+
+### Fixed
+
+- **The pipeline no longer panics on `wasm32-unknown-unknown`.** Every
+  request there trapped in the stage timers (`std::time::Instant` has
+  no clock on that target). Building for it still takes a C sysroot and
+  two crate patches; see `deploy/cloudflare-workers/`. Native output is
+  unchanged.
+- **Sequential jpegli output (`OXIMG_JPEG_PROGRESSIVE=0`) uses
+  optimized Huffman tables.** jpegli's defaults left it on the standard
+  tables, which made sequential files 11-58% larger than progressive
+  ones at equal quality, most on small and graphic images. With
+  optimized tables the gap is 1.5-3.7% on photos and 4.5-11.7% on
+  graphics. The knob still saves server CPU: 5.5% at fit 512 and 28%
+  on large graphics (Zen 4). Pixels are unchanged. The same defaults
+  were behind the size regression in [#79], which was reverted before
+  it shipped.
+- **Remote-source fetches use rustls 0.23.46.** 0.23.45 cached the
+  key-share group a server picked before the handshake was
+  authenticated, so an on-path attacker could downgrade later
+  connections to that host to classical-only key exchange.
 
 ## [0.14.0] - 2026-10-02
 
@@ -257,6 +398,7 @@ NEON changes alter pixels. Library and HTTP APIs are unchanged.
 [#54]: https://github.com/oximg/oximg/pull/54
 [#60]: https://github.com/oximg/oximg/issues/60
 [#61]: https://github.com/oximg/oximg/issues/61
+[#79]: https://github.com/oximg/oximg/pull/79
 
 ## [0.12.0] - 2026-09-29
 
@@ -1729,7 +1871,9 @@ did, in any output format.
   concurrency pinned to the core count — published to crates.io via
   Trusted Publishing.
 
-[unreleased]: https://github.com/oximg/oximg/compare/v0.14.0...HEAD
+[unreleased]: https://github.com/oximg/oximg/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/oximg/oximg/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/oximg/oximg/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/oximg/oximg/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/oximg/oximg/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/oximg/oximg/compare/v0.11.0...v0.12.0

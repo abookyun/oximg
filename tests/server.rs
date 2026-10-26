@@ -1022,13 +1022,14 @@ fn preset_bytes_do_not_depend_on_overlap_gate() {
     }
 }
 
-/// The default jpegli encode is progressive with oximg's own scan
-/// script — no successive-approximation refinements — on every route
-/// into the encoder: the fused JPEG worker, the serial JPEG path, and a
-/// PNG source's whole-frame encode. `OXIMG_JPEG_PROGRESSIVE=0` is one
-/// sequential scan instead.
+/// jpegli encodes progressive with oximg's own scan script — no
+/// successive-approximation refinements — on every route into the
+/// encoder: the fused JPEG worker, the serial JPEG path, and a PNG
+/// source's whole-frame encode. Outputs of at most
+/// OXIMG_JPEG_SEQUENTIAL_PIXELS pixels are one sequential scan instead,
+/// as is everything under OXIMG_JPEG_PROGRESSIVE=0.
 #[test]
-fn jpegli_default_uses_the_scan_script_and_the_knob_selects_sequential() {
+fn jpegli_scan_script_and_the_sequential_cases() {
     let script: Vec<common::Scan> = vec![
         (vec![0, 1, 2], 0, 0, 0, 0),
         (vec![0], 1, 2, 0, 0),
@@ -1039,21 +1040,46 @@ fn jpegli_default_uses_the_scan_script_and_the_knob_selects_sequential() {
         (vec![2], 1, 2, 0, 0),
         (vec![2], 3, 63, 0, 0),
     ];
-    let urls = ["/resize/100/100/photo.jpg", "/resize/100/100/rgb.png@jpg"];
+    let sequential: Vec<common::Scan> = vec![(vec![0, 1, 2], 0, 63, 0, 0)];
+    // 200x150 (30000 px) and 100x75 (7500 px) outputs.
+    let large = ["/resize/200/200/photo.jpg", "/resize/200/200/rgb.png@jpg"];
+    let small = ["/resize/100/100/photo.jpg", "/resize/100/100/rgb.png@jpg"];
+    let px = |n: &str| ("OXIMG_JPEG_SEQUENTIAL_PIXELS", n.to_string());
     for overlap in ["1", "0"] {
-        let s = Server::start(&[("OXIMG_OVERLAP", overlap.into())]);
-        for url in urls {
+        let s = Server::start(&[("OXIMG_OVERLAP", overlap.into()), px("10000")]);
+        for url in large {
             let (sof, scans) = common::jpeg_scans(&s.get(url).unwrap().2);
             assert_eq!(sof, 0xC2, "OVERLAP={overlap} {url}: not progressive");
             assert_eq!(scans, script, "OVERLAP={overlap} {url}");
         }
+        for url in small {
+            let (sof, scans) = common::jpeg_scans(&s.get(url).unwrap().2);
+            // jpegli's sequential output is SOF1 (extended), not SOF0.
+            assert_eq!(sof, 0xC1, "OVERLAP={overlap} {url}: not sequential");
+            assert_eq!(scans, sequential, "OVERLAP={overlap} {url}");
+        }
+    }
+    // 0 keeps even the smallest output progressive.
+    let s = Server::start(&[px("0")]);
+    for url in small {
+        let (sof, scans) = common::jpeg_scans(&s.get(url).unwrap().2);
+        assert_eq!((sof, scans), (0xC2, script.clone()), "{url}");
+    }
+    // The default threshold (12000) covers a 100x75 thumbnail but not
+    // 160x120 (19200), where sequential stops paying for itself.
+    let s = Server::start(&[]);
+    for url in small {
+        let (sof, _) = common::jpeg_scans(&s.get(url).unwrap().2);
+        assert_eq!(sof, 0xC1, "default {url}: not sequential");
+    }
+    for url in ["/resize/160/120/photo.jpg", "/resize/160/120/rgb.png@jpg"] {
+        let (sof, _) = common::jpeg_scans(&s.get(url).unwrap().2);
+        assert_eq!(sof, 0xC2, "default {url}: not progressive");
     }
     let s = Server::start(&[("OXIMG_JPEG_PROGRESSIVE", "0".into())]);
-    for url in urls {
+    for url in large.iter().chain(&small) {
         let (sof, scans) = common::jpeg_scans(&s.get(url).unwrap().2);
-        // jpegli's sequential output is SOF1 (extended), not SOF0.
-        assert_eq!(sof, 0xC1, "{url}: not sequential");
-        assert_eq!(scans, vec![(vec![0, 1, 2], 0, 63, 0, 0)], "{url}");
+        assert_eq!((sof, scans), (0xC1, sequential.clone()), "{url}");
     }
 }
 
@@ -4327,10 +4353,20 @@ fn faults_per_request(envs: &[(&str, String)]) -> f64 {
     let s = Server::start(&all);
     let get = |i: usize| assert_eq!(s.status_of(&format!("/resize/512/512/p{i}.jpg")), 200);
     (0..5).for_each(get);
-    let before = minor_faults(s.child.id());
-    let n = 30;
-    (5..5 + n).for_each(get);
-    (minor_faults(s.child.id()) - before) as f64 / n as f64
+    // The median of three windows: on the CI runners a single window
+    // occasionally takes a one-off burst (15-37 faults per request
+    // against a typical 0.1-5, both architectures), which a plain mean
+    // over all requests would carry into the result.
+    let (windows, n) = (3, 10);
+    let mut rates: Vec<f64> = (0..windows)
+        .map(|w| {
+            let before = minor_faults(s.child.id());
+            (5 + w * n..5 + (w + 1) * n).for_each(get);
+            (minor_faults(s.child.id()) - before) as f64 / n as f64
+        })
+        .collect();
+    rates.sort_by(f64::total_cmp);
+    rates[windows / 2]
 }
 
 #[test]
@@ -4340,9 +4376,16 @@ fn faults_per_request(envs: &[(&str, String)]) -> f64 {
     ignore = "70 DIV2K-sized requests; CI runs it under --release"
 )]
 fn warm_requests_do_not_fault_their_buffers_back_in() {
-    // Measured on Zen 4 / glibc 2.44 (4 KiB pages): 0.5-17 faults per
-    // warm request with the pinned allocator, 120-135 with glibc's
-    // dynamic thresholds. The bound leaves room for the kernel's socket
+    // A regression bound on the warm fault rate. When the pins landed it
+    // also told pinned from unpinned: Zen 4 / glibc 2.44 measured 0.5-17
+    // faults per warm request pinned and 120-135 with glibc's dynamic
+    // thresholds. It no longer does. Re-measured 2026-10-22:
+    //   - starship (glibc 2.44): pinned 0.0-0.8, dynamic 0.9-2.6;
+    //   - the CI runners (Ubuntu glibc 2.39, amd64 and arm64): pinned
+    //     0.1-5 per window, with rare one-window bursts of 15-37;
+    //     dynamic 0.4-10.
+    // The override check below is the one that still separates
+    // configurations. The bound leaves room for the kernel's socket
     // pages. A count is an upper bound for larger pages, which take
     // fewer faults to touch the same bytes.
     //
@@ -4351,7 +4394,7 @@ fn warm_requests_do_not_fault_their_buffers_back_in() {
     let pinned = faults_per_request(&[("GLIBC_TUNABLES", String::new())]);
     assert!(
         pinned < 40.0,
-        "{pinned:.1} minor faults per warm request: the glibc malloc pins are not applied"
+        "{pinned:.1} minor faults per warm request: warm requests fault their buffers back in"
     );
     // An operator's own glibc.malloc tunable wins. Restating the stock
     // 128 KiB mmap threshold (which also turns off glibc's dynamic

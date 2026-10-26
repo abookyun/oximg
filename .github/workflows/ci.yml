@@ -171,7 +171,7 @@ jobs:
         # The floor we declare and the current release: Ruby 3.4 moved
         # base64 out of the default gems, which is why the signer packs
         # its own.
-        ruby: ["3.1", "3.4"]
+        ruby: ["3.2", "3.4"]
     steps:
       - uses: actions/checkout@v5
       - name: Install build dependencies

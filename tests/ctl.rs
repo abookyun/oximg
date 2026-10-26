@@ -233,6 +233,25 @@ fn get_resizes_photo_and_probes_the_body() {
 }
 
 #[test]
+fn get_parallel_resize_with_fractional_band_boundaries() {
+    // 150 / 117 makes the last band's bottom round to 150.00000000000003.
+    let (code, v) = run(&[
+        "--env",
+        "OXIMG_PAR=4",
+        "get",
+        "/resize/156/156/photo.jpg",
+        "--expect",
+        "200",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["status"], 200);
+    assert_eq!(v["content_type"], "image/jpeg");
+    assert_eq!(v["probe"]["width"], 156);
+    assert_eq!(v["probe"]["height"], 117);
+}
+
+#[test]
 fn get_maps_error_classes() {
     let (code, v) = run(&["get", "/resize/0/0/photo.jpg"]);
     assert_eq!(code, 0, "a 400 is a successful observation: {v}");
@@ -813,6 +832,177 @@ fn serve_prints_ready_json_and_reaps_the_child() {
     );
 }
 
+/// Ctrl-C during parity reaches the spawned server, not the wrapper. The
+/// run must stop and say so, not count the dead server's refusals as
+/// differences between the builds, wherever the signal lands.
+#[test]
+#[cfg(unix)]
+fn parity_interrupted_during_side_a_reports_it_instead_of_a_diff() {
+    assert_parity_interrupted_after_listening(1);
+}
+
+#[test]
+#[cfg(unix)]
+fn parity_interrupted_during_side_b_reports_it_instead_of_a_diff() {
+    assert_parity_interrupted_after_listening(2);
+}
+
+/// SIGINT a parity run once its `nth` server has printed its listening
+/// line: that server is starting up or serving, and both must end in
+/// "interrupted". Ten boxes per source keep each side busy well past any
+/// scheduling delay before the signal, so a side cannot finish first.
+#[cfg(unix)]
+fn assert_parity_interrupted_after_listening(nth: usize) {
+    use std::io::{BufRead, BufReader};
+    use std::time::Duration;
+
+    let oximg = env!("CARGO_BIN_EXE_oximg");
+    let mut args = vec!["parity", "--against", oximg];
+    for b in [
+        "100x100", "90x90", "80x80", "70x70", "60x60", "50x50", "40x40", "333x0", "0x111", "64x64",
+    ] {
+        args.extend(["--box", b]);
+    }
+    let mut child = ctl()
+        .args(&args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn oximg-ctl parity");
+    let mut stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut lines = BufReader::new(stderr).lines();
+        let mut seen = 0;
+        for line in lines.by_ref().map_while(Result::ok) {
+            if line.starts_with("oximg listening on :") {
+                seen += 1;
+                if seen == nth {
+                    let _ = tx.send(());
+                    break;
+                }
+            }
+        }
+        for _ in lines {}
+    });
+    rx.recv_timeout(Duration::from_secs(30))
+        .unwrap_or_else(|_| panic!("server {nth} never listened"));
+    assert!(
+        Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_parity_reported_interrupted(child, &mut stdout);
+}
+
+/// Ctrl-C before the server prints its listening line kills it outright
+/// (oximg installs its own handlers just before that line), so the
+/// wrapper sees stderr close with no port. That is the caller's stop,
+/// not a broken --bin, and must read "interrupted" too. The --bin here
+/// sleeps before exec'ing oximg; the trap makes it exit at once on the
+/// signal under both bash and dash, before it ever listens.
+#[test]
+#[cfg(unix)]
+fn parity_interrupted_before_the_server_listens_reports_it() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    let dir = std::env::temp_dir().join(format!(
+        "oximg-ctl-parity-slow-start-{}",
+        std::process::id()
+    ));
+    // A run killed from outside (a CI timeout) can leave a dir with a
+    // stale marker under a PID this run may reuse; start empty.
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let slow = dir.join("oximg");
+    let started = dir.join("started");
+    // The marker proves ctl already spawned side A, so its SIGINT
+    // handler is installed: the signal cannot hit ctl's default action.
+    std::fs::write(
+        &slow,
+        format!(
+            "#!/bin/sh\ntrap 'exit 130' INT TERM\n: > '{}'\nsleep 5 </dev/null >/dev/null 2>&1 &\nwait $!\nexec '{}' \"$@\"\n",
+            started.display(),
+            env!("CARGO_BIN_EXE_oximg")
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let oximg = env!("CARGO_BIN_EXE_oximg");
+    let mut child = ctl()
+        .args([
+            "--bin",
+            slow.to_str().unwrap(),
+            "parity",
+            "--against",
+            oximg,
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn oximg-ctl parity");
+    let mut stdout = child.stdout.take().expect("stdout piped");
+    // Side A is running and will not listen for 5 s.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !started.exists() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(&dir);
+            panic!("side A's wrapper never started");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let sent = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .unwrap()
+        .success();
+    // Clean up before asserting, so a failure leaves nothing behind.
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(sent, "kill -INT failed");
+    assert_parity_reported_interrupted(child, &mut stdout);
+}
+
+/// Wait for a signalled parity run and require "interrupted": exit 1,
+/// ok false, and no verdict.
+#[cfg(unix)]
+fn assert_parity_reported_interrupted(
+    mut child: std::process::Child,
+    stdout: &mut std::process::ChildStdout,
+) {
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Ok(Some(st)) = child.try_wait() {
+            break st;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("oximg-ctl parity did not exit after SIGINT");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut out = String::new();
+    stdout.read_to_string(&mut out).unwrap();
+    let v: Value = serde_json::from_str(out.trim())
+        .unwrap_or_else(|e| panic!("parity stdout was not JSON ({e}): {out:?}"));
+    assert_eq!(status.code(), Some(1), "{v}");
+    assert_eq!(v["ok"], false);
+    assert!(v["error"].as_str().unwrap().contains("interrupted"), "{v}");
+    assert!(
+        v.get("differ").is_none(),
+        "no verdict on a cut-short run: {v}"
+    );
+}
+
 /// Subsampled chroma is replicated (libjpeg's merged upsampler) when the
 /// resize reduces and triangle-filtered at 1:1. A 4:2:0 source whose
 /// chroma alternates at its own Nyquist rate (constant luma, Cb +-40 per
@@ -896,5 +1086,187 @@ fn jpeg_chroma_is_replicated_when_reducing_and_filtered_at_one_to_one() {
     assert!(
         ar > 1.5 * a11,
         "reduced chroma amplitude {ar:.1} vs 1:1 {a11:.1}: expected replication (~2x)"
+    );
+}
+
+/// --dry-run prints the plan without spawning, reading, or signing.
+#[test]
+fn dry_runs_print_the_plan_without_side_effects() {
+    let (code, v) = run(&[
+        "--dry-run",
+        "get",
+        "resize/1/1/photo.jpg",
+        "--base",
+        "http://127.0.0.1:1",
+        "--expect",
+        "200",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["dry_run"], true);
+    assert_eq!(
+        v["path"], "/resize/1/1/photo.jpg",
+        "a leading slash is added"
+    );
+    assert_eq!(v["expect"], 200);
+
+    let (code, v) = run(&["--dry-run", "probe", "/no/such/file"]);
+    assert_eq!(code, 0, "a dry run does not read the file: {v}");
+    assert_eq!(v["file"], "/no/such/file");
+
+    let key = "deadbeef".repeat(8);
+    let (code, v) = run(&[
+        "--dry-run",
+        "sign",
+        "/a%20b.jpg",
+        "--key",
+        &key,
+        "--salt",
+        &key,
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(
+        v["path"], "/a b.jpg",
+        "the plan names the decoded path it would sign"
+    );
+    assert!(v.get("signature").is_none(), "{v}");
+}
+
+#[test]
+fn get_reports_an_unreachable_base_as_a_failed_proof() {
+    // Port 1 on loopback refuses at once; nothing is spawned for --base.
+    let (code, v) = run(&["get", "/health", "--base", "http://127.0.0.1:1"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["ok"], false);
+    assert!(
+        v["hint"].as_str().unwrap().contains("is the server up"),
+        "{v}"
+    );
+}
+
+#[test]
+fn probe_of_a_missing_file_names_the_working_directory() {
+    let (code, v) = run(&["probe", "no/such/file.jpg"]);
+    assert_eq!(code, 1, "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("no/such/file.jpg"),
+        "{v}"
+    );
+    assert!(
+        v["hint"]
+            .as_str()
+            .unwrap()
+            .contains("current working directory"),
+        "{v}"
+    );
+}
+
+#[test]
+fn resize_with_a_missing_binary_says_which() {
+    // ctl() passes the real --bin first; a later --bin wins.
+    let (code, v) = run(&[
+        "--bin",
+        "/no/such/oximg",
+        "resize",
+        &fixture("photo.jpg"),
+        "10",
+        "10",
+    ]);
+    assert_eq!(code, 1, "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("/no/such/oximg"),
+        "{v}"
+    );
+    assert!(v["hint"].as_str().unwrap().contains("--bin"), "{v}");
+}
+
+/// A build compared with itself agrees on every cell it compares.
+#[test]
+fn parity_of_a_build_with_itself_passes() {
+    let oximg = env!("CARGO_BIN_EXE_oximg");
+    let (code, v) = run(&[
+        "parity",
+        "--against",
+        oximg,
+        "--source",
+        "photo.jpg",
+        "--source",
+        "anim.gif",
+        "--box",
+        "100x100",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["cells"], 4, "2 sources × (bare, @webp)");
+    assert_eq!(v["compared"], 4);
+    assert_eq!(v["differ"], 0);
+}
+
+/// The instrument must be able to fail: a build whose server encodes at
+/// another quality differs, and parity says where.
+#[cfg(unix)]
+#[test]
+fn parity_catches_a_build_that_encodes_differently() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("oximg-ctl-parity-skew-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let skewed = dir.join("oximg");
+    std::fs::write(
+        &skewed,
+        format!(
+            "#!/bin/sh\nQUALITY=50 exec '{}' \"$@\"\n",
+            env!("CARGO_BIN_EXE_oximg")
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&skewed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (code, v) = run(&[
+        "parity",
+        "--against",
+        skewed.to_str().unwrap(),
+        "--source",
+        "photo.jpg",
+        "--box",
+        "100x100",
+        "--format",
+        "source",
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["differ"], 1);
+    assert_eq!(v["compared"], 0);
+    let cell = &v["differing"][0];
+    assert_eq!(cell["path"], "/resize/100/100/photo.jpg");
+    // Both builds served the image; only the encode differs. A broken
+    // --against (a 404, a refused connection) must not pass this test.
+    assert_eq!(
+        (cell["a"]["status"].as_u64(), cell["b"]["status"].as_u64()),
+        (Some(200), Some(200))
+    );
+    assert!(cell["b"]["sha256"].is_string(), "{v}");
+    assert_ne!(cell["a"]["sha256"], cell["b"]["sha256"]);
+}
+
+#[test]
+fn parity_dry_run_is_the_plan_and_needs_against() {
+    let (code, v) = run(&["parity"]);
+    assert_eq!(code, 2, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("--against"), "{v}");
+
+    let (code, v) = run(&[
+        "--dry-run",
+        "parity",
+        "--against",
+        "/other/oximg",
+        "--source",
+        "photo.jpg",
+        "--box",
+        "64x0",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["b"], "/other/oximg");
+    assert_eq!(
+        v["cells"],
+        serde_json::json!(["/resize/64/0/photo.jpg", "/resize/64/0/photo.jpg@webp"])
     );
 }

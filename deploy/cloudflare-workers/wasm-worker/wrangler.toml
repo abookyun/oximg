@@ -1,0 +1,14 @@
+# Local `wrangler dev` only; `cf deploy` reads cloudflare.config.ts.
+name = "oximg-workers"
+main = "src/index.js"
+# wrangler 4.95's bundled workerd tops out at 2026-06-02.
+compatibility_date = "2026-06-01"
+
+# GET /resize/… needs this Worker running too; POST works without it.
+[[services]]
+binding = "ORIGIN"
+service = "oximg-bench-origin"
+
+[build]
+command = "./build.sh"
+watch_dir = "src"

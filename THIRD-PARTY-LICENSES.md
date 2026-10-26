@@ -448,9 +448,9 @@ Used by:
 ## Apache License 2.0
 
 Used by:
-- [oximg 0.14.0](https://github.com/oximg/oximg)
+- [oximg 0.16.0](https://github.com/oximg/oximg)
 - [cmov 0.5.4](https://github.com/RustCrypto/utils)
-- [ctutils 0.4.2](https://github.com/RustCrypto/utils)
+- [ctutils 0.4.6](https://github.com/RustCrypto/utils)
 - [utf8_iter 1.0.4](https://github.com/hsivonen/utf8_iter)
 - [zeroize 1.9.0](https://github.com/RustCrypto/utils)
 
@@ -3713,7 +3713,7 @@ Used by:
 - [percent-encoding 2.3.2](https://github.com/servo/rust-url/)
 - [pkg-config 0.3.33](https://github.com/rust-lang/pkg-config-rs)
 - [png 0.18.1](https://github.com/image-rs/image-png)
-- [rustls 0.23.45](https://github.com/rustls/rustls)
+- [rustls 0.23.46](https://github.com/rustls/rustls)
 - [signal-hook-registry 1.4.8](https://github.com/vorner/signal-hook)
 - [smallvec 1.15.2](https://github.com/servo/rust-smallvec)
 - [socket2 0.6.4](https://github.com/rust-lang/socket2)
@@ -5138,7 +5138,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## Community Data License Agreement Permissive 2.0
 
 Used by:
-- [webpki-roots 1.0.8](https://github.com/rustls/webpki-roots)
+- [webpki-roots 1.0.10](https://github.com/rustls/webpki-roots)
 
 ```
 # Community Data License Agreement - Permissive - Version 2.0
@@ -5361,7 +5361,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ## ISC License
 
 Used by:
-- [rustls-webpki 0.103.15](https://github.com/rustls/webpki)
+- [rustls-webpki 0.103.16](https://github.com/rustls/webpki)
 
 ```
 Except as otherwise noted, this project is licensed under the following
@@ -6219,7 +6219,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 Used by:
 - [tokio-util 0.7.19](https://github.com/tokio-rs/tokio)
-- [tokio 1.52.3](https://github.com/tokio-rs/tokio)
+- [tokio 1.54.1](https://github.com/tokio-rs/tokio)
 
 ```
 MIT License

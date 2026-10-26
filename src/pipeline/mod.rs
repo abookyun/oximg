@@ -1095,7 +1095,7 @@ pub fn s3_startup(bucket: &str, prefix: Option<&str>) -> Result<(), String> {
 #[cfg(feature = "server")]
 pub fn fetch_url(url: &str) -> Result<Vec<u8>, Error> {
     clear_fetch_time();
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     let owned = url.to_string();
     let result = block_on_fetch(async move { fetch_url_async(&owned).await });
     record_fetch_time(t0.elapsed().as_secs_f64());
@@ -1110,7 +1110,7 @@ pub fn fetch_url(url: &str) -> Result<Vec<u8>, Error> {
 #[cfg(feature = "server")]
 pub fn fetch_gcs(bucket: &str, key: &str) -> Result<Vec<u8>, Error> {
     clear_fetch_time();
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     let (bucket, key) = (bucket.to_string(), key.to_string());
     let result = block_on_fetch(async move { fetch_gcs_async(&bucket, &key).await });
     record_fetch_time(t0.elapsed().as_secs_f64());
@@ -1125,7 +1125,7 @@ pub fn fetch_gcs(bucket: &str, key: &str) -> Result<Vec<u8>, Error> {
 #[cfg(feature = "server")]
 pub fn fetch_s3(bucket: &str, key: &str) -> Result<Vec<u8>, Error> {
     clear_fetch_time();
-    let t0 = std::time::Instant::now();
+    let t0 = crate::clock::Instant::now();
     let (bucket, key) = (bucket.to_string(), key.to_string());
     let result = block_on_fetch(async move { fetch_s3_async(&bucket, &key).await });
     record_fetch_time(t0.elapsed().as_secs_f64());
@@ -1290,7 +1290,9 @@ fn resize_bands(
         for (i, band) in dst_bytes.chunks_mut(rows_per * row_bytes).enumerate() {
             let band_h = band.len() / row_bytes;
             let crop_top = (i * rows_per) as f64 * sy;
-            let crop_h = band_h as f64 * sy;
+            // Independent products can put the last bottom one ulp past
+            // dec_h (e.g. 150 -> 117 with four bands), which FIR rejects.
+            let crop_h = (band_h as f64 * sy).min(dec_h as f64 - crop_top);
             let src_view = &src_view;
             handles.push(sc.spawn(move || -> Result<()> {
                 let mut dst_view = Image::from_slice_u8(dst_w as u32, band_h as u32, band, px)?;
