@@ -162,7 +162,9 @@ jobs:
   # contracts between the two languages, and a stub would agree with
   # whatever the gem believes.
   rubygem:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, for which setup-ruby has no
+    # Ruby 3.1 build, and 3.1 is the floor the gemspecs declare.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
