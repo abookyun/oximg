@@ -22,6 +22,12 @@ HTTP interface without notice.
   rustls-webpki 0.103.16 stops accepting certificate paths through
   distrusted intermediates (RUSTSEC-2026-0381, RUSTSEC-2026-0382).
 
+- **Signature verification compares in constant time again.** ctutils
+  0.4.6, which hmac and sha2 use for their comparisons, fixes
+  non-constant-time mask generation and `u128` comparisons
+  (RUSTSEC-2026-0385). tokio 1.54.1 fixes `AsyncFd` constructors that
+  violated I/O safety (RUSTSEC-2026-0386).
+
 ## [0.15.0] - 2026-10-19
 
 Small JPEG outputs get smaller ([#61]). An output of at most 12,000
