@@ -670,9 +670,10 @@ composited, resized and handed to the encoder one at a time, so *our*
 staging is a function of the canvas alone — but libwebp's animation
 encoder retains every frame it has compressed until the container is
 assembled, so peak memory does grow with the animation. The estimate
-prices that retained output at one byte per encoded pixel (~9x the
-0.11 B/px measured across the corpus, i.e. deliberately pessimistic),
-which makes it `OXIMG_MAX_ANIM_WORK`, not the canvas, that bounds it.
+prices that retained output at six bytes per encoded pixel (4.5 measured
+on noise frames, against 0.11 across the corpus: noise is what a hostile
+upload chooses), plus the encoder's own canvases, which makes it
+`OXIMG_MAX_ANIM_WORK`, not the canvas, that bounds it.
 
 ### Pixel pipeline
 

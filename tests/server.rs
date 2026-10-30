@@ -593,8 +593,8 @@ fn animation_budgets_degrade_to_a_still_instead_of_failing() {
 
 /// The estimated-memory cap degrades too, rather than answering 413 as
 /// it does for a still that cannot fit: at 40 frames of 200x150 the
-/// animation's estimate is over 2 MiB (the retained frames alone are
-/// 1.2 MB) while the same GIF as a still is under 1.5 MiB, so the cap
+/// animation's estimate is ~8.5 MB (1.2 M encoded pixels retained at
+/// 6 B each) while the same GIF as a still is ~0.7 MB, so a 1.5 MiB cap
 /// has a choice — and serving less is the one that answers the request.
 #[test]
 fn decoded_bytes_cap_degrades_an_animation_it_cannot_afford() {

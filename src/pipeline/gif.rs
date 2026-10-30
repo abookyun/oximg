@@ -311,7 +311,8 @@ fn delay_ms(delay_cs: u16) -> u32 {
 /// buffer here grows with the frame count. The encoder is the other half
 /// of the story — `WebPAnimEncoder` retains every frame it has compressed
 /// until `Assemble`, so peak memory does grow with the animation. That
-/// part is estimated below (one byte per encoded pixel) and bounded by
+/// part is estimated below (`ANIM_RETAINED_PER_PX` per encoded pixel,
+/// plus the encoder's canvases) and bounded by
 /// `OXIMG_MAX_ANIM_WORK`, not by the canvas.
 fn try_animated(s: &mut Scratch, src: &[u8], p: &Resolved) -> Result<Option<Vec<u8>>> {
     let cfg = crate::config::config();
