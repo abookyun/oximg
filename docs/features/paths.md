@@ -28,7 +28,10 @@ oximg-ctl resize tests/fixtures/anim.gif 100 100 -f webp --out /tmp/out.webp
 `resize` shells out to `oximg resize` (same argv a user types). Usage
 errors exit 2; processing failures exit 1. `0` on an axis is
 unconstrained; `0 0` re-encodes at native size (CLI only — the server
-refuses `0/0`).
+refuses `0/0`). Its JSON carries `peak_rss_bytes` (the child's peak
+RSS) and, under `--env OXIMG_LOG_DECODED_BYTES_ABOVE=1`,
+`decoded_bytes.{format,total,terms}` — the estimate beside what the
+process held.
 
 ## Library (`oximg::pipeline`)
 

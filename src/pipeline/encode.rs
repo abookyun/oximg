@@ -491,6 +491,107 @@ pub(super) fn webp_metadata(
     }
 }
 
+/// What the encoder for `target` allocates on top of `out8` for a
+/// `w x h` output with `channels` channels: the decoded-bytes
+/// estimate's encode term (issue #130).
+///
+/// Per output pixel, at the worst case measured (`/usr/bin/time -l`,
+/// M2 Max, exact-size re-encodes of 2000² and 4000² noise, the other
+/// buffers subtracted) plus 10-25%. Noise is the worst case for every
+/// encoder here, and the one a hostile upload can choose: a photo
+/// costs a fraction of it (jpegli sequential at q80: 1.0 B/px on a
+/// photo, 8.1 on noise), which the header cannot tell apart. Quality is
+/// known, and moves every lossy encoder, so it is priced in.
+pub(super) fn encode_cost(
+    target: ImageFormat,
+    w: usize,
+    h: usize,
+    channels: u64,
+    p: &Resolved,
+) -> u64 {
+    let px = (w as u64).saturating_mul(h as u64);
+    let per_px = match target {
+        // Progressive output also holds whole-image coefficients before
+        // the first scan is written: 4:4:4 int16, 6 B/px, measured as a
+        // constant 6.0-6.2 over sequential at every quality.
+        ImageFormat::Jpeg => {
+            let tokens = jpeg_token_cost(p.quality);
+            match p.encoder {
+                Encoder::Jpegli if jpegli_progressive(w, h) => tokens + 7,
+                Encoder::Jpegli => tokens,
+                // The fastest profile: 6.2-8.5 B/px at any quality.
+                Encoder::MozFast => 10,
+                // Trellis + progressive: 6.3-18.9.
+                Encoder::MozSmall => tokens + 4,
+            }
+        }
+        // png's writer zlib-compresses into one Vec and copies it into
+        // the output, both growing by doubling, so the cost follows the
+        // compressed size: 0.8-1.1 B per raw byte on photos, 3.6 on
+        // noise. Quantization adds quantette's working set (17.6-18.2
+        // B/px, RGB only).
+        ImageFormat::Png if p.png_quantize.is_some() && channels == 3 => 20,
+        ImageFormat::Png => 4 * channels,
+        // Alpha is lossless VP8L, which dominates at any quality (36-37
+        // on noise alpha, 16.5 on a gradient). RGB follows quality:
+        // 4.7 at q50, 6.1 at q75, 7.9 at q90, 12.7 at q100.
+        ImageFormat::Webp if channels == 4 => 44,
+        ImageFormat::Webp => match p.webp_quality as u32 {
+            0..=75 => 8,
+            76..=90 => 10,
+            _ => 15,
+        },
+        #[cfg(feature = "avif")]
+        ImageFormat::Avif => return avif_encode_cost(px, channels, &p.avif_params()),
+        // Never encoded: no AVIF in this build, and no GIF encoder.
+        _ => 0,
+    };
+    px.saturating_mul(per_px)
+}
+
+/// jpegli optimizes its Huffman tables in both modes, so it holds the
+/// whole image's tokens until the tables are built; mozjpeg's trellis
+/// path does the same. On noise, by quality (sequential jpegli, B/px):
+/// 1.0 at q1, 3.0 at q30, 4.7 at q50, 6.8 at q70, 8.1 at q80, 10.4 at
+/// q90, 12.2 at q95, 15.5 at q100.
+pub(super) fn jpeg_token_cost(quality: f32) -> u64 {
+    match quality as u32 {
+        0..=30 => 4,
+        31..=50 => 6,
+        51..=70 => 8,
+        71..=80 => 10,
+        81..=90 => 12,
+        91..=95 => 15,
+        _ => 18,
+    }
+}
+
+/// SVT-AV1's working set: frame buffers at its internal bit depth,
+/// lookahead, and reconstruction, which the preset sizes. Measured per
+/// output pixel (RGB, 2000²): presets 7-13 29.5, 4-6 39.5, 1-3 50
+/// (preset 0 measured 39, priced with 1-3); the alpha session
+/// multiplies that by ~1.45. Above quality 90 the encoder holds more
+/// again (noise, preset 8: 34.9 B/px at q90, 40.2 at q100). Plus ~13 MB
+/// per encode that does not scale with the frame.
+#[cfg(feature = "avif")]
+pub(super) fn avif_encode_cost(px: u64, channels: u64, a: &crate::avif::AvifParams) -> u64 {
+    let mut rgb: u64 = match a.speed {
+        7.. => 32,
+        4..=6 => 44,
+        _ => 56,
+    };
+    let quality = if channels == 4 {
+        a.quality.max(a.alpha_quality)
+    } else {
+        a.quality
+    };
+    if quality > 90 {
+        rgb += rgb / 3;
+    }
+    let per_px = if channels == 4 { rgb * 3 / 2 } else { rgb };
+    px.saturating_mul(per_px).saturating_add(16 << 20)
+}
+
 /// Encode the resized RGB(A)8 pixels in `Scratch::out8` as `target`.
 /// When `target` matches the source format this calls the same encoder
 /// with the same arguments as the pre-cross-format code, so same-format

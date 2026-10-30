@@ -1213,6 +1213,34 @@ fn u16_as_bytes_mut(buf: &mut [u16]) -> &mut [u8] {
     unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast(), buf.len() * 2) }
 }
 
+/// Whether [`resize_bands`] hands this resize to fast_image_resize
+/// rather than an in-tree kernel. It matters beyond speed: fir's
+/// two-pass convolution holds a whole intermediate image (`src_w x
+/// dst_h` for u8 pixels, `dst_w x src_h` for u16, summed across bands),
+/// where pic-scale (single-threaded) and the AVX2/NEON kernels keep a
+/// few rows. The decoded-bytes estimate prices that intermediate from
+/// this same answer, so the dispatch and the estimate cannot drift.
+pub(crate) fn resize_uses_fir(px: PixelType, threads: usize, dst_h: usize) -> bool {
+    // Band-parallel: every band runs its own fir resizer.
+    if threads > 1 && dst_h >= 2 * threads {
+        return true;
+    }
+    if crate::config::config().fir_backend {
+        return true;
+    }
+    #[cfg(target_arch = "x86_64")]
+    return !(px == PixelType::U16x3
+        || (px == PixelType::U16x4 && crate::resize_avx2::Avx2::available()));
+    #[cfg(target_arch = "aarch64")]
+    return !(matches!(px, PixelType::U16x3 | PixelType::U16x4)
+        && std::arch::is_aarch64_feature_detected!("neon"));
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        let _ = px;
+        true
+    }
+}
+
 /// Split dst into row bands; each thread does a coordinate-consistent
 /// partial resize via fir's crop box. The crop only affects coordinate
 /// mapping — kernel taps still sample the full src, so band seams match
@@ -1250,22 +1278,16 @@ fn resize_bands(
         // so bytes stay per-URL stable). U16x4 (alpha) uses the AVX2
         // kernel (1.33x over fir on the benchmark shape; see
         // examples/resize_bench_x86.rs).
-        #[cfg(target_arch = "x86_64")]
-        if !crate::config::config().fir_backend {
-            if px == PixelType::U16x3 {
-                return resize_u16x3_picscale(src_bytes, dec_w, dec_h, dst_bytes, dst_w, dst_h);
-            }
-            if px == PixelType::U16x4 && crate::resize_avx2::Avx2::available() {
-                return crate::resize_avx2::resize_u16_avx2(
+        if !resize_uses_fir(px, threads, dst_h) {
+            #[cfg(target_arch = "x86_64")]
+            return if px == PixelType::U16x3 {
+                resize_u16x3_picscale(src_bytes, dec_w, dec_h, dst_bytes, dst_w, dst_h)
+            } else {
+                crate::resize_avx2::resize_u16_avx2(
                     src_bytes, dec_w, dec_h, dst_bytes, dst_w, dst_h, 4,
-                );
-            }
-        }
-        #[cfg(target_arch = "aarch64")]
-        if matches!(px, PixelType::U16x3 | PixelType::U16x4)
-            && !crate::config::config().fir_backend
-            && std::arch::is_aarch64_feature_detected!("neon")
-        {
+                )
+            };
+            #[cfg(target_arch = "aarch64")]
             return crate::resize_neon::resize_u16_neon(
                 src_bytes,
                 dec_w,
@@ -1465,24 +1487,33 @@ pub(crate) const ICC_CAP: usize = 4 * 1024 * 1024;
 /// above measured peaks across four real sources — deliberately on the
 /// conservative side, because under-estimating is the direction that
 /// gets a container OOM-killed while the cap reports itself satisfied.
-/// Encode-side buffers are still excluded, which is why it rounds up
-/// elsewhere.
+/// The output encoder's buffers count too (issue #130): AVIF and
+/// alpha WebP encodes were measured at up to 1.8x the estimate while
+/// they were excluded.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct DecodeCost {
-    /// The decoder's own output buffer: pixels it materializes (after
-    /// any shrink-on-load) times bytes per staged pixel. Zero for the
-    /// streaming JPEG path, which only ever holds row bands.
+    /// The decoder's own output buffer (`chunk8`): pixels it
+    /// materializes (after any shrink-on-load) times bytes per staged
+    /// pixel. Zero where the decode streams rows: the JPEG kernel and
+    /// fallback paths, and the fused PNG path, which LUT-maps rows
+    /// straight into `src16`.
     pub staged_bytes: u64,
-    /// The linear-light resize input for full-frame paths: the same
-    /// frame again as u16 (`src16`). Zero when the path streams or
-    /// when linear light is off.
+    /// The full-frame resize's input side: the linear-light frame as
+    /// u16 (`src16`), plus fast_image_resize's whole-image intermediate
+    /// when the resize goes to fir (`resize_uses_fir`). Zero at exact
+    /// size and on the streaming kernels.
     pub resize_input_bytes: u64,
-    /// Output-side buffers every path allocates: `dst16` (u16) plus
-    /// `out8`, i.e. 3x the output frame per channel.
+    /// The output frame: `out8`, plus `dst16` when a full-frame linear
+    /// resize produces it, plus a second `out8` where a rotation needs
+    /// a fresh buffer to land in.
     pub output_bytes: u64,
     /// Whole-source buffering no output size reduces — progressive
     /// JPEG's coefficient arrays.
     pub whole_source_bytes: u64,
+    /// The output encoder's own buffers (issue #130): progressive
+    /// JPEG's coefficients, SVT-AV1's frames, libwebp's and png's
+    /// working sets. Zero where the caller returns pixels unencoded.
+    pub encode_bytes: u64,
     /// The compressed source held whole for the request: `srcbuf` for
     /// the buffered formats, plus any caller-held input buffer (a
     /// buffered remote source, or `process(&bytes, ..)`). The JPEG
@@ -1497,35 +1528,90 @@ impl DecodeCost {
             .saturating_add(self.resize_input_bytes)
             .saturating_add(self.output_bytes)
             .saturating_add(self.whole_source_bytes)
+            .saturating_add(self.encode_bytes)
             .saturating_add(self.compressed_bytes)
     }
 
-    /// A path that materializes the whole `w x h` frame at `channels`
-    /// bytes per pixel and feeds the full-frame resize: `chunk8` plus,
-    /// under linear light (the default), the same frame as u16.
-    pub fn full_frame(w: usize, h: usize, channels: u64, p: &Resolved) -> Self {
-        let px = (w as u64).saturating_mul(h as u64);
-        let staged = px.saturating_mul(channels);
+    /// A path whose decoder materializes the whole `w x h` frame in
+    /// `chunk8` at `channels` bytes per pixel.
+    pub fn staged(w: usize, h: usize, channels: u64) -> Self {
         DecodeCost {
-            staged_bytes: staged,
-            resize_input_bytes: if p.linear_light { staged * 2 } else { 0 },
+            staged_bytes: pixels_of(w, h).saturating_mul(channels),
             ..Default::default()
         }
     }
 
-    /// A streaming path: no full frame is ever resident, only the
-    /// output-side buffers (added by `with_output`).
+    /// A path whose decoder never holds a full frame of its own.
     pub fn streaming() -> Self {
         DecodeCost::default()
     }
 
-    /// `dst16` + `out8` for the resize target. Every path pays this,
-    /// and on the streaming paths it is the dominant term — measured
-    /// 5.1 B per output pixel against the 9 modeled here (issue #17
-    /// follow-up), i.e. conservative.
-    pub fn with_output(mut self, out_w: usize, out_h: usize, channels: u64) -> Self {
-        let px = (out_w as u64).saturating_mul(out_h as u64);
-        self.output_bytes = px.saturating_mul(channels).saturating_mul(3);
+    /// Output that streamed rows land in directly: `out8` alone. The
+    /// JPEG kernel paths (serial and fused) and every exact-size path.
+    /// The fused jpegli encode does not even hold that, but falls back
+    /// to the serial path when its worker cannot start, so it is priced
+    /// as that path.
+    pub fn with_streamed_output(mut self, w: usize, h: usize, channels: u64) -> Self {
+        self.output_bytes = pixels_of(w, h).saturating_mul(channels);
+        self
+    }
+
+    /// A full-frame resize of a `src` frame to `dst`, as
+    /// `resize_pixels_to` runs it (and the paths that mirror it: the
+    /// fused PNG decode, the JPEG band/fir fallback). At exact size
+    /// that is a copy into `out8`. Otherwise linear light adds `src16`
+    /// and `dst16`, and fir adds its intermediate image.
+    pub fn with_full_frame_resize(
+        mut self,
+        (src_w, src_h): (usize, usize),
+        (dst_w, dst_h): (usize, usize),
+        channels: u64,
+        p: &Resolved,
+    ) -> Self {
+        let out8 = pixels_of(dst_w, dst_h).saturating_mul(channels);
+        if (src_w, src_h) == (dst_w, dst_h) {
+            self.output_bytes = out8;
+            return self;
+        }
+        let (src16, dst16) = if p.linear_light {
+            (
+                pixels_of(src_w, src_h).saturating_mul(channels * 2),
+                out8.saturating_mul(2),
+            )
+        } else {
+            (0, 0)
+        };
+        let pixel = match (p.linear_light, channels) {
+            (true, 4) => PixelType::U16x4,
+            (true, _) => PixelType::U16x3,
+            (false, 4) => PixelType::U8x4,
+            (false, _) => PixelType::U8x3,
+        };
+        // fir runs u8 vertical-first (`src_w x dst_h`) and u16
+        // horizontal-first (`dst_w x src_h`); across bands the
+        // intermediates sum to the same.
+        let fir = if resize_uses_fir(pixel, p.parallel, dst_h) {
+            if p.linear_light {
+                pixels_of(dst_w, src_h).saturating_mul(channels * 2)
+            } else {
+                pixels_of(src_w, dst_h).saturating_mul(channels)
+            }
+        } else {
+            0
+        };
+        self.resize_input_bytes = src16.saturating_add(fir);
+        self.output_bytes = dst16.saturating_add(out8);
+        self
+    }
+
+    /// A second output frame next to `out8`: the rotation's destination
+    /// on the JPEG paths whose `chunk8` held only row bands (the
+    /// full-frame paths rotate into a `chunk8` already at least that
+    /// large), or the Vec a pixel-returning caller is handed.
+    pub fn with_extra_output_frame(mut self, w: usize, h: usize, channels: u64) -> Self {
+        self.output_bytes = self
+            .output_bytes
+            .saturating_add(pixels_of(w, h).saturating_mul(channels));
         self
     }
 
@@ -1549,6 +1635,24 @@ impl DecodeCost {
         self.compressed_bytes = bytes as u64;
         self
     }
+
+    /// The encoder's buffers for a `w x h` `target` output
+    /// ([`encode_cost`]); `None` for callers that return pixels.
+    pub fn with_encode(
+        mut self,
+        target: Option<ImageFormat>,
+        w: usize,
+        h: usize,
+        channels: u64,
+        p: &Resolved,
+    ) -> Self {
+        self.encode_bytes = target.map_or(0, |t| encode_cost(t, w, h, channels, p));
+        self
+    }
+}
+
+fn pixels_of(w: usize, h: usize) -> u64 {
+    (w as u64).saturating_mul(h as u64)
 }
 
 /// Histogram-able record of every decode's estimated cost, plus the
@@ -1564,12 +1668,13 @@ impl DecodeCost {
     fn report(&self, what: &str) -> String {
         format!(
             "{what} decode needs about {} bytes (staged {}, resize input {}, \
-             output {}, whole-source {}, compressed {})",
+             output {}, whole-source {}, encode {}, compressed {})",
             self.bytes(),
             self.staged_bytes,
             self.resize_input_bytes,
             self.output_bytes,
             self.whole_source_bytes,
+            self.encode_bytes,
             self.compressed_bytes,
         )
     }

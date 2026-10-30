@@ -10,6 +10,39 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The decoded-bytes estimate counts the output encoder** ([#130]).
+  `OXIMG_MAX_DECODED_BYTES` and `OXIMG_LOG_DECODED_BYTES_ABOVE` left
+  the encoder out, and on AVIF output, alpha WebP and quantized PNG the
+  real peak was up to 1.8x the estimate (4000² RGBA to AVIF: 406 MB
+  estimated, 722 MB measured). The estimate now adds an `encode` term,
+  priced per output pixel from the format, the progressive decision,
+  the requested quality, `OXIMG_AVIF_SPEED`, PNG quantization, and
+  alpha, at the worst case content can reach (noise: a 2048² noise
+  re-encode to JPEG held 98 MB against a 71 MB estimate priced from
+  photos). Estimates rise, so a cap that was calibrated on the old
+  figures may now refuse requests it used to admit.
+- **The decoded-bytes estimate prices the path that runs** ([#130]).
+  It used to assume every request held a staged frame, a u16 resize
+  input and a u16 output, so it over-counted the common paths: 2.4x on
+  a sequential full-size JPEG re-encode, 1.5x on large PNG thumbnails,
+  2.1x on PNG re-encodes at the source size. The path is now chosen
+  from the header first (fused vs staged PNG, exact size vs resize,
+  the JPEG row kernel vs its full-frame fallback, sRGB mode), and only
+  that path's buffers count. It also stopped under-counting three
+  shapes: `OXIMG_RESIZE=srgb` and `OXIMG_RESIZE_BACKEND=fir` on JPEG
+  sources (fir's whole-image intermediate; 835 MB measured against a
+  272 MB estimate), alpha AVIF sources (dav1d's pictures), and lossless
+  WebP (VP8L's ARGB image).
+- **Animated GIF estimates count libwebp's animation encoder** ([#130]):
+  its canvases, and the frames it retains at 6 B per encoded pixel
+  rather than 1 (4.5 measured on noise frames). Six 1024² noise frames
+  held 74 MB against a 40 MB estimate. Over `OXIMG_MAX_DECODED_BYTES`
+  an animation still degrades to a still rather than answering 413.
+
+[#130]: https://github.com/oximg/oximg/issues/130
+
 ## [0.17.0] - 2026-10-26
 
 Private S3 buckets as an image source ([#11], [#86], [#88]):
