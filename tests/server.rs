@@ -3951,19 +3951,17 @@ fn decoded_bytes_cap_reaches_every_source_path() {
     );
 }
 
-/// The conservative both-orientations fit, end to end. The check runs
-/// before a PNG's `eXIf` chunk is parsed, so it cannot know which way
-/// the fit will go — and therefore assumes the larger candidate for
-/// *every* source. That is deliberate: an axis-swapping source under an
-/// asymmetric box really does produce the larger frame, and
-/// under-counting it is the failure mode this cap exists to prevent.
+/// The oriented fit, end to end (issue #130). The PNG estimate runs
+/// after the `eXIf` chunk is read, so each source is priced on the fit
+/// it will actually take, where it used to assume the larger of the two
+/// candidates for every source.
 #[test]
-fn oriented_sources_are_capped_on_the_larger_fit() {
+fn oriented_sources_are_capped_on_their_own_fit() {
     let dir = std::env::temp_dir().join(format!("oximg-orientcap-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    // 1200x300 stored; orientation 6 presents it as 300x1200, so a
-    // width-only box of 1000 fits the displayed frame to 300x1200 —
-    // 360k pixels of output against the unoriented fit's 250k.
+    // 1200x300 stored; orientation 6 presents it as 300x1200, which a
+    // width-only box of 1000 leaves at its own size, while the upright
+    // source resizes to 1000x250.
     let (w, h) = (1200usize, 300usize);
     let px = vec![120u8; w * h * 3];
     std::fs::write(
@@ -3978,7 +3976,6 @@ fn oriented_sources_are_capped_on_the_larger_fit() {
     .unwrap();
     let images = dir.to_str().unwrap().to_string();
 
-    // The rotated source really does produce the swapped, larger frame.
     let loose = Server::start(&[("IMAGES_DIR", images.clone())]);
     let (_, _, body) = loose.get("/resize/1000/0/rotated.png").unwrap();
     let (_, ow, oh) = oximg::pipeline::probe(&body).unwrap();
@@ -3987,24 +3984,19 @@ fn oriented_sources_are_capped_on_the_larger_fit() {
     let (_, ow, oh) = oximg::pipeline::probe(&body).unwrap();
     assert_eq!((ow, oh), (1000, 250));
 
-    // A cap between the unoriented estimate (3.24 MB source-side plus
-    // 2.25 MB of 1000x250 output) and the conservative one (the same
-    // source side plus 3.24 MB of 1200x300) refuses *both*: the
-    // estimate cannot yet know which way the fit goes, so it assumes
-    // the larger for either. Refusing the upright source is the price
-    // of never under-counting the rotated one.
+    // The rotated source is an exact-size re-encode: the staged frame,
+    // a copy into `out8` and the PNG encoder, 1.08 + 1.08 + 4.32 MB =
+    // 6.48 MB. The upright one takes the fused resize: `src16` 2.16 MB,
+    // `dst16` + `out8` 2.25 MB and the encoder 3.0 MB = 7.41 MB. A cap
+    // between the two serves the first and refuses the second, which
+    // only an estimate that knows each source's orientation can do.
     let capped = Server::start(&[
         ("IMAGES_DIR", images.clone()),
-        ("OXIMG_MAX_DECODED_BYTES", (6 * 1024 * 1024).to_string()),
+        ("OXIMG_MAX_DECODED_BYTES", 6_950_000.to_string()),
     ]);
-    for file in ["rotated.png", "upright.png"] {
-        assert_eq!(
-            capped.status_of(&format!("/resize/1000/0/{file}")),
-            413,
-            "{file} is estimated on the larger candidate fit"
-        );
-    }
-    // Above the conservative figure, both serve.
+    assert_eq!(capped.status_of("/resize/1000/0/rotated.png"), 200);
+    assert_eq!(capped.status_of("/resize/1000/0/upright.png"), 413);
+    // Above both, both serve.
     let generous = Server::start(&[
         ("IMAGES_DIR", images),
         ("OXIMG_MAX_DECODED_BYTES", (16 * 1024 * 1024).to_string()),
@@ -4013,7 +4005,7 @@ fn oriented_sources_are_capped_on_the_larger_fit() {
         assert_eq!(
             generous.get(&format!("/resize/1000/0/{file}")).unwrap().0,
             200,
-            "{file} serves above the conservative estimate"
+            "{file} serves above its estimate"
         );
     }
 }
