@@ -526,13 +526,16 @@ fn probe_inner(bytes: &[u8]) -> Result<(ImageFormat, usize, usize)> {
             Ok((format, w, h))
         }
         ImageFormat::Png => {
-            let mut r = png::Decoder::new(std::io::Cursor::new(bytes))
+            // `read_info` stops at the first IDAT, which is all a
+            // header read needs. Pulling a row on top of it inflated
+            // pixel data for nothing: 85–98% of a PNG probe's time
+            // (1 µs → 6–83 µs on the fixtures on an Apple M2 Max,
+            // 0.9 → 5–66 µs on a Ryzen 7 8745HS).
+            let r = png::Decoder::new(std::io::Cursor::new(bytes))
                 .read_info()
                 .context("parse PNG")?;
             let info = r.info();
-            let dims = (info.width as usize, info.height as usize);
-            let _ = r.next_row();
-            Ok((format, dims.0, dims.1))
+            Ok((format, info.width as usize, info.height as usize))
         }
         // SAFETY: a zeroed WebPBitstreamFeatures is a valid out-param (plain C data);
         // WebPGetFeatures reads at most `bytes.len()` bytes from the live slice and

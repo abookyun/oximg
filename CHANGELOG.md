@@ -10,6 +10,13 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+### Changed
+
+- **A PNG probe no longer inflates pixel data** ([#134]). It decoded
+  the first row and discarded it, which was 85–98% of its time: 1 µs
+  instead of 6–83 µs on the fixtures (Apple M2 Max; 5–66 µs on a Ryzen
+  7 8745HS). Results are unchanged.
+
 ### Fixed
 
 - **The decoded-bytes estimate counts the output encoder** ([#130]).
@@ -42,6 +49,7 @@ HTTP interface without notice.
   an animation still degrades to a still rather than answering 413.
 
 [#130]: https://github.com/oximg/oximg/issues/130
+[#134]: https://github.com/oximg/oximg/issues/134
 
 ## [0.17.0] - 2026-10-26
 
