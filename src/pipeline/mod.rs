@@ -1159,8 +1159,8 @@ struct Scratch {
     src16: Vec<u16>,
     dst16: Vec<u16>,
     // Compressed source bytes for formats whose decoders need the whole
-    // buffer (png's Seek bound, libwebp's one-shot API). JPEG never uses
-    // this: it streams.
+    // buffer (libwebp's one-shot API, GIF, AVIF). JPEG and PNG never
+    // use this: they stream (PNG through `formats::ForwardOnly`).
     srcbuf: Vec<u8>,
     // Canvas snapshot for GIF's "restore to previous" disposal: the one
     // disposal method that needs a second canvas, so it stays empty
@@ -1535,7 +1535,7 @@ pub(crate) struct DecodeCost {
     /// The compressed source held whole for the request: `srcbuf` for
     /// the buffered formats, plus any caller-held input buffer (a
     /// buffered remote source, or `process(&bytes, ..)`). The JPEG
-    /// decoder itself streams, so on that path only the caller's
+    /// and PNG decoders stream, so on those paths only the caller's
     /// buffer — if any — contributes.
     pub compressed_bytes: u64,
 }
