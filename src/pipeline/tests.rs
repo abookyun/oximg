@@ -611,9 +611,15 @@ fn probe_reader_agrees_with_probe_on_every_fixture() {
             "{}",
             path.display()
         );
-        // A header that fits the first read is all that gets read.
+        // A header that fits the first read is all that gets read,
+        // except an AVIF's, which is read through EOF.
         if bytes.len() > PROBE_FIRST_READ && probe(&bytes[..PROBE_FIRST_READ]).is_ok() {
-            assert_eq!(read, PROBE_FIRST_READ, "{}", path.display());
+            let want = if ext == "avif" {
+                bytes.len()
+            } else {
+                PROBE_FIRST_READ
+            };
+            assert_eq!(read, want, "{}", path.display());
         }
         seen += 1;
     }
