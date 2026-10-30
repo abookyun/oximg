@@ -4,19 +4,87 @@
 
 use super::*;
 
-pub(super) fn process_png<R: std::io::Read>(
+/// A forward-only `Seek` over a `BufRead`, so the png crate can decode
+/// straight from the caller's reader instead of a whole-source copy.
+///
+/// png 0.18 bounds `Decoder<R>` on `BufRead + Seek`, yet its decoder
+/// never seeks (only its own tests do): the bound is what forced the
+/// old `read_to_end` + `Cursor`, which kept the whole compressed PNG
+/// resident on top of the decoded frame — 54 MB for a 7000^2 photo,
+/// 246 MB for an unfiltered one (issue #129). This adapter answers
+/// position queries from a byte counter and refuses any seek that
+/// would move, as an `io::Error` the decoder surfaces as a decode
+/// failure. `png_never_seeks_through_forward_only` pins the
+/// assumption across every PNG shape, so a png upgrade that starts
+/// seeking fails a test instead of silently mis-decoding.
+pub(super) struct ForwardOnly<R> {
+    inner: R,
+    pos: u64,
+}
+
+impl<R> ForwardOnly<R> {
+    pub(super) fn new(inner: R) -> Self {
+        ForwardOnly { inner, pos: 0 }
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for ForwardOnly<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl<R: std::io::BufRead> std::io::BufRead for ForwardOnly<R> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        self.inner.fill_buf()
+    }
+
+    fn consume(&mut self, amt: usize) {
+        self.inner.consume(amt);
+        self.pos += amt as u64;
+    }
+}
+
+impl<R> std::io::Seek for ForwardOnly<R> {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        // Only a "seek" that lands where the stream already is can be
+        // honored; the end is unknown and the past is gone.
+        let stays = match to {
+            std::io::SeekFrom::Start(n) => n == self.pos,
+            std::io::SeekFrom::Current(d) => d == 0,
+            std::io::SeekFrom::End(_) => false,
+        };
+        if stays {
+            Ok(self.pos)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!(
+                    "PNG source is forward-only: refused {to:?} at byte {}",
+                    self.pos
+                ),
+            ))
+        }
+    }
+
+    fn stream_position(&mut self) -> std::io::Result<u64> {
+        Ok(self.pos)
+    }
+}
+
+pub(super) fn process_png<R: std::io::BufRead>(
     s: &mut Scratch,
-    mut reader: R,
+    reader: R,
     target: ImageFormat,
     p: &Resolved,
 ) -> Result<Vec<u8>> {
     let timing = crate::config::config().timing;
     let t0 = crate::clock::Instant::now();
-    s.srcbuf.clear();
-    reader
-        .read_to_end(&mut s.srcbuf)
-        .context("read PNG source")?;
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(&s.srcbuf[..]));
+    // Decode straight from the reader: the compressed source is never
+    // copied, so only the caller's own buffer (if any) stays resident.
+    let mut decoder = png::Decoder::new(ForwardOnly::new(reader));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut png_reader = decoder.read_info().context("parse PNG")?;
     {
@@ -42,7 +110,7 @@ pub(super) fn process_png<R: std::io::Read>(
         check_decoded_bytes(
             DecodeCost::full_frame(sw, sh, channels, p)
                 .with_output(ow, oh, channels)
-                .with_compressed(s.srcbuf.len() + s.held_source_bytes),
+                .with_compressed(s.held_source_bytes),
             "PNG",
         )?;
     }

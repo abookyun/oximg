@@ -1011,26 +1011,47 @@ fn caller_held_source_counts_in_the_decode_estimate() {
         cost.compressed_bytes, 0,
         "the streaming path holds no source buffer"
     );
-    let _ = std::fs::remove_dir_all(&dir);
-
-    // A buffered format counts both copies: srcbuf and the caller's.
-    let png = {
-        let (out, fmt) = process(
+    let transcode = |fmt: ImageFormat| {
+        let (out, got) = process(
             &jpeg,
             &Params {
-                output: Some(ImageFormat::Png),
+                output: Some(fmt),
                 ..Params::default()
             },
         )
         .unwrap();
-        assert_eq!(fmt, ImageFormat::Png);
+        assert_eq!(got, fmt);
         out
     };
+
+    // PNG streams too (issue #129): the in-memory entry counts only the
+    // caller's copy, and the file entry holds no source buffer at all.
+    let png = transcode(ImageFormat::Png);
     process(&png, &p).unwrap();
     let (cost, _) = LAST_COST.get().expect("a decode just ran");
     assert_eq!(
         cost.compressed_bytes,
-        2 * png.len() as u64,
+        png.len() as u64,
+        "PNG decodes from the caller's slice: one copy, not two"
+    );
+    let path = dir.join("held.png");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(&path, &png).unwrap();
+    process_path(&path, &p).unwrap();
+    let (cost, _) = LAST_COST.get().expect("a decode just ran");
+    assert_eq!(
+        cost.compressed_bytes, 0,
+        "a streamed PNG file holds no source buffer"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // A buffered format counts both copies: srcbuf and the caller's.
+    let webp = transcode(ImageFormat::Webp);
+    process(&webp, &p).unwrap();
+    let (cost, _) = LAST_COST.get().expect("a decode just ran");
+    assert_eq!(
+        cost.compressed_bytes,
+        2 * webp.len() as u64,
         "a buffered format holds the source twice: srcbuf + the caller's copy"
     );
 }
