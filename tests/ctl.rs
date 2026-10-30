@@ -286,6 +286,92 @@ fn get_cross_format_token() {
     assert_eq!(v["probe"]["content_type"], "image/webp");
 }
 
+/// RGBA8 samples and dims of a PNG file.
+fn png_rgba(path: &str) -> (u32, u32, Vec<u8>) {
+    let file = std::fs::File::open(path).unwrap_or_else(|e| panic!("open {path}: {e}"));
+    let mut r = png::Decoder::new(std::io::BufReader::new(file))
+        .read_info()
+        .unwrap();
+    let mut buf = vec![0u8; r.output_buffer_size().unwrap()];
+    let info = r.next_frame(&mut buf).unwrap();
+    assert_eq!(info.color_type, png::ColorType::Rgba, "{path}");
+    buf.truncate(info.buffer_size());
+    (info.width, info.height, buf)
+}
+
+/// A box larger than the source resizes nothing: the decoded frame is
+/// handed straight to the encoder (issue #129, no second full-frame
+/// copy). Through the server that must still be lossless into PNG,
+/// alpha included, keep every animation frame, and serve the other
+/// full-frame formats at their stored size.
+#[test]
+fn get_exact_size_hands_the_frame_through_unchanged() {
+    let out = std::env::temp_dir().join(format!("oximg-ctl-exact-{}.png", std::process::id()));
+    let out_s = out.to_str().unwrap();
+    let (code, v) = run(&[
+        "get",
+        "/resize/400/400/rgba.png",
+        "--expect",
+        "200",
+        "--write",
+        out_s,
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["content_type"], "image/png");
+    assert_eq!(
+        (&v["probe"]["width"], &v["probe"]["height"]),
+        (&200.into(), &150.into())
+    );
+    assert!(
+        png_rgba(out_s) == png_rgba(&fixture("rgba.png")),
+        "exact-size PNG must reproduce the source RGBA bytes"
+    );
+    let _ = std::fs::remove_file(&out);
+
+    let (code, v) = run(&["get", "/resize/400/400/alpha.webp@png", "--expect", "200"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(
+        (&v["probe"]["width"], &v["probe"]["height"]),
+        (&200.into(), &150.into())
+    );
+
+    // JPEG cannot carry alpha: the handed-over RGBA frame flattens.
+    let (code, v) = run(&["get", "/resize/400/400/rgba.png@jpg", "--expect", "200"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["content_type"], "image/jpeg");
+    assert_eq!(
+        (&v["probe"]["width"], &v["probe"]["height"]),
+        (&200.into(), &150.into())
+    );
+
+    // The animated-GIF loop keeps its canvas across frames instead.
+    let (code, v) = run(&["get", "/resize/400/400/anim.gif", "--expect", "200"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["probe"]["animation"]["frames"], 3, "{v}");
+    assert_eq!(
+        (&v["probe"]["width"], &v["probe"]["height"]),
+        (&120.into(), &90.into())
+    );
+}
+
+/// AVIF `irot` at exact size: the handed-over frame still rotates
+/// (stored 240x180 displays 180x240).
+#[cfg(feature = "avif")]
+#[test]
+fn get_exact_size_avif_still_rotates() {
+    let (code, v) = run(&[
+        "get",
+        "/resize/400/400/orient_irot1.avif@png",
+        "--expect",
+        "200",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(
+        (&v["probe"]["width"], &v["probe"]["height"]),
+        (&180.into(), &240.into())
+    );
+}
+
 #[test]
 fn resize_shells_out_to_the_cli() {
     let out = std::env::temp_dir().join(format!("oximg-ctl-test-{}.jpg", std::process::id()));
@@ -304,6 +390,65 @@ fn resize_shells_out_to_the_cli() {
     assert_eq!(v["probe"]["height"], 60);
     assert!(out.is_file(), "resize must write the file it reports");
     let _ = std::fs::remove_file(&out);
+}
+
+/// Issue #130: `resize` reports the child's peak RSS, and parses the
+/// decoded-bytes report into JSON when oximg prints one, so a memory
+/// claim is one ctl call: the estimate beside what the process held.
+#[test]
+fn resize_reports_peak_rss_and_the_decoded_bytes_estimate() {
+    let (code, v) = run(&[
+        "--env",
+        "OXIMG_LOG_DECODED_BYTES_ABOVE=1",
+        "resize",
+        &fixture("photo.jpg"),
+        "100",
+        "100",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    if cfg!(unix) {
+        assert!(v["peak_rss_bytes"].as_u64().unwrap() > 1 << 20, "{v}");
+    }
+    let d = &v["decoded_bytes"];
+    assert_eq!(d["format"], "JPEG", "{v}");
+    let terms = d["terms"].as_object().unwrap();
+    let names: Vec<&str> = terms.keys().map(String::as_str).collect();
+    for name in [
+        "staged",
+        "resize_input",
+        "output",
+        "whole_source",
+        "encode",
+        "compressed",
+    ] {
+        assert!(names.contains(&name), "missing term {name}: {v}");
+    }
+    let sum: u64 = terms.values().map(|t| t.as_u64().unwrap()).sum();
+    assert_eq!(d["total"].as_u64(), Some(sum), "terms sum to the total");
+    // A 100x75 JPEG from the row kernel: `out8` and the encoder only.
+    assert_eq!(terms["output"].as_u64(), Some(100 * 75 * 3), "{v}");
+
+    // No report asked for, no field.
+    let (_, v) = run(&["resize", &fixture("photo.jpg"), "100", "100"]);
+    assert!(v.get("decoded_bytes").is_none(), "{v}");
+
+    // A file name containing the report's own words still parses.
+    let dir = std::env::temp_dir().join(format!("oximg-ctl-delim-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let odd = dir.join("a decode needs about b bytes (c.jpg");
+    std::fs::copy(fixture("photo.jpg"), &odd).unwrap();
+    let (code, v) = run(&[
+        "--env",
+        "OXIMG_LOG_DECODED_BYTES_ABOVE=1",
+        "resize",
+        odd.to_str().unwrap(),
+        "100",
+        "100",
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["decoded_bytes"]["format"], "JPEG", "{v}");
+    assert_eq!(v["decoded_bytes"]["total"], d["total"], "{v}");
 }
 
 #[test]

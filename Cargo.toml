@@ -87,16 +87,20 @@ incremental = true
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 pic-scale = "0.7"
 
+# oximg-ctl's `resize` reads the child's peak RSS (getrusage).
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }
+
 [features]
 # The `oximg` binary needs `server`; it is on by default so `cargo
 # build`/`cargo install` produce it. Library users who only want the
 # `pipeline` API build with `--no-default-features` to drop the whole
 # HTTP stack — the `server` list below, i.e. axum, tokio, reqwest,
-# hmac, sha2 and serde_json. (ureq is a dev-dependency: the
+# hmac, sha2, serde_json, and libc for oximg-ctl. (ureq is a dev-dependency: the
 # integration suites' client, never in a normal build, so there is
 # nothing for a feature flag to drop.)
 default = ["server"]
-server = ["dep:axum", "dep:tokio", "dep:reqwest", "dep:hmac", "dep:sha2", "dep:serde_json"]
+server = ["dep:axum", "dep:tokio", "dep:reqwest", "dep:hmac", "dep:sha2", "dep:serde_json", "dep:libc"]
 avif = ["dep:avif-serialize", "dep:avif-parse", "dep:dav1d-sys"]
 # Re-exposes internals (the SIMD resize kernels, the knob-resolution
 # snapshot) for the bench examples; not part of the public API.

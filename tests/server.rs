@@ -592,21 +592,22 @@ fn animation_budgets_degrade_to_a_still_instead_of_failing() {
 }
 
 /// The estimated-memory cap degrades too, rather than answering 413 as
-/// it does for a still that cannot fit: at 10 frames of 200x150 the
-/// animation's estimate is over 1 MiB while the same GIF as a still is
-/// comfortably under it, so the cap has a choice — and serving less is
-/// the one that answers the request.
+/// it does for a still that cannot fit: at 40 frames of 200x150 the
+/// animation's estimate is ~12.7 MB (1.2 M encoded pixels retained at
+/// 6 B each, plus libwebp's 4 MiB that does not scale) while the same
+/// GIF as a still is ~4.9 MB, so an 8 MiB cap has a choice — and
+/// serving less is the one that answers the request.
 #[test]
 fn decoded_bytes_cap_degrades_an_animation_it_cannot_afford() {
-    let dir = animated_images_dir("cap", 200, 150, 10);
+    let dir = animated_images_dir("cap", 200, 150, 40);
     let uncapped = Server::start(&[("IMAGES_DIR", dir.clone())]);
     let (status, _, body) = uncapped.get("/resize/200/200/anim.gif").unwrap();
     assert_eq!(status, 200);
-    assert_eq!(frames_of(&body), Some(10), "all ten frames without a cap");
+    assert_eq!(frames_of(&body), Some(40), "all forty frames without a cap");
 
     let capped = Server::start(&[
         ("IMAGES_DIR", dir),
-        ("OXIMG_MAX_DECODED_BYTES", (1024 * 1024).to_string()),
+        ("OXIMG_MAX_DECODED_BYTES", (8 << 20).to_string()),
     ]);
     let (status, ct, body) = capped.get("/resize/200/200/anim.gif").unwrap();
     assert_eq!((status, ct.as_str()), (200, "image/webp"));
@@ -1080,6 +1081,47 @@ fn jpegli_scan_script_and_the_sequential_cases() {
     for url in large.iter().chain(&small) {
         let (sof, scans) = common::jpeg_scans(&s.get(url).unwrap().2);
         assert_eq!((sof, scans), (0xC1, sequential.clone()), "{url}");
+    }
+}
+
+/// Above OXIMG_JPEG_STREAMING_PIXELS every route into jpegli writes one
+/// sequential scan on the standard Huffman tables (issue #133),
+/// overriding progressive and the optimized sequential tables; at or
+/// below it nothing changes.
+#[test]
+fn jpegli_streams_above_the_streaming_threshold() {
+    let sequential: Vec<common::Scan> = vec![(vec![0, 1, 2], 0, 63, 0, 0)];
+    // JPEG Annex K.3: the standard luminance DC table's code counts.
+    let std_dc_luma: &[u8] = &[0x00, 0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0];
+    let standard = |b: &[u8]| b.windows(std_dc_luma.len()).any(|w| w == std_dc_luma);
+    // 200x150 (30000 px) and 100x75 (7500 px) outputs.
+    let large = ["/resize/200/200/photo.jpg", "/resize/200/200/rgb.png@jpg"];
+    let small = ["/resize/100/100/photo.jpg", "/resize/100/100/rgb.png@jpg"];
+    let stream = ("OXIMG_JPEG_STREAMING_PIXELS", "10000".to_string());
+    for (overlap, progressive) in [("1", "1"), ("0", "1"), ("1", "0")] {
+        let s = Server::start(&[
+            ("OXIMG_OVERLAP", overlap.into()),
+            ("OXIMG_JPEG_PROGRESSIVE", progressive.into()),
+            stream.clone(),
+        ]);
+        let what = format!("OVERLAP={overlap} PROGRESSIVE={progressive}");
+        for url in large {
+            let body = s.get(url).unwrap().2;
+            let (sof, scans) = common::jpeg_scans(&body);
+            assert_eq!((sof, scans), (0xC1, sequential.clone()), "{what} {url}");
+            assert!(standard(&body), "{what} {url}: optimized tables");
+        }
+        for url in small {
+            let body = s.get(url).unwrap().2;
+            assert_eq!(common::jpeg_scans(&body).0, 0xC1, "{what} {url}");
+            assert!(!standard(&body), "{what} {url}: standard tables");
+        }
+    }
+    // The default (16 MP) leaves display sizes alone.
+    let s = Server::start(&[]);
+    for url in large {
+        let body = s.get(url).unwrap().2;
+        assert_eq!(common::jpeg_scans(&body).0, 0xC2, "default {url}");
     }
 }
 
@@ -3658,17 +3700,19 @@ fn oversize_413_names_the_limit_on_stderr() {
 fn decoded_bytes_cap_bounds_what_pixels_cannot() {
     let dir = std::env::temp_dir().join(format!("oximg-decbytes-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    // A wide-but-shallow PNG: 4000x800 = 3.2 MP, ~9.6 MB decoded at
-    // RGB8. Cheap to generate, and its estimate is far above the
-    // 1 MiB floor so a cap can straddle it.
+    // A wide-but-shallow PNG: 4000x800 = 3.2 MP, ~9.6 MB once widened
+    // to RGB8. Cheap to generate, and its estimate is far above the
+    // 1 MiB floor so a cap can straddle it. Grayscale, so it is staged
+    // on every architecture: an RGB8 downscale streams its rows on
+    // aarch64 (issue #129) and costs little more than its output there.
     let (w, h) = (4000u32, 800u32);
     let mut png_bytes = Vec::new();
     let mut enc = png::Encoder::new(&mut png_bytes, w, h);
-    enc.set_color(png::ColorType::Rgb);
+    enc.set_color(png::ColorType::Grayscale);
     enc.set_depth(png::BitDepth::Eight);
     let mut writer = enc.write_header().unwrap();
     writer
-        .write_image_data(&vec![96u8; (w * h * 3) as usize])
+        .write_image_data(&vec![96u8; (w * h) as usize])
         .unwrap();
     writer.finish().unwrap();
     std::fs::write(dir.join("wide.png"), &png_bytes).unwrap();
@@ -3692,10 +3736,10 @@ fn decoded_bytes_cap_bounds_what_pixels_cannot() {
         1.0,
         "the estimate is recorded even with no cap set"
     );
-    // 3.2 MP RGB: 9.6 MB staged plus 19.2 MB as the linear-light u16
-    // resize input, so ~28 MB — the 32 MiB bucket holds it and the
-    // 16 MiB one does not. This histogram is what an operator reads a
-    // cap off, so its placement is the contract.
+    // The 9.6 MB staged frame plus the 19.2 MB linear-light u16 resize
+    // input: the 32 MiB bucket holds it and the 16 MiB one does not.
+    // This histogram is what an operator reads a cap off, so its
+    // placement is the contract.
     assert_eq!(
         metric(
             &body,
@@ -3710,7 +3754,7 @@ fn decoded_bytes_cap_bounds_what_pixels_cannot() {
         ),
         0.0
     );
-    assert!(metric(&body, "oximg_decoded_bytes_estimate_sum") > 25_000_000.0);
+    assert!(metric(&body, "oximg_decoded_bytes_estimate_sum") > 19_200_000.0);
     drop(s);
 
     // A cap above the estimate serves; below it answers 413 (the same
@@ -3873,7 +3917,19 @@ fn decoded_bytes_cap_reaches_every_source_path() {
     }
     writer.write_image_data(&rows).unwrap();
     writer.finish().unwrap();
-    std::fs::write(dir.join("big.png"), &png).unwrap();
+    // The PNG case itself as 8-bit grayscale, which is staged (widened
+    // to RGB) on every architecture; the RGB8 one streams on aarch64
+    // and is checked separately below.
+    let mut gray = Vec::new();
+    let mut enc = png::Encoder::new(&mut gray, w as u32, h as u32);
+    enc.set_color(png::ColorType::Grayscale);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut writer = enc.write_header().unwrap();
+    let luma: Vec<u8> = rows.as_chunks::<3>().0.iter().map(|p| p[0]).collect();
+    writer.write_image_data(&luma).unwrap();
+    writer.finish().unwrap();
+    std::fs::write(dir.join("big.png"), &gray).unwrap();
+    std::fs::write(dir.join("big_rgb.png"), &png).unwrap();
 
     let transcode = |target| {
         oximg::pipeline::process(
@@ -3948,21 +4004,28 @@ fn decoded_bytes_cap_reaches_every_source_path() {
         200,
         "a streaming source of identical pixels fits the same cap"
     );
+    // So does the RGB8 PNG where its rows stream into the row kernel
+    // (aarch64, one band; issue #129): one mapped row, the kernel's
+    // window state and the output. Elsewhere it stages `src16`.
+    let rgb_png = if cfg!(target_arch = "aarch64") {
+        200
+    } else {
+        413
+    };
+    assert_eq!(tight.status_of("/resize/100/100/big_rgb.png"), rgb_png);
 }
 
-/// The conservative both-orientations fit, end to end. The check runs
-/// before a PNG's `eXIf` chunk is parsed, so it cannot know which way
-/// the fit will go — and therefore assumes the larger candidate for
-/// *every* source. That is deliberate: an axis-swapping source under an
-/// asymmetric box really does produce the larger frame, and
-/// under-counting it is the failure mode this cap exists to prevent.
+/// The oriented fit, end to end (issue #130). The PNG estimate runs
+/// after the `eXIf` chunk is read, so each source is priced on the fit
+/// it will actually take, where it used to assume the larger of the two
+/// candidates for every source.
 #[test]
-fn oriented_sources_are_capped_on_the_larger_fit() {
+fn oriented_sources_are_capped_on_their_own_fit() {
     let dir = std::env::temp_dir().join(format!("oximg-orientcap-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    // 1200x300 stored; orientation 6 presents it as 300x1200, so a
-    // width-only box of 1000 fits the displayed frame to 300x1200 —
-    // 360k pixels of output against the unoriented fit's 250k.
+    // 1200x300 stored; orientation 6 presents it as 300x1200, which a
+    // width-only box of 1000 leaves at its own size, while the upright
+    // source resizes to 1000x250.
     let (w, h) = (1200usize, 300usize);
     let px = vec![120u8; w * h * 3];
     std::fs::write(
@@ -3977,7 +4040,6 @@ fn oriented_sources_are_capped_on_the_larger_fit() {
     .unwrap();
     let images = dir.to_str().unwrap().to_string();
 
-    // The rotated source really does produce the swapped, larger frame.
     let loose = Server::start(&[("IMAGES_DIR", images.clone())]);
     let (_, _, body) = loose.get("/resize/1000/0/rotated.png").unwrap();
     let (_, ow, oh) = oximg::pipeline::probe(&body).unwrap();
@@ -3986,24 +4048,29 @@ fn oriented_sources_are_capped_on_the_larger_fit() {
     let (_, ow, oh) = oximg::pipeline::probe(&body).unwrap();
     assert_eq!((ow, oh), (1000, 250));
 
-    // A cap between the unoriented estimate (3.24 MB source-side plus
-    // 2.25 MB of 1000x250 output) and the conservative one (the same
-    // source side plus 3.24 MB of 1200x300) refuses *both*: the
-    // estimate cannot yet know which way the fit goes, so it assumes
-    // the larger for either. Refusing the upright source is the price
-    // of never under-counting the rotated one.
+    // The rotated source is an exact-size re-encode: the staged frame,
+    // the frame its rotation grows `chunk8` back to (issue #129) and the
+    // PNG encoder (twice the raw frame, its 256 KiB chunk buffer and
+    // three rows), 1.08 + 1.08 + 2.43 MB = 4.59 MB. The upright one
+    // takes the fused resize: staged, `src16` 2.16 MB, `dst16` + `out8`
+    // 2.25 MB and the encoder 1.77 MB = 6.18 MB; streamed through the
+    // row kernel (aarch64, issue #129), one mapped row and the kernel's
+    // window state 0.22 MB, `out8` 0.75 MB and the encoder = 2.74 MB. A
+    // cap between the two serves one and refuses the other, which only
+    // an estimate that knows each source's orientation can do.
+    let streams = cfg!(target_arch = "aarch64");
+    let (cap, rotated, upright) = if streams {
+        (3_600_000, 413, 200)
+    } else {
+        (5_400_000, 200, 413)
+    };
     let capped = Server::start(&[
         ("IMAGES_DIR", images.clone()),
-        ("OXIMG_MAX_DECODED_BYTES", (6 * 1024 * 1024).to_string()),
+        ("OXIMG_MAX_DECODED_BYTES", cap.to_string()),
     ]);
-    for file in ["rotated.png", "upright.png"] {
-        assert_eq!(
-            capped.status_of(&format!("/resize/1000/0/{file}")),
-            413,
-            "{file} is estimated on the larger candidate fit"
-        );
-    }
-    // Above the conservative figure, both serve.
+    assert_eq!(capped.status_of("/resize/1000/0/rotated.png"), rotated);
+    assert_eq!(capped.status_of("/resize/1000/0/upright.png"), upright);
+    // Above both, both serve.
     let generous = Server::start(&[
         ("IMAGES_DIR", images),
         ("OXIMG_MAX_DECODED_BYTES", (16 * 1024 * 1024).to_string()),
@@ -4012,7 +4079,7 @@ fn oriented_sources_are_capped_on_the_larger_fit() {
         assert_eq!(
             generous.get(&format!("/resize/1000/0/{file}")).unwrap().0,
             200,
-            "{file} serves above the conservative estimate"
+            "{file} serves above its estimate"
         );
     }
 }
@@ -4072,15 +4139,17 @@ fn run_once(images: &str, envs: &[(&str, String)], path: &str) -> (u16, Vec<Stri
 fn expensive_requests_are_reported_without_being_refused() {
     let dir = std::env::temp_dir().join(format!("oximg-report-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    // 800x800 RGB: 1.9 MB staged plus 3.8 MB as the linear-light input.
+    // 800x800 grayscale, widened to RGB: 1.9 MB staged plus 3.8 MB as
+    // the linear-light input on every architecture (an RGB8 downscale
+    // streams its rows on aarch64, issue #129, and would cost far less).
     let (w, h) = (800u32, 800u32);
     let mut png = Vec::new();
     let mut enc = png::Encoder::new(&mut png, w, h);
-    enc.set_color(png::ColorType::Rgb);
+    enc.set_color(png::ColorType::Grayscale);
     enc.set_depth(png::BitDepth::Eight);
     let mut writer = enc.write_header().unwrap();
     writer
-        .write_image_data(&vec![55u8; (w * h * 3) as usize])
+        .write_image_data(&vec![55u8; (w * h) as usize])
         .unwrap();
     writer.finish().unwrap();
     std::fs::write(dir.join("costly.png"), &png).unwrap();
@@ -4142,6 +4211,74 @@ fn expensive_requests_are_reported_without_being_refused() {
         !logs.iter().any(|l| l.contains("decoded-bytes")),
         "a refused request must not also emit the served report: {logs:?}"
     );
+}
+
+/// Issue #129: a local PNG decodes straight from the file, so the
+/// decoded-bytes estimate carries no compressed-source term — and a
+/// cap set between "frame only" and "frame plus a whole-file copy"
+/// serves the request the old buffered decode refused.
+#[test]
+fn local_png_estimate_counts_no_compressed_source() {
+    let dir = std::env::temp_dir().join(format!("oximg-pngstream-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // Noise does not deflate, so the file is about as large as the
+    // frame: the compressed term, were it counted, would be ~3 MB.
+    let (w, h) = (1000u32, 1000u32);
+    let mut x = 0x9e37_79b9_u32;
+    let px: Vec<u8> = (0..w * h * 3)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x as u8
+        })
+        .collect();
+    let mut png = Vec::new();
+    let mut enc = png::Encoder::new(&mut png, w, h);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut writer = enc.write_header().unwrap();
+    writer.write_image_data(&px).unwrap();
+    writer.finish().unwrap();
+    assert!(
+        png.len() > 2_000_000,
+        "noise must stay large: {}",
+        png.len()
+    );
+    std::fs::write(dir.join("noise.png"), &png).unwrap();
+    let images = dir.to_str().unwrap().to_string();
+    let path = "/resize/500/500/noise.png";
+
+    let (status, logs) = run_once(
+        &images,
+        &[("OXIMG_LOG_DECODED_BYTES_ABOVE", "1".to_string())],
+        path,
+    );
+    assert_eq!(status, 200);
+    let line = logs
+        .iter()
+        .find(|l| l.contains("decoded-bytes"))
+        .unwrap_or_else(|| panic!("the request must be reported: {logs:?}"));
+    assert!(
+        line.contains("compressed 0)"),
+        "a streamed local PNG holds no source copy: {line}"
+    );
+    let total: u64 = line
+        .split("needs about ")
+        .nth(1)
+        .and_then(|r| r.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no total in {line}"));
+
+    // Halfway into the margin the old whole-file copy used to add.
+    let cap = total + png.len() as u64 / 2;
+    let (status, logs) = run_once(
+        &images,
+        &[("OXIMG_MAX_DECODED_BYTES", cap.to_string())],
+        path,
+    );
+    assert_eq!(status, 200, "cap {cap} over estimate {total}: {logs:?}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Issue #8: `OXIMG_LOG` takes the RUST_LOG level names, and an

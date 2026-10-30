@@ -39,6 +39,7 @@ fn decode_and_resize_inner(
     });
     SCRATCH.with(|s| {
         let s = &mut *s.borrow_mut();
+        s.reclaim_handed_frame();
         // The ICC scan feeds the CMYK→RGB conversion only (this
         // helper returns raw pixels, so there is no pass-through);
         // OXIMG_ICC=0 downgrades CMYK sources to the naive composite
@@ -58,7 +59,15 @@ fn decode_and_resize_inner(
         };
         s.jpeg_progressive = meta.progressive;
         let dec = Decompress::new_mem(jpeg).context("invalid JPEG")?;
-        match decode_resize(s, dec, &p, orientation, Fuse::Off, meta.icc.as_deref())? {
+        match decode_resize(
+            s,
+            dec,
+            &p,
+            orientation,
+            Fuse::Off,
+            meta.icc.as_deref(),
+            None,
+        )? {
             Decoded::Pixels { dst_w, dst_h } => {
                 if orientation.is_upright() {
                     Ok((s.out8[..dst_w * dst_h * 3].to_vec(), dst_w, dst_h))
@@ -153,6 +162,24 @@ fn raw_disabled() -> bool {
     false
 }
 
+/// Whether a linear-light resize streams decoded rows through the SIMD
+/// row kernel (serial or fused) instead of taking the full-frame
+/// fallback. `StreamResize::new` fails only on a CPU without the
+/// kernel, which `detect` answers, so the decoded-bytes estimate can
+/// ask this before the decode starts.
+pub(super) fn kernel_streams(p: &Resolved) -> bool {
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    {
+        use crate::resize_kernel::RowKernel;
+        p.parallel <= 1 && !crate::config::config().fir_backend && FuseKernel::detect()
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        let _ = p;
+        false
+    }
+}
+
 pub(super) fn decode_resize<R: std::io::BufRead>(
     s: &mut Scratch,
     mut dec: Decompress<R>,
@@ -164,6 +191,9 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
     // variants embed via their one-shot encoders), while the CMYK arm
     // *consumes* it as the color-conversion input and never emits it.
     icc: Option<&[u8]>,
+    // What the caller will encode the result as, for the estimate's
+    // encode term; `None` when it returns the pixels themselves.
+    target: Option<ImageFormat>,
 ) -> Result<Decoded> {
     let timing = crate::config::config().timing;
     let t0 = crate::clock::Instant::now();
@@ -234,21 +264,45 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
     //    not the source: nothing full-frame is resident. The buffered
     //    arms (CMYK/YCCK) do materialize a frame, and progressive
     //    sources add coefficient arrays no output size reduces.
+    // 3. Which arm runs is known here, so each is priced by the buffers
+    //    it holds (issue #130): exact size and the kernel paths hold
+    //    `out8` only; the band/fir fallback and sRGB mode resize the
+    //    whole decoded frame.
     {
         // The `num` the decoder was just given, not a second read of
         // the knobs: the estimate has to describe the decode that is
         // actually about to happen.
         let (dec_w, dec_h) = ((src_w * num).div_ceil(8), (src_h * num).div_ceil(8));
         let comps = dec.num_components().max(1) as u64;
-        let channels = if buffered { 4 } else { 3 };
+        let (dec, dst) = ((dec_w, dec_h), (dst_w, dst_h));
+        // Whether `chunk8` only ever holds row chunks: then rotating the
+        // resized frame into it grows it to a second output frame.
+        let rows_only = !buffered && (dec == dst || p.linear_light);
         let mut cost = if buffered {
-            // Staged whole (4-channel CMYK) and fed to the full-frame
-            // resize, like the buffered formats.
-            DecodeCost::full_frame(dec_w, dec_h, channels, p)
+            // Staged whole (4-channel CMYK), compacted to RGB in place,
+            // and fed to the full-frame resize like the buffered formats.
+            DecodeCost::staged(dec_w, dec_h, 4)
+                .with_full_frame_resize(dec, dst, 3, p)
+                .with_exact_size_rotation(dec, dst, 3, orientation)
+        } else if dec == dst || (p.linear_light && kernel_streams(p)) {
+            DecodeCost::streaming().with_streamed_output(dst_w, dst_h, 3)
+        } else if p.linear_light {
+            // The fallback fills `src16` from row chunks; no whole u8
+            // frame exists.
+            DecodeCost::streaming().with_full_frame_resize(dec, dst, 3, p)
         } else {
-            DecodeCost::streaming()
+            DecodeCost::staged(dec_w, dec_h, 3).with_full_frame_resize(dec, dst, 3, p)
         };
-        cost = cost.with_output(dst_w, dst_h, channels);
+        if target.is_none() {
+            // A caller that keeps the pixels (`decode_and_resize`) gets
+            // them in a Vec of their own — a copy of `out8`, or the
+            // rotation's destination — next to `out8`.
+            cost = cost.with_extra_output_frame(dst_w, dst_h, 3);
+        } else if rows_only && !orientation.is_upright() {
+            cost = cost.with_extra_output_frame(dst_w, dst_h, 3);
+        }
+        let (enc_w, enc_h) = orientation.display_dims(dst_w, dst_h);
+        cost = cost.with_encode(target, enc_w, enc_h, 3, p);
         if s.jpeg_progressive {
             cost = cost.with_progressive_coefficients(src_w, src_h, comps);
         }
@@ -505,8 +559,7 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
         // through the back LUT as they emit. Serial and fused therefore
         // produce identical bytes on every architecture.
         #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-        if p.parallel <= 1
-            && !crate::config::config().fir_backend
+        if kernel_streams(p)
             && let Ok(mut resizer) =
                 crate::resize_kernel::StreamResize::<FuseKernel>::new(dec_w, dec_h, dst_w, dst_h, 3)
         {
@@ -784,7 +837,7 @@ pub(super) fn process_jpeg<R: std::io::BufRead>(
         } else {
             cross_fuse()
         };
-        match decode_resize(s, dec, p, orientation, fuse, icc_dec)? {
+        match decode_resize(s, dec, p, orientation, fuse, icc_dec, Some(target))? {
             Decoded::Encoded(out) => out,
             Decoded::Pixels { dst_w, dst_h } => {
                 let (dw, dh) = if orientation.is_upright() {
