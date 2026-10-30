@@ -5,7 +5,9 @@
 #   usage: peak-rss.sh BIN_A BIN_B [ROUNDS]
 # Prints one JSON object: per case, the median max RSS (MiB) of A and B
 # over ROUNDS interleaved runs (A, B, A, B, ...), and whether the two
-# outputs hash identically. RSS is buffer-bound and insensitive to load;
+# outputs hash identically. A case where any run failed reports
+# "failed":true, identical false, and null RSS for the failing side.
+# RSS is buffer-bound and insensitive to load;
 # wall time is not, which is why this reports none.
 set -euo pipefail
 A=${1:?binary A}; B=${2:?binary B}; ROUNDS=${3:-3}
@@ -73,7 +75,7 @@ sep=
 for c in "${CASES[@]}"; do
   IFS='|' read -r name envs input w h ext extra <<<"$c"
   [ "${input:0:1}" = / ] || input=$FX/$input
-  ra=() rb=() failed=
+  ra=() rb=() failed= fa= fb=
   for _ in $(seq "$ROUNDS"); do
     for side in a b; do
       bin=$A; [ $side = b ] && bin=$B
@@ -82,6 +84,7 @@ for c in "${CASES[@]}"; do
       # shellcheck disable=SC2086
       if ! r=$(rss "$OUT/t" env $envs "$bin" resize "$input" "$w" "$h" "$OUT/$side.$ext" $extra); then
         r=-1 failed=1
+        if [ $side = a ]; then fa=1; else fb=1; fi
       fi
       if [ $side = a ]; then ra+=("$r"); else rb+=("$r"); fi
     done
@@ -91,8 +94,13 @@ for c in "${CASES[@]}"; do
   # Any failed round voids the identity verdict for the case.
   [ -n "$failed" ] && ha=failed-a hb=failed-b
   same=false; [ "$ha" = "$hb" ] && [ "$ha" != none ] && same=true
-  printf '%s{"case":"%s","rss_a_mib":%s,"rss_b_mib":%s,"identical":%s}' "$sep" "$name" \
-    "$(printf '%s\n' "${ra[@]}" | median)" "$(printf '%s\n' "${rb[@]}" | median)" "$same"
+  # A side with any failed round has no RSS figure: a median over the
+  # surviving rounds would read as a clean measurement.
+  rssa=null; [ -z "$fa" ] && rssa=$(printf '%s\n' "${ra[@]}" | median)
+  rssb=null; [ -z "$fb" ] && rssb=$(printf '%s\n' "${rb[@]}" | median)
+  failj=false; [ -n "$failed" ] && failj=true
+  printf '%s{"case":"%s","rss_a_mib":%s,"rss_b_mib":%s,"identical":%s,"failed":%s}' "$sep" "$name" \
+    "$rssa" "$rssb" "$same" "$failj"
   sep=,
   rm -f "$OUT"/a.* "$OUT"/b.*
 done
