@@ -664,6 +664,49 @@ fn probe_reader_reports_the_error_of_the_whole_source() {
     assert!(probe(&bytes).is_err());
 }
 
+/// An animated AVIF whose `ispe` answers on the first 64 KiB, while a
+/// malformed box after them makes `probe` fail on the whole file: the
+/// size-0 `ipco` runs to EOF, so on a prefix its walk ends cleanly at
+/// the prefix's end, and on the full bytes it reaches the bad box.
+#[cfg(feature = "avif")]
+#[test]
+fn probe_reader_reads_an_avif_through_eof() {
+    fn bx(typ: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(8 + payload.len()).unwrap();
+        [&size.to_be_bytes()[..], typ, payload].concat()
+    }
+    // Header of a box that extends to the end of its parent.
+    fn to_end(typ: &[u8; 4]) -> Vec<u8> {
+        [&[0u8; 4][..], typ].concat()
+    }
+    let mut bytes = [
+        bx(b"ftyp", b"avis\0\0\0\0avis"),
+        to_end(b"meta"),
+        vec![0; 4], // FullBox version/flags
+        bx(b"pitm", &[0, 0, 0, 0, 0, 1]),
+        to_end(b"iprp"),
+        // Item 1 → property 1 (the `ispe`), ahead of the size-0 `ipco`.
+        bx(b"ipma", &[0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1]),
+        to_end(b"ipco"),
+        bx(b"ispe", &[0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 48]),
+    ]
+    .concat();
+    let pad = (64 << 10) - bytes.len();
+    bytes.extend(bx(b"free", &vec![0; pad - 8]));
+    // A box declaring 4 bytes cannot frame its own 8-byte header.
+    bytes.extend([&4u32.to_be_bytes()[..], b"free"].concat());
+
+    assert_eq!(
+        probe(&bytes[..64 << 10]).unwrap(),
+        (ImageFormat::Avif, 64, 48)
+    );
+    let whole = probe(&bytes);
+    assert!(whole.is_err(), "{whole:?}");
+    let (got, read) = probe_counting(&bytes);
+    assert_eq!(probe_outcome(got), probe_outcome(whole));
+    assert_eq!(read, bytes.len());
+}
+
 #[test]
 fn probe_reader_classifies_a_read_failure() {
     use std::io::ErrorKind as Io;

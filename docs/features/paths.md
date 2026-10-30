@@ -43,10 +43,11 @@ cargo run --release --example probe -- tests/fixtures/photo.webp
 `process` / `process_path` take `Params` and return `(bytes, ImageFormat)`.
 `probe` is header-only stored size; `probe_reader` is the same answer
 from a reader, read 64 KiB at a time, doubling, until the header
-parses (errors only at EOF); `probe_animation` reports frames for
-GIF/WebP. Embedders set `default-features = false` to drop the
-HTTP stack. Failures are `pipeline::Error`; match `kind()`, wildcard
-arm required (`ErrorKind` is `#[non_exhaustive]`).
+parses (errors only at EOF; AVIF reads through EOF);
+`probe_animation` reports frames for GIF/WebP. Embedders set
+`default-features = false` to drop the HTTP stack. Failures are
+`pipeline::Error`; match `kind()`, wildcard arm required (`ErrorKind`
+is `#[non_exhaustive]`).
 
 A library-only change still needs a binary-level cell if the HTTP or
 CLI contract can see it (status, content-type, CLI exit code).

@@ -460,6 +460,9 @@ const PROBE_FIRST_READ: usize = 64 << 10;
 /// says `Bogus Huffman table definition` for both). The result is
 /// therefore [`probe`]'s on the full bytes; on every prefix of every
 /// fixture, a probe either failed or returned the full file's answer.
+/// AVIF is the exception to bounded reads: a size-0 box can make a
+/// prefix answer where the whole file fails, so an AVIF is read through
+/// EOF before its answer counts.
 ///
 /// # Examples
 ///
@@ -491,6 +494,12 @@ pub fn probe_reader<R: std::io::Read>(mut reader: R) -> Result<(ImageFormat, usi
         let eof = buf.len() < want;
         match probe_inner(&buf) {
             Err(_) if !eof => want *= 2,
+            // A prefix's AVIF answer is not final: an ISOBMFF box of
+            // size 0 runs to EOF, so bytes past the prefix can still
+            // break the walk `probe` makes over the whole file. The
+            // dimensions sit in item data `iloc` points at, usually
+            // the bulk of the file, so reading the rest costs little.
+            Ok((ImageFormat::Avif, ..)) if !eof => want = usize::MAX,
             result => return result.map_err(|e| Error::classify(e, false)),
         }
     }

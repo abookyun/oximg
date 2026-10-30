@@ -17,8 +17,10 @@ HTTP interface without notice.
   fails short of EOF. A JPEG with 131 KB of APP2 ahead of its frame
   header reads 256 KiB of a 4 MiB file. A failure is reported once the
   whole source is read, so the answer is always `probe`'s on the full
-  bytes. A failing reader is `SourceUnreadable` (or `SourceNotFound` /
-  `SourceTooLarge`), never `Undecodable`.
+  bytes; an AVIF is read through EOF, since a size-0 box can make a
+  prefix parse where the whole file does not. A failing reader is
+  `SourceUnreadable` (or `SourceNotFound` / `SourceTooLarge`), never
+  `Undecodable`.
 
 ### Changed
 
