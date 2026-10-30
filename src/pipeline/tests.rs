@@ -1787,12 +1787,6 @@ fn exact_size_oriented_png_rotates_the_handed_over_frame() {
     }
 }
 
-/// Scratch survives across requests on a worker thread, and after an
-/// exact-size request `chunk8` is whatever `out8` held before — often
-/// far shorter than the frame. Every later request must size it again
-/// rather than trust its length: interleave exact, resized and
-/// oriented requests on one scratch and compare each against a fresh
-/// one.
 /// Consecutive exact-size requests on one worker must not settle at
 /// two frames: scratch is grow-only and kept per thread, so without
 /// the request-start reclaim the second decode allocates a new frame
@@ -1819,6 +1813,12 @@ fn consecutive_exact_size_requests_keep_one_frame() {
     }
 }
 
+/// Scratch survives across requests on a worker thread, and after an
+/// exact-size request `chunk8` is whatever `out8` held before — often
+/// far shorter than the frame. Every later request must size it again
+/// rather than trust its length: interleave exact, resized and
+/// oriented requests on one scratch and compare each against a fresh
+/// one.
 #[test]
 fn exact_size_handoff_leaves_scratch_reusable() {
     let rgb = png_of(&noise_px(120, 80, 3, 1), 120, 80, 3, None);
