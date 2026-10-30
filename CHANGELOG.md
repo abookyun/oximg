@@ -10,6 +10,17 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+### Changed
+
+- **Unscaled PNG, WebP, AVIF and GIF requests hold one decoded frame,
+  not two** ([#129]). When the box is at or above the source size,
+  the decoded frame now goes to the encoder without a full-frame
+  copy. A 7000×7000 PNG served at full size peaks about 140 MiB lower
+  (453 → 313 MiB to PNG, 658 → 516 MiB to JPEG, 415 → 274 MiB to WebP;
+  `bench/peak-rss.sh` on an M2 Max). Output is byte-identical.
+
+[#129]: https://github.com/oximg/oximg/issues/129
+
 ## [0.17.0] - 2026-10-26
 
 Private S3 buckets as an image source ([#11], [#86], [#88]):
