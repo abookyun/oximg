@@ -290,8 +290,13 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
         } else {
             DecodeCost::staged(dec_w, dec_h, 3).with_full_frame_resize(dec, dst, 3, p)
         };
-        if rows_only && !orientation.is_upright() {
-            cost = cost.with_rotation_buffer(dst_w, dst_h, 3);
+        if target.is_none() {
+            // A caller that keeps the pixels (`decode_and_resize`) gets
+            // them in a Vec of their own — a copy of `out8`, or the
+            // rotation's destination — next to `out8`.
+            cost = cost.with_extra_output_frame(dst_w, dst_h, 3);
+        } else if rows_only && !orientation.is_upright() {
+            cost = cost.with_extra_output_frame(dst_w, dst_h, 3);
         }
         cost = cost.with_encode(target, dst_w, dst_h, 3, p);
         if s.jpeg_progressive {

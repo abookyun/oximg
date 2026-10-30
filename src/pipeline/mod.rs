@@ -1604,11 +1604,11 @@ impl DecodeCost {
         self
     }
 
-    /// A rotation that lands in a buffer of its own: the JPEG paths
-    /// whose `chunk8` held only row bands rotate the resized frame into
-    /// it, growing it to a second output frame. (The full-frame paths
-    /// rotate into a `chunk8` already at least that large.)
-    pub fn with_rotation_buffer(mut self, w: usize, h: usize, channels: u64) -> Self {
+    /// A second output frame next to `out8`: the rotation's destination
+    /// on the JPEG paths whose `chunk8` held only row bands (the
+    /// full-frame paths rotate into a `chunk8` already at least that
+    /// large), or the Vec a pixel-returning caller is handed.
+    pub fn with_extra_output_frame(mut self, w: usize, h: usize, channels: u64) -> Self {
         self.output_bytes = self
             .output_bytes
             .saturating_add(pixels_of(w, h).saturating_mul(channels));

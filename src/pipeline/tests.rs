@@ -1258,6 +1258,21 @@ fn decode_cost_prices_each_jpeg_arm() {
     }
 }
 
+/// `decode_and_resize` hands back its pixels in a Vec of their own, a
+/// second output frame next to `out8`; an encoding caller does not.
+#[test]
+fn decode_cost_counts_the_frame_a_pixel_caller_keeps() {
+    let jpeg = make_test_jpeg(320, 240, false);
+    let (px, w, h) = decode_and_resize(&jpeg, 320, 240, 1).unwrap();
+    assert_eq!((px.len(), w, h), (320 * 240 * 3, 320, 240));
+    let (c, _) = LAST_COST.get().expect("a decode just ran");
+    assert_eq!(c.output_bytes, 320 * 240 * 3 * 2);
+    assert_eq!(c.encode_bytes, 0, "nothing is encoded");
+    // The same request encoding to JPEG keeps `out8` alone.
+    let c = cost_of(&jpeg, sized(320, 240));
+    assert_eq!(c.output_bytes, 320 * 240 * 3);
+}
+
 /// Issue #130: the PNG arm is chosen from the header before the
 /// estimate runs, so the estimate prices that arm — not a staged frame
 /// the fused arm never allocates, nor a resize an exact-size request
