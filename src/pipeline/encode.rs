@@ -33,8 +33,9 @@ pub(super) fn encode_png(
     // came out larger than them (noise: +37% at 2000² otherwise), and a
     // stream cannot take back what it wrote. `out` can: the rare image
     // that does not compress is encoded a second time, stored. The
-    // first attempt stops once its output passes everything a stored
-    // PNG could hold, so it never grows past one.
+    // first attempt stops, at the next band of rows, once its output
+    // passes everything a stored PNG could hold, so `out` never grows
+    // past one and the doomed deflate does not run to the end.
     let fdeflate = matches!(
         compression,
         png::Compression::Fastest | png::Compression::Fast
@@ -63,17 +64,18 @@ const PNG_IDAT_CHUNK: usize = 256 * 1024;
 /// `out`, refusing to grow past `cap`. Past it, writes are dropped and
 /// `over` is set, never failed: fdeflate unwraps the writes in its
 /// `finish` (the last bit-buffer bytes and the Adler-32), so an error
-/// there would panic instead of reaching the fallback.
+/// there would panic instead of reaching the fallback. The caller stops
+/// feeding rows once `over` is set.
 struct Capped<'a> {
     out: &'a mut Vec<u8>,
     cap: usize,
-    over: &'a mut bool,
+    over: &'a std::cell::Cell<bool>,
 }
 
 impl std::io::Write for Capped<'_> {
     fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-        if *self.over || self.out.len() + b.len() > self.cap {
-            *self.over = true;
+        if self.over.get() || self.out.len() + b.len() > self.cap {
+            self.over.set(true);
         } else {
             self.out.extend_from_slice(b);
         }
@@ -98,13 +100,14 @@ pub(super) fn write_png(
     data: &[u8],
     compression: png::Compression,
 ) -> Result<bool> {
-    let mut over = false;
+    let over = std::cell::Cell::new(false);
     let r = write_png_capped(
         Capped {
             out,
             cap,
-            over: &mut over,
+            over: &over,
         },
+        &over,
         w,
         h,
         icc,
@@ -115,7 +118,7 @@ pub(super) fn write_png(
     );
     // A capped attempt left `out` truncated; whatever png made of that
     // (its last chunk's flush error is dropped silently), it is discarded.
-    if over {
+    if over.get() {
         return Ok(false);
     }
     r.map(|()| true)
@@ -124,6 +127,7 @@ pub(super) fn write_png(
 #[allow(clippy::too_many_arguments)]
 fn write_png_capped(
     out: Capped<'_>,
+    over: &std::cell::Cell<bool>,
     w: usize,
     h: usize,
     icc: Option<&[u8]>,
@@ -158,7 +162,15 @@ fn write_png_capped(
     let mut stream = writer
         .stream_writer_with_size(PNG_IDAT_CHUNK)
         .context("PNG stream")?;
-    std::io::Write::write_all(&mut stream, data).context("PNG encode")?;
+    // Bands of rows, so a capped attempt stops soon after it overflows.
+    // Leaving rows unwritten makes the stream's own finish (and drop)
+    // refuse before fdeflate's.
+    for band in data.chunks((data.len() / h.max(1)).max(1) * 64) {
+        std::io::Write::write_all(&mut stream, band).context("PNG encode")?;
+        if over.get() {
+            anyhow::bail!("PNG output past its cap");
+        }
+    }
     stream.finish().context("PNG encode")?;
     writer.finish().context("PNG finish")?;
     Ok(())
