@@ -37,6 +37,14 @@ HTTP interface without notice.
 
 ### Fixed
 
+- **The decoded-bytes estimate follows `OXIMG_WEBP_EFFORT`** ([#133]).
+  The WebP encoder was priced at the default method 2 whatever the
+  knob said, but from method 3 libwebp holds ~3x as much on RGB and at
+  6 twice as much on alpha: 2000² noise held 18.9 B/px against an 8
+  B/px price (RGB, method 3) and 80 against 44 (alpha, method 6). The
+  price now follows the method, plus the 4 MiB the encoder holds that
+  does not scale with the image (32 MiB for method 6 with alpha), which
+  small outputs were under-counted by.
 - **The decoded-bytes estimate counts the output encoder** ([#130]).
   `OXIMG_MAX_DECODED_BYTES` and `OXIMG_LOG_DECODED_BYTES_ABOVE` left
   the encoder out, and on AVIF output, alpha WebP and quantized PNG the

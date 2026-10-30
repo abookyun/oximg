@@ -593,9 +593,10 @@ fn animation_budgets_degrade_to_a_still_instead_of_failing() {
 
 /// The estimated-memory cap degrades too, rather than answering 413 as
 /// it does for a still that cannot fit: at 40 frames of 200x150 the
-/// animation's estimate is ~8.5 MB (1.2 M encoded pixels retained at
-/// 6 B each) while the same GIF as a still is ~0.7 MB, so a 1.5 MiB cap
-/// has a choice — and serving less is the one that answers the request.
+/// animation's estimate is ~12.7 MB (1.2 M encoded pixels retained at
+/// 6 B each, plus libwebp's 4 MiB that does not scale) while the same
+/// GIF as a still is ~4.9 MB, so an 8 MiB cap has a choice — and
+/// serving less is the one that answers the request.
 #[test]
 fn decoded_bytes_cap_degrades_an_animation_it_cannot_afford() {
     let dir = animated_images_dir("cap", 200, 150, 40);
@@ -606,7 +607,7 @@ fn decoded_bytes_cap_degrades_an_animation_it_cannot_afford() {
 
     let capped = Server::start(&[
         ("IMAGES_DIR", dir),
-        ("OXIMG_MAX_DECODED_BYTES", (1536 * 1024).to_string()),
+        ("OXIMG_MAX_DECODED_BYTES", (8 << 20).to_string()),
     ]);
     let (status, ct, body) = capped.get("/resize/200/200/anim.gif").unwrap();
     assert_eq!((status, ct.as_str()), (200, "image/webp"));

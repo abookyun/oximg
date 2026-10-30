@@ -336,6 +336,26 @@ const CELLS: &[Cell] = &[
         &[],
         1.6,
     ),
+    // libwebp's working set triples from method 3 on RGB, and method
+    // 6's lossless search doubles it on alpha.
+    (
+        "jpeg to webp, effort 3",
+        "noise.jpg",
+        "0",
+        "0",
+        "webp",
+        &["OXIMG_WEBP_EFFORT=3"],
+        1.6,
+    ),
+    (
+        "png rgba to webp, effort 6",
+        "noise_rgba.png",
+        "1024",
+        "1024",
+        "webp",
+        &["OXIMG_WEBP_EFFORT=6"],
+        1.6,
+    ),
     (
         "png quantized",
         "noise.png",

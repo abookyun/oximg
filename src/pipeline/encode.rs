@@ -667,15 +667,12 @@ pub(super) fn encode_cost(
             let fixed = PNG_IDAT_CHUNK as u64 + 3 * w as u64 * channels;
             return px.saturating_mul(per_px).saturating_add(fixed);
         }
-        // Alpha is lossless VP8L, which dominates at any quality (36-37
-        // on noise alpha, 16.5 on a gradient). RGB follows quality:
-        // 4.7 at q50, 6.1 at q75, 7.9 at q90, 12.7 at q100.
-        ImageFormat::Webp if channels == 4 => 44,
-        ImageFormat::Webp => match p.webp_quality as u32 {
-            0..=75 => 8,
-            76..=90 => 10,
-            _ => 15,
-        },
+        ImageFormat::Webp => {
+            let method = webp_effort().clamp(0, 6);
+            return px
+                .saturating_mul(webp_cost_per_px(channels, p.webp_quality, method))
+                .saturating_add(webp_fixed_cost(channels, method));
+        }
         #[cfg(feature = "avif")]
         ImageFormat::Avif => return avif_encode_cost(px, channels, &p.avif_params()),
         // Never encoded: no AVIF in this build, and no GIF encoder.
@@ -698,6 +695,55 @@ pub(super) fn jpeg_token_cost(quality: f32) -> u64 {
         81..=90 => 12,
         91..=95 => 15,
         _ => 18,
+    }
+}
+
+/// libwebp's working set per output pixel at `quality` and `method`
+/// (OXIMG_WEBP_EFFORT), on noise (B/px, 2000², M2 Max), priced ~15-20%
+/// above it. No method bounds it to the content: at the default 2 a
+/// photo holds 2.7 (RGB) and 17.5 (RGBA) against noise's 5.8 and 36.
+///
+/// - RGB, methods 0-2: 4.1-5.5 at q50, 4.9-5.8 at q75, 5.5-8.6 at q90,
+///   13.3 at q100. From method 3 libwebp keeps more analysis per
+///   macroblock: 16.4, 18.9, 25.4 and 33.4.
+/// - RGBA codes alpha lossless (VP8L), which dominates: 28-37 at
+///   methods 0-2 at any quality; 37-38 at 3-5 up to q75, 43.4 at q90,
+///   49 at q100; and at method 6 VP8L's exhaustive search, which does
+///   not scale evenly: 104-106 at 1024² and 1448², 75 at 2000².
+///
+/// Part of it does not scale at all (fits over 512² to 2000²): 2-7 MB
+/// at methods 0-5, ~27 MB of method 6's search on alpha. [`webp_fixed_cost`]
+/// prices that.
+pub(super) fn webp_cost_per_px(channels: u64, quality: f32, method: i32) -> u64 {
+    let q = quality as u32;
+    match (channels == 4, method) {
+        (true, 0..=2) => 44,
+        (true, 3..=5) => match q {
+            0..=75 => 44,
+            76..=90 => 50,
+            _ => 56,
+        },
+        (true, _) => 110,
+        (false, 0..=2) => match q {
+            0..=75 => 8,
+            76..=90 => 10,
+            _ => 15,
+        },
+        (false, _) => match q {
+            0..=75 => 22,
+            76..=90 => 29,
+            _ => 38,
+        },
+    }
+}
+
+/// The part of libwebp's working set that does not scale with the
+/// image (see [`webp_cost_per_px`]).
+pub(super) fn webp_fixed_cost(channels: u64, method: i32) -> u64 {
+    if channels == 4 && method >= 6 {
+        32 << 20
+    } else {
+        4 << 20
     }
 }
 

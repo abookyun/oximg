@@ -1076,9 +1076,17 @@ fn encode_cost_follows_what_the_encoder_holds() {
     );
 
     // WebP alpha is VP8L-coded, several times the RGB cost at any
-    // quality; RGB follows quality (default 75).
-    assert_eq!(encode_cost(ImageFormat::Webp, 4000, 3000, 3, &def), px * 8);
-    assert_eq!(encode_cost(ImageFormat::Webp, 4000, 3000, 4, &def), px * 44);
+    // quality; RGB follows quality (default 75). Both carry ~4 MiB that
+    // does not scale.
+    let fixed = 4u64 << 20;
+    assert_eq!(
+        encode_cost(ImageFormat::Webp, 4000, 3000, 3, &def),
+        px * 8 + fixed
+    );
+    assert_eq!(
+        encode_cost(ImageFormat::Webp, 4000, 3000, 4, &def),
+        px * 44 + fixed
+    );
     let webp = |webp_quality| {
         p(Params {
             webp_quality: Some(webp_quality),
@@ -1087,15 +1095,15 @@ fn encode_cost_follows_what_the_encoder_holds() {
     };
     assert_eq!(
         encode_cost(ImageFormat::Webp, 4000, 3000, 3, &webp(90.0)),
-        px * 10
+        px * 10 + fixed
     );
     assert_eq!(
         encode_cost(ImageFormat::Webp, 4000, 3000, 3, &webp(100.0)),
-        px * 15
+        px * 15 + fixed
     );
     assert_eq!(
         encode_cost(ImageFormat::Webp, 4000, 3000, 4, &webp(100.0)),
-        px * 44
+        px * 44 + fixed
     );
 
     // Nothing encodes GIF.
@@ -1105,8 +1113,42 @@ fn encode_cost_follows_what_the_encoder_holds() {
     let cost = DecodeCost::streaming().with_encode(None, 4000, 3000, 3, &def);
     assert_eq!(cost.encode_bytes, 0);
     let cost = DecodeCost::streaming().with_encode(Some(ImageFormat::Webp), 4000, 3000, 3, &def);
-    assert_eq!(cost.bytes(), px * 8);
-    assert!(cost.report("JPEG").contains(&format!("encode {}", px * 8)));
+    assert_eq!(cost.bytes(), px * 8 + fixed);
+    assert!(
+        cost.report("JPEG")
+            .contains(&format!("encode {}", px * 8 + fixed))
+    );
+}
+
+/// OXIMG_WEBP_EFFORT moves libwebp's working set more than quality
+/// does: from method 3 RGB holds three times as much, and method 6's
+/// lossless alpha search twice the rest.
+#[test]
+fn webp_cost_follows_the_method() {
+    for method in 0..=2 {
+        assert_eq!(webp_cost_per_px(3, 75.0, method), 8);
+        assert_eq!(webp_cost_per_px(3, 90.0, method), 10);
+        assert_eq!(webp_cost_per_px(3, 100.0, method), 15);
+        assert_eq!(webp_cost_per_px(4, 100.0, method), 44);
+    }
+    for method in 3..=6 {
+        assert_eq!(webp_cost_per_px(3, 50.0, method), 22);
+        assert_eq!(webp_cost_per_px(3, 90.0, method), 29);
+        assert_eq!(webp_cost_per_px(3, 100.0, method), 38);
+    }
+    for method in 3..=5 {
+        assert_eq!(webp_cost_per_px(4, 75.0, method), 44);
+        assert_eq!(webp_cost_per_px(4, 90.0, method), 50);
+        assert_eq!(webp_cost_per_px(4, 100.0, method), 56);
+    }
+    assert_eq!(webp_cost_per_px(4, 75.0, 6), 110);
+    assert_eq!(webp_fixed_cost(4, 6), 32 << 20);
+    for method in 0..=5 {
+        assert_eq!(webp_fixed_cost(4, method), 4 << 20);
+    }
+    for method in 0..=6 {
+        assert_eq!(webp_fixed_cost(3, method), 4 << 20);
+    }
 }
 
 /// SVT-AV1's working set grows as the preset slows and above quality
@@ -1152,14 +1194,21 @@ fn gif_webp_encode_follows_quality() {
         })
     };
     let px = 1000 * 1000;
+    let fixed = 4 << 20;
     let same = ((1000, 1000), (1000, 1000));
-    assert_eq!(gif_webp_encode_bytes(same.0, same.1, &at(75.0)), px * 12);
-    assert_eq!(gif_webp_encode_bytes(same.0, same.1, &at(100.0)), px * 19);
+    assert_eq!(
+        gif_webp_encode_bytes(same.0, same.1, &at(75.0)),
+        px * 12 + fixed
+    );
+    assert_eq!(
+        gif_webp_encode_bytes(same.0, same.1, &at(100.0)),
+        px * 19 + fixed
+    );
     // A resize filters the one-bit alpha into 8-bit values: the general
     // RGBA price.
     assert_eq!(
         gif_webp_encode_bytes((2000, 2000), (1000, 1000), &at(75.0)),
-        px * 44
+        px * 44 + fixed
     );
 }
 
