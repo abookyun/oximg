@@ -386,7 +386,9 @@ O(one frame) today, and §4 finding 2 says the compositor keeps that
 shape: at most three canvases, whatever the frame count. `WebPAnimEncoder`
 does not — it holds its compressed frames until assembly — so animation
 adds a memory term proportional to the encoded output as well (what
-shipped models it at one byte per encoded pixel). The larger new axis is
+shipped models it at six bytes per encoded pixel, 4.5 having been
+measured on noise frames, plus the encoder's own canvases; issue #130).
+The larger new axis is
 **CPU**, `frames × pixels`, which no existing budget covers, and which
 the same product bounds. That is the term to add — a work budget, checked
 after

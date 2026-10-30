@@ -5,7 +5,7 @@ use crate::args::{Opts, ResizeArgs};
 use crate::error::{CtlError, emit};
 use crate::report::{probe_value, sha256_hex};
 use crate::spawn::resolve_bin;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
@@ -96,8 +96,12 @@ pub fn run(opts: &Opts, a: &ResizeArgs) -> Result<(), CtlError> {
         "sha256": sha256_hex(&bytes),
         "ms": (ms * 10.0).round() / 10.0,
         "probe": probe,
+        "peak_rss_bytes": peak_rss_bytes(),
         "stderr": stderr,
     });
+    if let Some(estimate) = decoded_bytes(&stderr) {
+        report["decoded_bytes"] = estimate;
+    }
     if !ephemeral {
         report["out"] = json!(out_path.display().to_string());
     }
@@ -108,6 +112,59 @@ pub fn run(opts: &Opts, a: &ResizeArgs) -> Result<(), CtlError> {
     }
     emit(&report, opts.pretty);
     Ok(())
+}
+
+/// Peak resident set of the `oximg resize` child just reaped. `resize`
+/// spawns exactly one child, so `RUSAGE_CHILDREN` is that child alone.
+/// This is what the decoded-bytes estimate is checked against (issue
+/// #130).
+#[cfg(unix)]
+fn peak_rss_bytes() -> Option<u64> {
+    // SAFETY: `rusage` is plain integers, valid zeroed; getrusage only
+    // writes into the struct it is handed.
+    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut ru) } != 0 {
+        return None;
+    }
+    let max = u64::try_from(ru.ru_maxrss).ok()?;
+    // macOS reports bytes; Linux and the BSDs, KiB.
+    Some(if cfg!(target_os = "macos") {
+        max
+    } else {
+        max * 1024
+    })
+}
+
+#[cfg(not(unix))]
+fn peak_rss_bytes() -> Option<u64> {
+    None
+}
+
+/// The decoded-bytes report oximg prints under
+/// `OXIMG_LOG_DECODED_BYTES_ABOVE`, as JSON: `... file="<path>" <format>
+/// decode needs about <total> bytes (staged <n>, resize input <n>,
+/// ...)` becomes `{format, total, terms: {staged, resize_input, ...}}`.
+fn decoded_bytes(stderr: &str) -> Option<Value> {
+    let line = stderr
+        .lines()
+        .find(|l| l.contains(" decode needs about "))?;
+    // The last occurrence: the quoted file name before it may contain
+    // the same words.
+    let (head, tail) = line.rsplit_once(" decode needs about ")?;
+    // `oximg: decoded-bytes file="<path>" <format>`; the format may be
+    // two words ("animated GIF").
+    let format = head.rsplit_once("\" ").map_or(head, |(_, f)| f).trim();
+    let (total, rest) = tail.split_once(" bytes (")?;
+    let mut terms = serde_json::Map::new();
+    for term in rest.trim_end_matches(')').split(", ") {
+        let (name, n) = term.rsplit_once(' ')?;
+        terms.insert(name.replace([' ', '-'], "_"), json!(n.parse::<u64>().ok()?));
+    }
+    Some(json!({
+        "format": format,
+        "total": total.parse::<u64>().ok()?,
+        "terms": terms,
+    }))
 }
 
 fn resize_argv(

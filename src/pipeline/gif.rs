@@ -79,7 +79,7 @@ fn process_gif_src(
     }
     let timing = crate::config::config().timing;
     let t0 = crate::clock::Instant::now();
-    let (src_w, src_h, channels) = first_frame_into_chunk8(s, src, p)?;
+    let (src_w, src_h, channels) = first_frame_into_chunk8(s, src, target, p)?;
     let t_dec = t0.elapsed();
 
     let t1 = crate::clock::Instant::now();
@@ -100,6 +100,39 @@ fn process_gif_src(
     Ok(out)
 }
 
+/// libwebp's working set for a `w x h` GIF frame. GIF alpha is one
+/// bit, which VP8L codes far more cheaply than the general alpha case
+/// `encode_cost` prices: 9.5 B/px measured for a noise frame with noise
+/// transparency at the default quality (3000², M2 Max), against 37 for
+/// 8-bit noise alpha. So: the RGB encode at the requested quality, which
+/// is what moves with it, plus the one-bit alpha plane's share.
+///
+/// Only at the screen's own size, though: a resize filters the one-bit
+/// alpha into intermediate values, and that alpha costs what any 8-bit
+/// alpha does — `encode_cost`'s general RGBA price.
+pub(super) fn gif_webp_encode_bytes(
+    (src_w, src_h): (usize, usize),
+    (w, h): (usize, usize),
+    p: &Resolved,
+) -> u64 {
+    if (src_w, src_h) != (w, h) {
+        return encode_cost(ImageFormat::Webp, w, h, 4, p);
+    }
+    let alpha = (w as u64).saturating_mul(h as u64).saturating_mul(4);
+    encode_cost(ImageFormat::Webp, w, h, 3, p).saturating_add(alpha)
+}
+
+/// What libwebp's animation encoder retains per encoded frame pixel
+/// until it assembles the file: measured 4.5 B/px for 1024² noise
+/// frames with one-bit transparency (M2 Max), from the slope across
+/// frame counts.
+const ANIM_RETAINED_PER_PX: u64 = 6;
+
+/// `WebPAnimEncoder`'s own RGBA canvases (the previous frame, its
+/// disposed copy, the current frame's copy) and candidate rectangles:
+/// ~17 B per canvas pixel measured, from the same runs' intercept.
+const ANIM_CANVASES_PER_PX: u64 = 20;
+
 /// Composite the first frame onto the logical screen, leaving the
 /// pixels in `chunk8`. Returns (width, height, channels) — 3 channels
 /// when the result turned out opaque, which most GIFs are.
@@ -109,6 +142,7 @@ fn process_gif_src(
 fn first_frame_into_chunk8(
     s: &mut Scratch,
     src: &[u8],
+    target: ImageFormat,
     p: &Resolved,
 ) -> Result<(usize, usize, usize)> {
     let mut dec = decoder(src)?;
@@ -116,7 +150,7 @@ fn first_frame_into_chunk8(
     anyhow::ensure!(src_w > 0 && src_h > 0, "GIF logical screen is empty");
     check_src_pixels(src_w, src_h)?;
     let (out_w, out_h) = fit_dims(src_w, src_h, p.max_width, p.max_height);
-    let mut cost = DecodeCost::full_frame(src_w, src_h, 4, p);
+    let mut cost = DecodeCost::staged(src_w, src_h, 4);
     // Two frame-sized buffers, not one: the decoder stages its own RGBA
     // frame next to the canvas that frame composites onto. The canvas is
     // the screen; the staged frame is the frame's own rectangle, which a
@@ -125,11 +159,14 @@ fn first_frame_into_chunk8(
     let canvas_bytes = cost.staged_bytes;
     cost.staged_bytes =
         canvas_bytes.saturating_add(first_frame_px(src).saturating_mul(4).max(canvas_bytes));
-    check_decoded_bytes(
-        cost.with_output(out_w, out_h, 4)
-            .with_compressed(src.len() + s.held_source_bytes),
-        "GIF",
-    )?;
+    let mut cost = cost
+        .with_full_frame_resize((src_w, src_h), (out_w, out_h), 4, p)
+        .with_encode(Some(target), out_w, out_h, 4, p)
+        .with_compressed(src.len() + s.held_source_bytes);
+    if target == ImageFormat::Webp {
+        cost.encode_bytes = gif_webp_encode_bytes((src_w, src_h), (out_w, out_h), p);
+    }
+    check_decoded_bytes(cost, "GIF")?;
 
     // Transparent background, then paint: a first frame smaller than
     // the screen leaves the rest showing through, which is what a
@@ -285,7 +322,8 @@ fn delay_ms(delay_cs: u16) -> u32 {
 /// buffer here grows with the frame count. The encoder is the other half
 /// of the story — `WebPAnimEncoder` retains every frame it has compressed
 /// until `Assemble`, so peak memory does grow with the animation. That
-/// part is estimated below (one byte per encoded pixel) and bounded by
+/// part is estimated below (`ANIM_RETAINED_PER_PX` per encoded pixel,
+/// plus the encoder's canvases) and bounded by
 /// `OXIMG_MAX_ANIM_WORK`, not by the canvas.
 fn try_animated(s: &mut Scratch, src: &[u8], p: &Resolved) -> Result<Option<Vec<u8>>> {
     let cfg = crate::config::config();
@@ -332,7 +370,7 @@ fn try_animated(s: &mut Scratch, src: &[u8], p: &Resolved) -> Result<Option<Vec<
         return Ok(None);
     }
 
-    let mut cost = DecodeCost::full_frame(cw, ch, 4, p);
+    let mut cost = DecodeCost::staged(cw, ch, 4);
     // The canvas, the decoder's staged frame, and — only when a source
     // asks for it — the snapshot the Previous disposal restores from.
     // The canvas and the snapshot are the screen; the staged frame is
@@ -346,13 +384,22 @@ fn try_animated(s: &mut Scratch, src: &[u8], p: &Resolved) -> Result<Option<Vec<
         .saturating_add(scan.max_frame_px.saturating_mul(4).max(canvas_bytes))
         .saturating_add(if scan.needs_previous { canvas_bytes } else { 0 });
     let mut cost = cost
-        .with_output(out_w, out_h, 4)
+        .with_full_frame_resize((cw, ch), (out_w, out_h), 4, p)
         .with_compressed(src.len() + s.held_source_bytes);
-    // libwebp retains every frame it has compressed until Assemble.
-    // Modeled at one byte per encoded pixel: ~9x the 0.11 B/px measured
-    // across the whole corpus in docs/gif-evaluation.md §5, so the
-    // estimate errs high against the only figures we have.
-    cost.output_bytes = cost.output_bytes.saturating_add(work);
+    // libwebp retains every frame it has compressed until Assemble:
+    // 0.11 B per encoded pixel across the corpus in
+    // docs/gif-evaluation.md §5, but 4.5 on noise frames (issue #130),
+    // which a hostile upload can choose and the header cannot rule out.
+    cost.output_bytes = cost
+        .output_bytes
+        .saturating_add(work.saturating_mul(ANIM_RETAINED_PER_PX));
+    // And each frame passes through the same libwebp encoder a still
+    // does, next to the animation encoder's own canvases.
+    cost.encode_bytes = gif_webp_encode_bytes((cw, ch), (out_w, out_h), p).saturating_add(
+        (out_w as u64)
+            .saturating_mul(out_h as u64)
+            .saturating_mul(ANIM_CANVASES_PER_PX),
+    );
     // Over the global cap this animation would be a 413 — but the same
     // GIF as a still fits comfortably, so treat the cap like the
     // animation budgets and serve less instead of refusing. The still

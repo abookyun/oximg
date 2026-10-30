@@ -392,6 +392,65 @@ fn resize_shells_out_to_the_cli() {
     let _ = std::fs::remove_file(&out);
 }
 
+/// Issue #130: `resize` reports the child's peak RSS, and parses the
+/// decoded-bytes report into JSON when oximg prints one, so a memory
+/// claim is one ctl call: the estimate beside what the process held.
+#[test]
+fn resize_reports_peak_rss_and_the_decoded_bytes_estimate() {
+    let (code, v) = run(&[
+        "--env",
+        "OXIMG_LOG_DECODED_BYTES_ABOVE=1",
+        "resize",
+        &fixture("photo.jpg"),
+        "100",
+        "100",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    if cfg!(unix) {
+        assert!(v["peak_rss_bytes"].as_u64().unwrap() > 1 << 20, "{v}");
+    }
+    let d = &v["decoded_bytes"];
+    assert_eq!(d["format"], "JPEG", "{v}");
+    let terms = d["terms"].as_object().unwrap();
+    let names: Vec<&str> = terms.keys().map(String::as_str).collect();
+    for name in [
+        "staged",
+        "resize_input",
+        "output",
+        "whole_source",
+        "encode",
+        "compressed",
+    ] {
+        assert!(names.contains(&name), "missing term {name}: {v}");
+    }
+    let sum: u64 = terms.values().map(|t| t.as_u64().unwrap()).sum();
+    assert_eq!(d["total"].as_u64(), Some(sum), "terms sum to the total");
+    // A 100x75 JPEG from the row kernel: `out8` and the encoder only.
+    assert_eq!(terms["output"].as_u64(), Some(100 * 75 * 3), "{v}");
+
+    // No report asked for, no field.
+    let (_, v) = run(&["resize", &fixture("photo.jpg"), "100", "100"]);
+    assert!(v.get("decoded_bytes").is_none(), "{v}");
+
+    // A file name containing the report's own words still parses.
+    let dir = std::env::temp_dir().join(format!("oximg-ctl-delim-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let odd = dir.join("a decode needs about b bytes (c.jpg");
+    std::fs::copy(fixture("photo.jpg"), &odd).unwrap();
+    let (code, v) = run(&[
+        "--env",
+        "OXIMG_LOG_DECODED_BYTES_ABOVE=1",
+        "resize",
+        odd.to_str().unwrap(),
+        "100",
+        "100",
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["decoded_bytes"]["format"], "JPEG", "{v}");
+    assert_eq!(v["decoded_bytes"]["total"], d["total"], "{v}");
+}
+
 #[test]
 fn resize_usage_errors_exit_2() {
     let out = std::env::temp_dir().join(format!("oximg-ctl-usage-{}.jpg", std::process::id()));
