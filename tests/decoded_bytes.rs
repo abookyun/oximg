@@ -397,7 +397,18 @@ fn estimate_covers_peak_rss_on_every_arm() {
     let mut failures = Vec::new();
     for &(label, input, w, h, ext, env, max_ratio) in CELLS.iter().chain(AVIF_CELLS) {
         let out = inputs.path(&format!("out.{ext}"));
-        let (est, peak) = measure(&inputs.path(input), w, h, &out, env);
+        let (est, mut peak) = measure(&inputs.path(input), w, h, &out, env);
+        // Under host memory pressure the kernel compresses or pages out
+        // part of the process, and peak RSS reads low: only the upper
+        // bound can fail from that (seen at 2.3x on a loaded M2 Max). A
+        // cell over it is measured twice more and keeps its highest
+        // peak; a real over-estimate stays over.
+        for _ in 0..2 {
+            if est as f64 / peak.saturating_sub(baseline) as f64 <= max_ratio {
+                break;
+            }
+            peak = peak.max(measure(&inputs.path(input), w, h, &out, env).1);
+        }
         let held = peak.saturating_sub(baseline);
         let ratio = est as f64 / held as f64;
         eprintln!("{label}: estimate {est}, peak {peak} (held {held}), {ratio:.2}x");
