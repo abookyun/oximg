@@ -1813,6 +1813,25 @@ fn consecutive_exact_size_requests_keep_one_frame() {
     }
 }
 
+/// The same for `decode_and_resize`, the other entry point that borrows
+/// `SCRATCH`: a CMYK JPEG stages the whole frame and hands it over at
+/// exact size.
+#[test]
+fn consecutive_exact_size_decode_and_resize_keeps_one_frame() {
+    let jpeg = read_fixture("cmyk_icc.jpg");
+    for i in 0..3 {
+        let (_, w, h) = decode_and_resize(&jpeg, 4096, 4096, 1).unwrap();
+        SCRATCH.with(|s| {
+            let s = s.borrow();
+            let (c, o) = (s.chunk8.capacity(), s.out8.capacity());
+            assert!(
+                c.min(o) < w * h * 3,
+                "request {i}: chunk8 {c} and out8 {o} both hold a {w}x{h} frame"
+            );
+        });
+    }
+}
+
 /// Scratch survives across requests on a worker thread, and after an
 /// exact-size request `chunk8` is whatever `out8` held before — often
 /// far shorter than the frame. Every later request must size it again

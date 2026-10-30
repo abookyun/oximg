@@ -39,6 +39,7 @@ fn decode_and_resize_inner(
     });
     SCRATCH.with(|s| {
         let s = &mut *s.borrow_mut();
+        s.reclaim_handed_frame();
         // The ICC scan feeds the CMYK→RGB conversion only (this
         // helper returns raw pixels, so there is no pass-through);
         // OXIMG_ICC=0 downgrades CMYK sources to the naive composite

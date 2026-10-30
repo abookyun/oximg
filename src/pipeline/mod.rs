@@ -1182,7 +1182,8 @@ struct Scratch {
 }
 
 impl Scratch {
-    /// Run at the start of every request. An exact-size request hands
+    /// Run first by every entry point that borrows `SCRATCH`
+    /// (`process_reader`, `decode_and_resize`). An exact-size request hands
     /// the decoded frame to `out8` (issue #129), leaving the frame-sized
     /// allocation there and a short one in `chunk8`; scratch is
     /// grow-only, so the next decode would allocate a second frame into
