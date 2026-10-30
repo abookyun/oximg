@@ -23,6 +23,17 @@ HTTP interface without notice.
   Same pixels; photos come out ~6% larger than progressive (+5% over
   optimized sequential), noise ~30%. `OXIMG_JPEG_STREAMING_PIXELS`
   set very high restores the previous layouts at every size.
+- **PNG output streams into IDAT chunks** ([#133]). The encoder
+  deflated the whole image into one buffer and then copied it into the
+  output as a single IDAT, so it held up to 3.6 B per raw byte on
+  incompressible content. It now writes 256 KiB IDAT chunks as it
+  deflates: peak RSS -22 to -27% on photos and -49 to -50% on noise
+  (2000² and 4000² re-encodes, M2 Max), and the decoded-bytes estimate
+  prices the PNG encoder at half what it did. At the default effort
+  the deflate stream is unchanged (the zlib levels add a few bytes), so
+  files differ only by the extra chunk framing (+0.01%) and decode to
+  the same pixels; output that fdeflate would expand still falls back
+  to stored blocks.
 
 ### Fixed
 

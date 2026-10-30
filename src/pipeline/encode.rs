@@ -21,39 +21,162 @@ pub(super) fn encode_png(
     } else {
         None
     };
+    let (color, palette, data, row) = match &quantized {
+        Some((palette, indices)) => (png::ColorType::Indexed, Some(&palette[..]), &indices[..], w),
+        None if channels == 4 => (png::ColorType::Rgba, None, pixels, w * 4),
+        None => (png::ColorType::Rgb, None, pixels, w * 3),
+    };
+    let compression = p.png_compression(quantized.is_some());
+    let stored = zlib_stored_len((row + 1) * h);
     let mut out = Vec::with_capacity(64 * 1024);
+    // `write_image_data` wrote stored blocks when its fdeflate output
+    // came out larger than them (noise: +37% at 2000² otherwise), and a
+    // stream cannot take back what it wrote. `out` can: the rare image
+    // that does not compress is encoded a second time, stored. The
+    // first attempt stops once its output passes everything a stored
+    // PNG could hold, so it never grows past one.
+    let fdeflate = matches!(
+        compression,
+        png::Compression::Fastest | png::Compression::Fast
+    );
+    let cap = if fdeflate {
+        let framing = 12 * stored.div_ceil(PNG_IDAT_CHUNK);
+        let other = 1024 + icc.map_or(0, <[u8]>::len) + palette.map_or(0, <[u8]>::len);
+        stored + framing + other
+    } else {
+        usize::MAX
+    };
+    let fits = write_png(&mut out, cap, w, h, icc, color, palette, data, compression)?;
+    if !fits || (fdeflate && idat_len(&out) > stored) {
+        out.clear();
+        let none = png::Compression::NoCompression;
+        write_png(&mut out, usize::MAX, w, h, icc, color, palette, data, none)?;
+    }
+    Ok(out)
+}
+
+/// IDAT payload per chunk: 12 bytes of chunk framing per 256 KiB, and
+/// the stream writer's one buffer of this size is all it holds besides
+/// three rows.
+const PNG_IDAT_CHUNK: usize = 256 * 1024;
+
+/// `out`, refusing to grow past `cap`.
+struct Capped<'a> {
+    out: &'a mut Vec<u8>,
+    cap: usize,
+    over: &'a mut bool,
+}
+
+impl std::io::Write for Capped<'_> {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        if self.out.len() + b.len() > self.cap {
+            *self.over = true;
+            return Err(std::io::Error::other("PNG output past its cap"));
+        }
+        self.out.extend_from_slice(b);
+        Ok(b.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Encode into `out`; `Ok(false)` when the output would pass `cap`.
+#[allow(clippy::too_many_arguments)]
+fn write_png(
+    out: &mut Vec<u8>,
+    cap: usize,
+    w: usize,
+    h: usize,
+    icc: Option<&[u8]>,
+    color: png::ColorType,
+    palette: Option<&[u8]>,
+    data: &[u8],
+    compression: png::Compression,
+) -> Result<bool> {
+    let mut over = false;
+    let r = write_png_capped(
+        Capped {
+            out,
+            cap,
+            over: &mut over,
+        },
+        w,
+        h,
+        icc,
+        color,
+        palette,
+        data,
+        compression,
+    );
+    match r {
+        Err(_) if over => Ok(false),
+        r => r.map(|()| true),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_png_capped(
+    out: Capped<'_>,
+    w: usize,
+    h: usize,
+    icc: Option<&[u8]>,
+    color: png::ColorType,
+    palette: Option<&[u8]>,
+    data: &[u8],
+    compression: png::Compression,
+) -> Result<()> {
     // The no-profile arm constructs the encoder exactly as the pre-ICC
-    // code did, keeping profile-less output byte-identical.
+    // code did.
     let mut enc = match icc {
         Some(icc) => {
             let mut info = png::Info::with_size(w as u32, h as u32);
             info.icc_profile = Some(std::borrow::Cow::Borrowed(icc));
-            png::Encoder::with_info(&mut out, info).context("PNG info")?
+            png::Encoder::with_info(out, info).context("PNG info")?
         }
-        None => png::Encoder::new(&mut out, w as u32, h as u32),
+        None => png::Encoder::new(out, w as u32, h as u32),
     };
     enc.set_depth(png::BitDepth::Eight);
-    enc.set_compression(p.png_compression(quantized.is_some()));
-    match &quantized {
-        Some((palette, indices)) => {
-            enc.set_color(png::ColorType::Indexed);
-            enc.set_palette(palette.as_slice());
-            let mut writer = enc.write_header().context("PNG header")?;
-            writer.write_image_data(indices).context("PNG encode")?;
-            writer.finish().context("PNG finish")?;
-        }
-        None => {
-            enc.set_color(if channels == 4 {
-                png::ColorType::Rgba
-            } else {
-                png::ColorType::Rgb
-            });
-            let mut writer = enc.write_header().context("PNG header")?;
-            writer.write_image_data(pixels).context("PNG encode")?;
-            writer.finish().context("PNG finish")?;
-        }
+    enc.set_compression(compression);
+    enc.set_color(color);
+    if let Some(palette) = palette {
+        enc.set_palette(palette);
     }
-    Ok(out)
+    let mut writer = enc.write_header().context("PNG header")?;
+    // `write_image_data` deflates the whole image into its own Vec before
+    // copying it into `out` as one IDAT, so both grew with the compressed
+    // size (3.6 B per raw byte held on noise). The stream writer deflates
+    // the same filtered rows straight into IDAT chunks of `out` (issue
+    // #133). Chunk boundaries, and so the bytes, differ from the one-IDAT
+    // layout; the pixels do not.
+    let mut stream = writer
+        .stream_writer_with_size(PNG_IDAT_CHUNK)
+        .context("PNG stream")?;
+    std::io::Write::write_all(&mut stream, data).context("PNG encode")?;
+    stream.finish().context("PNG encode")?;
+    writer.finish().context("PNG finish")?;
+    Ok(())
+}
+
+/// Total IDAT payload of a PNG the encoder above just wrote.
+fn idat_len(png: &[u8]) -> usize {
+    let mut i = 8;
+    let mut total = 0;
+    while i + 8 <= png.len() {
+        let len = u32::from_be_bytes(png[i..i + 4].try_into().unwrap()) as usize;
+        if &png[i + 4..i + 8] == b"IDAT" {
+            total += len;
+        }
+        i += 12 + len;
+    }
+    total
+}
+
+/// A zlib stream of `raw` bytes in stored blocks: header, 5 bytes per
+/// 65535-byte block, Adler-32.
+fn zlib_stored_len(raw: usize) -> usize {
+    2 + raw + 5 * raw.div_ceil(65535).max(1) + 4
 }
 
 /// Wu color quantization (quantette) with Floyd-Steinberg dithering,
@@ -528,13 +651,22 @@ pub(super) fn encode_cost(
                 Encoder::MozSmall => tokens + 4,
             }
         }
-        // png's writer zlib-compresses into one Vec and copies it into
-        // the output, both growing by doubling, so the cost follows the
-        // compressed size: 0.8-1.1 B per raw byte on photos, 3.6 on
-        // noise. Quantization adds quantette's working set (17.6-18.2
-        // B/px, RGB only).
-        ImageFormat::Png if p.png_quantize.is_some() && channels == 3 => 20,
-        ImageFormat::Png => 4 * channels,
+        // The stream writer holds only its output, which `encode_png`
+        // caps at about the stored size, the raw frame, and which can
+        // touch twice that while its Vec doubles. Measured 1.1 B per raw
+        // byte on noise (2048², M2 Max; 3.6 before #133 streamed it),
+        // 0.3 on a photo. Quantization adds quantette's working set
+        // (17.6-18.2 B/px, RGB only).
+        // Plus the writer's chunk buffer and three rows.
+        ImageFormat::Png => {
+            let per_px = if p.png_quantize.is_some() && channels == 3 {
+                20
+            } else {
+                2 * channels
+            };
+            let fixed = PNG_IDAT_CHUNK as u64 + 3 * w as u64 * channels;
+            return px.saturating_mul(per_px).saturating_add(fixed);
+        }
         // Alpha is lossless VP8L, which dominates at any quality (36-37
         // on noise alpha, 16.5 on a gradient). RGB follows quality:
         // 4.7 at q50, 6.1 at q75, 7.9 at q90, 12.7 at q100.

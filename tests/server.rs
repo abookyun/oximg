@@ -4026,14 +4026,15 @@ fn oriented_sources_are_capped_on_their_own_fit() {
     assert_eq!((ow, oh), (1000, 250));
 
     // The rotated source is an exact-size re-encode: the staged frame,
-    // a copy into `out8` and the PNG encoder, 1.08 + 1.08 + 4.32 MB =
-    // 6.48 MB. The upright one takes the fused resize: `src16` 2.16 MB,
-    // `dst16` + `out8` 2.25 MB and the encoder 3.0 MB = 7.41 MB. A cap
+    // a copy into `out8` and the PNG encoder (twice the raw frame, its
+    // 256 KiB chunk buffer and three rows), 1.08 + 1.08 + 2.43 MB =
+    // 4.59 MB. The upright one takes the fused resize: `src16` 2.16 MB,
+    // `dst16` + `out8` 2.25 MB and the encoder 1.77 MB = 6.18 MB. A cap
     // between the two serves the first and refuses the second, which
     // only an estimate that knows each source's orientation can do.
     let capped = Server::start(&[
         ("IMAGES_DIR", images.clone()),
-        ("OXIMG_MAX_DECODED_BYTES", 6_950_000.to_string()),
+        ("OXIMG_MAX_DECODED_BYTES", 5_400_000.to_string()),
     ]);
     assert_eq!(capped.status_of("/resize/1000/0/rotated.png"), 200);
     assert_eq!(capped.status_of("/resize/1000/0/upright.png"), 413);

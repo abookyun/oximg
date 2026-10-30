@@ -1051,21 +1051,28 @@ fn encode_cost_follows_what_the_encoder_holds() {
         );
     }
 
-    // PNG scales with the raw frame; quantization (RGB only) with
-    // quantette's working set.
-    assert_eq!(encode_cost(ImageFormat::Png, 4000, 3000, 3, &def), px * 12);
-    assert_eq!(encode_cost(ImageFormat::Png, 4000, 3000, 4, &def), px * 16);
+    // PNG holds up to twice the raw frame plus its chunk buffer and three
+    // rows; quantization (RGB only) adds quantette's working set.
+    let rows = |ch: u64| 256 * 1024 + 3 * 4000 * ch;
+    assert_eq!(
+        encode_cost(ImageFormat::Png, 4000, 3000, 3, &def),
+        px * 6 + rows(3)
+    );
+    assert_eq!(
+        encode_cost(ImageFormat::Png, 4000, 3000, 4, &def),
+        px * 8 + rows(4)
+    );
     let quant = p(Params {
         png_quantize: Some(true),
         ..Params::default()
     });
     assert_eq!(
         encode_cost(ImageFormat::Png, 4000, 3000, 3, &quant),
-        px * 20
+        px * 20 + rows(3)
     );
     assert_eq!(
         encode_cost(ImageFormat::Png, 4000, 3000, 4, &quant),
-        px * 16
+        px * 8 + rows(4)
     );
 
     // WebP alpha is VP8L-coded, several times the RGB cost at any
@@ -1676,4 +1683,100 @@ fn truncated_in_memory_source_is_still_too_short() {
         format!("{e:#}").contains("source too short"),
         "unexpected error: {e:#}"
     );
+}
+
+/// Decode a PNG to its 8-bit pixels and list its IDAT chunk lengths.
+fn png_pixels_and_idats(b: &[u8]) -> (Vec<u8>, Vec<usize>) {
+    let mut r = png::Decoder::new(std::io::Cursor::new(b))
+        .read_info()
+        .unwrap();
+    let mut px = vec![0; r.output_buffer_size().unwrap()];
+    let n = r.next_frame(&mut px).unwrap().buffer_size();
+    px.truncate(n);
+    let (mut i, mut idats) = (8, Vec::new());
+    while i + 8 <= b.len() {
+        let len = u32::from_be_bytes(b[i..i + 4].try_into().unwrap()) as usize;
+        if &b[i + 4..i + 8] == b"IDAT" {
+            idats.push(len);
+        }
+        i += 12 + len;
+    }
+    (px, idats)
+}
+
+/// The PNG encoder streams deflate output into 256 KiB IDAT chunks
+/// (issue #133) instead of one IDAT built in a second buffer: the same
+/// pixels, and the same deflate stream `write_image_data` produced, so
+/// the file differs only by the extra chunk framing.
+#[test]
+fn png_streams_its_idat_chunks() {
+    let def = Resolved::new(&Params::default());
+    let (w, h) = (900, 700);
+    for channels in [3, 4] {
+        // A gradient under four bits of noise: compressible, but to
+        // more than one chunk.
+        let mut seed = 0x9E3779B9u32;
+        let px: Vec<u8> = (0..w * h * channels)
+            .map(|i| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                ((i % (w * channels)) * 255 / (w * channels)) as u8 ^ (seed >> 28) as u8
+            })
+            .collect();
+        let out = encode_png(&px, w, h, channels, None, &def).unwrap();
+        let (decoded, idats) = png_pixels_and_idats(&out);
+        assert!(decoded == px, "{channels} channels: pixels changed");
+        assert!(idats.len() > 1, "{channels} channels: {idats:?}");
+        let (last, full) = idats.split_last().unwrap();
+        assert!(full.iter().all(|&n| n == 256 * 1024), "{idats:?}");
+        assert!(*last <= 256 * 1024);
+
+        let mut whole = Vec::new();
+        let mut enc = png::Encoder::new(&mut whole, w as u32, h as u32);
+        enc.set_color(if channels == 4 {
+            png::ColorType::Rgba
+        } else {
+            png::ColorType::Rgb
+        });
+        enc.set_depth(png::BitDepth::Eight);
+        enc.set_compression(png::Compression::Fast);
+        let mut writer = enc.write_header().unwrap();
+        writer.write_image_data(&px).unwrap();
+        writer.finish().unwrap();
+        let framing = 12 * (idats.len() - 1);
+        assert_eq!(out.len(), whole.len() + framing, "{channels} channels");
+    }
+}
+
+/// fdeflate expands noise; like `write_image_data`, the encoder then
+/// falls back to stored blocks rather than ship the expansion, and
+/// zlib's levels hold to the stored size by themselves.
+#[test]
+fn incompressible_png_falls_back_to_stored_blocks() {
+    let (w, h): (usize, usize) = (600, 400);
+    let mut seed = 0x2545F491u32;
+    let px: Vec<u8> = (0..w * h * 3)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed >> 24) as u8
+        })
+        .collect();
+    let raw = (w * 3 + 1) * h;
+    let stored = 2 + raw + 5 * raw.div_ceil(65535) + 4;
+    for effort in [PngEffort::Fastest, PngEffort::Fast, PngEffort::Balanced] {
+        let p = Resolved::new(&Params {
+            png_effort: Some(effort),
+            ..Params::default()
+        });
+        let out = encode_png(&px, w, h, 3, None, &p).unwrap();
+        let (decoded, idats) = png_pixels_and_idats(&out);
+        assert!(decoded == px, "{effort:?}: pixels changed");
+        let idat: usize = idats.iter().sum();
+        // flate2's stored blocks run ~0.01% over the 65535-byte ideal.
+        assert!(
+            idat <= stored + stored / 1000,
+            "{effort:?}: {idat} > stored {stored}"
+        );
+    }
 }
