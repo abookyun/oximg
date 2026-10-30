@@ -898,10 +898,6 @@ fn webp_output_is_clamped_to_the_format_ceiling() {
     }
 }
 
-/// Issue #17's core claim in arithmetic: at equal pixel counts the
-/// decode cost varies by more than an order of magnitude, so a pixel
-/// cap cannot bound memory while a byte estimate can. The shapes and
-/// the measured peaks come from the field validation on the issue.
 /// At exact size the full-frame paths hand the decoded frame to `out8`
 /// (issue #129): the staged frame is the only one, until a rotation
 /// grows the swapped-in `chunk8` back to a second. A resize keeps its
@@ -924,6 +920,10 @@ fn decode_cost_prices_the_exact_size_hand_off() {
     assert_eq!(cost((200, 150), rot).bytes(), resized);
 }
 
+/// Issue #17's core claim in arithmetic: at equal pixel counts the
+/// decode cost varies by more than an order of magnitude, so a pixel
+/// cap cannot bound memory while a byte estimate can. The shapes and
+/// the measured peaks come from the field validation on the issue.
 #[test]
 fn decode_cost_separates_what_pixel_counts_cannot() {
     let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
