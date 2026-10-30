@@ -517,8 +517,11 @@ pub(super) fn encode_cost(
         ImageFormat::Jpeg => {
             let tokens = jpeg_token_cost(p.quality);
             match p.encoder {
-                Encoder::Jpegli if jpegli_progressive(w, h) => tokens + 7,
-                Encoder::Jpegli => tokens,
+                Encoder::Jpegli => match jpegli_mode(w, h) {
+                    JpegMode::Progressive => tokens + 7,
+                    JpegMode::Sequential => tokens,
+                    JpegMode::Streaming => return jpeg_streaming_cost(w, px, p.quality),
+                },
                 // The fastest profile: 6.2-8.5 B/px at any quality.
                 Encoder::MozFast => 10,
                 // Trellis + progressive: 6.3-18.9.
@@ -564,6 +567,29 @@ pub(super) fn jpeg_token_cost(quality: f32) -> u64 {
         91..=95 => 15,
         _ => 18,
     }
+}
+
+/// [`JpegMode::Streaming`] holds its output and a few rows. The output
+/// is the one part that still follows content; on noise, by quality
+/// (B/px, 8000², M2 Max): 0.48 at q30, 0.68 at q50, 1.06 at q70, 1.35 at
+/// q80, 1.87 at q90, 2.41 at q95, 4.31 at q100, against 0.09-0.73 on a
+/// photo. `Dest` grows its `Vec` by doubling, and the last growth
+/// touches the old buffer and its copy at once, so the output can hold
+/// up to twice its size (macOS remaps large reallocations instead, ~1x
+/// at 8000²; the 2048² cell in tests/decoded_bytes.rs held ~1.6x).
+/// Priced at twice noise plus 10%, in tenths of a byte. The rows are
+/// three iMCU rows of float planes, ~600 B per column, priced at 1 KiB.
+pub(super) fn jpeg_streaming_cost(w: usize, px: u64, quality: f32) -> u64 {
+    let tenths: u64 = match quality as u32 {
+        0..=30 => 11,
+        31..=50 => 15,
+        51..=70 => 24,
+        71..=80 => 30,
+        81..=90 => 42,
+        91..=95 => 53,
+        _ => 95,
+    };
+    (px.saturating_mul(tenths) / 10).saturating_add((w as u64).saturating_mul(1024))
 }
 
 /// SVT-AV1's working set: frame buffers at its internal bit depth,
@@ -758,9 +784,18 @@ pub(super) fn icc_app2_chunks(icc: &[u8]) -> impl Iterator<Item = Vec<u8>> + '_ 
 ///
 /// Below OXIMG_JPEG_SEQUENTIAL_PIXELS output pixels the default is
 /// sequential too: the identical pixels in fewer bytes and less CPU.
-pub(super) fn jpegli_progressive(w: usize, h: usize) -> bool {
+/// Above OXIMG_JPEG_STREAMING_PIXELS either mode gives way to
+/// [`JpegMode::Streaming`], which holds rows instead of the image.
+pub(super) fn jpegli_mode(w: usize, h: usize) -> JpegMode {
     let c = crate::config::config();
-    c.jpegli_progressive && (w as u64) * (h as u64) > c.jpegli_sequential_pixels
+    let px = (w as u64) * (h as u64);
+    if px > c.jpegli_streaming_pixels {
+        JpegMode::Streaming
+    } else if c.jpegli_progressive && px > c.jpegli_sequential_pixels {
+        JpegMode::Progressive
+    } else {
+        JpegMode::Sequential
+    }
 }
 
 pub(super) fn encode_jpegli(
@@ -773,7 +808,7 @@ pub(super) fn encode_jpegli(
     // cjpegli emits progressive by default; the libjpeg-compat layer does
     // not. Progressive is worth several percent at these sizes; the scan
     // script is oximg's own (see jpegli_enc.rs), not jpegli's level 2.
-    let mut enc = JpegliEncoder::new(w, h, quality, jpegli_progressive(w, h));
+    let mut enc = JpegliEncoder::new(w, h, quality, jpegli_mode(w, h));
     if let Some(icc) = icc {
         for chunk in icc_app2_chunks(icc) {
             enc.write_marker(JPEG_APP2, &chunk);

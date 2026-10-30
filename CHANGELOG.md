@@ -10,6 +10,20 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+### Changed
+
+- **JPEG outputs above 16 MP stream through the encoder** ([#133]).
+  jpegli held the whole image's coefficients (progressive) or tokens
+  (optimized Huffman tables) until the end, so an 8000² re-encode
+  peaked at 663 MB on a photo and 1048 MB on noise. Outputs above
+  `OXIMG_JPEG_STREAMING_PIXELS` (new, default 16,000,000) are now
+  written sequential on the standard Huffman tables, which jpegli
+  codes row by row: 213 MB and 287 MB, and the decoded-bytes estimate
+  prices the encoder at its output size instead of the whole image.
+  Same pixels; photos come out ~6% larger than progressive (+5% over
+  optimized sequential), noise ~30%. `OXIMG_JPEG_STREAMING_PIXELS`
+  set very high restores the previous layouts at every size.
+
 ### Fixed
 
 - **The decoded-bytes estimate counts the output encoder** ([#130]).
@@ -42,6 +56,7 @@ HTTP interface without notice.
   an animation still degrades to a still rather than answering 413.
 
 [#130]: https://github.com/oximg/oximg/issues/130
+[#133]: https://github.com/oximg/oximg/issues/133
 
 ## [0.17.0] - 2026-10-26
 

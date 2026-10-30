@@ -997,7 +997,7 @@ fn encode_cost_follows_what_the_encoder_holds() {
     let def = p(Params::default());
     let px = 4000 * 3000;
 
-    // jpegli holds every token at any mode (q80: 10 B/px); progressive
+    // Below 16 MP jpegli holds every token (q80: 10 B/px); progressive
     // above OXIMG_JPEG_SEQUENTIAL_PIXELS (default 12000) adds the
     // coefficients, sequential below it does not.
     assert_eq!(encode_cost(ImageFormat::Jpeg, 4000, 3000, 3, &def), px * 17);
@@ -1023,6 +1023,21 @@ fn encode_cost_follows_what_the_encoder_holds() {
     assert_eq!(
         encode_cost(ImageFormat::Jpeg, 4000, 3000, 3, &q(100.0)),
         px * 25
+    );
+    // Above OXIMG_JPEG_STREAMING_PIXELS (default 16 MP) the encoder
+    // holds its output (up to twice it, by quality) and a few rows.
+    let big = 5000 * 4000;
+    for (quality, tenths) in [(30.0, 11), (50.0, 15), (80.0, 30), (90.0, 42), (100.0, 95)] {
+        assert_eq!(
+            encode_cost(ImageFormat::Jpeg, 5000, 4000, 3, &q(quality)),
+            big * tenths / 10 + 5000 * 1024,
+            "q{quality}"
+        );
+    }
+    assert_eq!(
+        encode_cost(ImageFormat::Jpeg, 4000, 4000, 3, &def),
+        4000 * 4000 * 17,
+        "16 MP exactly is not streamed"
     );
     // mozjpeg: the fastest profile flat, trellis by quality.
     for (encoder, per_px) in [(Encoder::MozFast, 10), (Encoder::MozSmall, 14)] {

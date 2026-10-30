@@ -259,6 +259,25 @@ const CELLS: &[Cell] = &[
         &["OXIMG_JPEG_PROGRESSIVE=0"],
         2.4,
     ),
+    // Issue #133: the threshold dropped to 0 so a 2048² output streams.
+    (
+        "jpeg exact, streaming",
+        "noise.jpg",
+        "0",
+        "0",
+        "jpg",
+        &["OXIMG_JPEG_STREAMING_PIXELS=0"],
+        1.6,
+    ),
+    (
+        "jpeg kernel resize, streaming",
+        "noise.jpg",
+        "1024",
+        "1024",
+        "jpg",
+        &["OXIMG_JPEG_STREAMING_PIXELS=0"],
+        1.6,
+    ),
     (
         "jpeg kernel resize",
         "noise.jpg",

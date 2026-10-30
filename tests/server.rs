@@ -1083,6 +1083,47 @@ fn jpegli_scan_script_and_the_sequential_cases() {
     }
 }
 
+/// Above OXIMG_JPEG_STREAMING_PIXELS every route into jpegli writes one
+/// sequential scan on the standard Huffman tables (issue #133),
+/// overriding progressive and the optimized sequential tables; at or
+/// below it nothing changes.
+#[test]
+fn jpegli_streams_above_the_streaming_threshold() {
+    let sequential: Vec<common::Scan> = vec![(vec![0, 1, 2], 0, 63, 0, 0)];
+    // JPEG Annex K.3: the standard luminance DC table's code counts.
+    let std_dc_luma: &[u8] = &[0x00, 0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0];
+    let standard = |b: &[u8]| b.windows(std_dc_luma.len()).any(|w| w == std_dc_luma);
+    // 200x150 (30000 px) and 100x75 (7500 px) outputs.
+    let large = ["/resize/200/200/photo.jpg", "/resize/200/200/rgb.png@jpg"];
+    let small = ["/resize/100/100/photo.jpg", "/resize/100/100/rgb.png@jpg"];
+    let stream = ("OXIMG_JPEG_STREAMING_PIXELS", "10000".to_string());
+    for (overlap, progressive) in [("1", "1"), ("0", "1"), ("1", "0")] {
+        let s = Server::start(&[
+            ("OXIMG_OVERLAP", overlap.into()),
+            ("OXIMG_JPEG_PROGRESSIVE", progressive.into()),
+            stream.clone(),
+        ]);
+        let what = format!("OVERLAP={overlap} PROGRESSIVE={progressive}");
+        for url in large {
+            let body = s.get(url).unwrap().2;
+            let (sof, scans) = common::jpeg_scans(&body);
+            assert_eq!((sof, scans), (0xC1, sequential.clone()), "{what} {url}");
+            assert!(standard(&body), "{what} {url}: optimized tables");
+        }
+        for url in small {
+            let body = s.get(url).unwrap().2;
+            assert_eq!(common::jpeg_scans(&body).0, 0xC1, "{what} {url}");
+            assert!(!standard(&body), "{what} {url}: standard tables");
+        }
+    }
+    // The default (16 MP) leaves display sizes alone.
+    let s = Server::start(&[]);
+    for url in large {
+        let body = s.get(url).unwrap().2;
+        assert_eq!(common::jpeg_scans(&body).0, 0xC2, "default {url}");
+    }
+}
+
 /// The fir escape hatch swaps in a byte-different resize backend, so it
 /// must also switch fusing off — otherwise the same URL's bytes would
 /// depend on the instantaneous overlap gate. PNG output keeps the
