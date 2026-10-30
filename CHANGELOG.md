@@ -19,9 +19,13 @@ HTTP interface without notice.
   3-byte-per-pixel frame. Peak RSS for an 8000 × 8000 JPEG on an M2
   Max, base → now: 237 → 55 MiB sequential
   (`OXIMG_JPEG_PROGRESSIVE=0`), 599 → 418 MiB progressive (the
-  default), 561 → 379 MiB with `--preset fast`. The output bytes are
-  unchanged. Oriented and CMYK sources still buffer the frame, because
-  rotation and the CMYK conversion need all of it.
+  default), 561 → 379 MiB with `--preset fast`, all for a baseline
+  source. A progressive source gains only with sequential jpegli output
+  (420 → 238 MiB): with progressive output or a mozjpeg preset, the
+  decoder's coefficients and the encoder's buffers overlap and cancel
+  the frame saving. The output bytes are unchanged. Oriented and CMYK
+  sources still buffer the frame, because rotation and the CMYK
+  conversion need all of it.
 
 [#129]: https://github.com/oximg/oximg/issues/129
 
