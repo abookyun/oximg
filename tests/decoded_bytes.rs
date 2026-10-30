@@ -140,6 +140,24 @@ fn noise_gif(side: u16, frames: u32) -> Vec<u8> {
     out
 }
 
+/// One `side x side` frame of palette noise with half its pixels
+/// transparent: resized, its one-bit alpha filters into 8-bit noise
+/// alpha.
+fn holey_gif(side: u16) -> Vec<u8> {
+    let palette: Vec<u8> = noise(256 * 3, 0x3C6E_F372);
+    let px: Vec<u8> = noise(side as usize * side as usize, 0xA54F_F53A)
+        .into_iter()
+        .map(|v| if v & 1 == 0 { 0 } else { v })
+        .collect();
+    let mut out = Vec::new();
+    {
+        let mut enc = gif::Encoder::new(&mut out, side, side, &palette).unwrap();
+        let frame = gif::Frame::from_indexed_pixels(side, side, px, Some(0));
+        enc.write_frame(&frame).unwrap();
+    }
+    out
+}
+
 struct Inputs {
     dir: PathBuf,
 }
@@ -190,6 +208,7 @@ impl Inputs {
         )
         .unwrap();
         std::fs::write(dir.join("anim.gif"), noise_gif(1024, 6)).unwrap();
+        std::fs::write(dir.join("holey.gif"), holey_gif(1024)).unwrap();
         Inputs { dir }
     }
 
@@ -318,6 +337,16 @@ const CELLS: &[Cell] = &[
         "png",
         &[],
         2.5,
+    ),
+    // A resize turns GIF's one-bit alpha into 8-bit alpha.
+    (
+        "gif resized transparency",
+        "holey.gif",
+        "768",
+        "768",
+        "webp",
+        &[],
+        1.6,
     ),
     // Every frame composited, resized and encoded; libwebp retains them.
     ("gif animation", "anim.gif", "0", "0", "webp", &[], 3.0),

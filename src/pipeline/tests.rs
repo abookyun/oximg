@@ -1130,8 +1130,15 @@ fn gif_webp_encode_follows_quality() {
         })
     };
     let px = 1000 * 1000;
-    assert_eq!(gif_webp_encode_bytes(1000, 1000, &at(75.0)), px * 12);
-    assert_eq!(gif_webp_encode_bytes(1000, 1000, &at(100.0)), px * 19);
+    let same = ((1000, 1000), (1000, 1000));
+    assert_eq!(gif_webp_encode_bytes(same.0, same.1, &at(75.0)), px * 12);
+    assert_eq!(gif_webp_encode_bytes(same.0, same.1, &at(100.0)), px * 19);
+    // A resize filters the one-bit alpha into 8-bit values: the general
+    // RGBA price.
+    assert_eq!(
+        gif_webp_encode_bytes((2000, 2000), (1000, 1000), &at(75.0)),
+        px * 44
+    );
 }
 
 /// The estimate the last `process` call on this thread recorded.

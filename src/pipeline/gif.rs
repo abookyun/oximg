@@ -106,7 +106,18 @@ fn process_gif_src(
 /// transparency at the default quality (3000², M2 Max), against 37 for
 /// 8-bit noise alpha. So: the RGB encode at the requested quality, which
 /// is what moves with it, plus the one-bit alpha plane's share.
-pub(super) fn gif_webp_encode_bytes(w: usize, h: usize, p: &Resolved) -> u64 {
+///
+/// Only at the screen's own size, though: a resize filters the one-bit
+/// alpha into intermediate values, and that alpha costs what any 8-bit
+/// alpha does — `encode_cost`'s general RGBA price.
+pub(super) fn gif_webp_encode_bytes(
+    (src_w, src_h): (usize, usize),
+    (w, h): (usize, usize),
+    p: &Resolved,
+) -> u64 {
+    if (src_w, src_h) != (w, h) {
+        return encode_cost(ImageFormat::Webp, w, h, 4, p);
+    }
     let alpha = (w as u64).saturating_mul(h as u64).saturating_mul(4);
     encode_cost(ImageFormat::Webp, w, h, 3, p).saturating_add(alpha)
 }
@@ -153,7 +164,7 @@ fn first_frame_into_chunk8(
         .with_encode(Some(target), out_w, out_h, 4, p)
         .with_compressed(src.len() + s.held_source_bytes);
     if target == ImageFormat::Webp {
-        cost.encode_bytes = gif_webp_encode_bytes(out_w, out_h, p);
+        cost.encode_bytes = gif_webp_encode_bytes((src_w, src_h), (out_w, out_h), p);
     }
     check_decoded_bytes(cost, "GIF")?;
 
@@ -384,7 +395,7 @@ fn try_animated(s: &mut Scratch, src: &[u8], p: &Resolved) -> Result<Option<Vec<
         .saturating_add(work.saturating_mul(ANIM_RETAINED_PER_PX));
     // And each frame passes through the same libwebp encoder a still
     // does, next to the animation encoder's own canvases.
-    cost.encode_bytes = gif_webp_encode_bytes(out_w, out_h, p).saturating_add(
+    cost.encode_bytes = gif_webp_encode_bytes((cw, ch), (out_w, out_h), p).saturating_add(
         (out_w as u64)
             .saturating_mul(out_h as u64)
             .saturating_mul(ANIM_CANVASES_PER_PX),
