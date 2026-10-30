@@ -1213,6 +1213,34 @@ fn u16_as_bytes_mut(buf: &mut [u16]) -> &mut [u8] {
     unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast(), buf.len() * 2) }
 }
 
+/// Whether [`resize_bands`] hands this resize to fast_image_resize
+/// rather than an in-tree kernel. It matters beyond speed: fir's
+/// two-pass convolution holds a whole intermediate image (`src_w x
+/// dst_h` for u8 pixels, `dst_w x src_h` for u16, summed across bands),
+/// where pic-scale (single-threaded) and the AVX2/NEON kernels keep a
+/// few rows. The decoded-bytes estimate prices that intermediate from
+/// this same answer, so the dispatch and the estimate cannot drift.
+pub(crate) fn resize_uses_fir(px: PixelType, threads: usize, dst_h: usize) -> bool {
+    // Band-parallel: every band runs its own fir resizer.
+    if threads > 1 && dst_h >= 2 * threads {
+        return true;
+    }
+    if crate::config::config().fir_backend {
+        return true;
+    }
+    #[cfg(target_arch = "x86_64")]
+    return !(px == PixelType::U16x3
+        || (px == PixelType::U16x4 && crate::resize_avx2::Avx2::available()));
+    #[cfg(target_arch = "aarch64")]
+    return !(matches!(px, PixelType::U16x3 | PixelType::U16x4)
+        && std::arch::is_aarch64_feature_detected!("neon"));
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        let _ = px;
+        true
+    }
+}
+
 /// Split dst into row bands; each thread does a coordinate-consistent
 /// partial resize via fir's crop box. The crop only affects coordinate
 /// mapping — kernel taps still sample the full src, so band seams match
@@ -1250,22 +1278,16 @@ fn resize_bands(
         // so bytes stay per-URL stable). U16x4 (alpha) uses the AVX2
         // kernel (1.33x over fir on the benchmark shape; see
         // examples/resize_bench_x86.rs).
-        #[cfg(target_arch = "x86_64")]
-        if !crate::config::config().fir_backend {
-            if px == PixelType::U16x3 {
-                return resize_u16x3_picscale(src_bytes, dec_w, dec_h, dst_bytes, dst_w, dst_h);
-            }
-            if px == PixelType::U16x4 && crate::resize_avx2::Avx2::available() {
-                return crate::resize_avx2::resize_u16_avx2(
+        if !resize_uses_fir(px, threads, dst_h) {
+            #[cfg(target_arch = "x86_64")]
+            return if px == PixelType::U16x3 {
+                resize_u16x3_picscale(src_bytes, dec_w, dec_h, dst_bytes, dst_w, dst_h)
+            } else {
+                crate::resize_avx2::resize_u16_avx2(
                     src_bytes, dec_w, dec_h, dst_bytes, dst_w, dst_h, 4,
-                );
-            }
-        }
-        #[cfg(target_arch = "aarch64")]
-        if matches!(px, PixelType::U16x3 | PixelType::U16x4)
-            && !crate::config::config().fir_backend
-            && std::arch::is_aarch64_feature_detected!("neon")
-        {
+                )
+            };
+            #[cfg(target_arch = "aarch64")]
             return crate::resize_neon::resize_u16_neon(
                 src_bytes,
                 dec_w,
