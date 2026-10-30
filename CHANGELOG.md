@@ -21,6 +21,18 @@ HTTP interface without notice.
   `OXIMG_AVIF_SPEED`, PNG quantization, and alpha. Estimates rise, so
   a cap that was calibrated on the old figures may now refuse
   requests it used to admit.
+- **The decoded-bytes estimate prices the path that runs** ([#130]).
+  It used to assume every request held a staged frame, a u16 resize
+  input and a u16 output, so it over-counted the common paths: 2.4x on
+  a sequential full-size JPEG re-encode, 1.5x on large PNG thumbnails,
+  2.1x on PNG re-encodes at the source size. The path is now chosen
+  from the header first (fused vs staged PNG, exact size vs resize,
+  the JPEG row kernel vs its full-frame fallback, sRGB mode), and only
+  that path's buffers count. It also stopped under-counting three
+  shapes: `OXIMG_RESIZE=srgb` and `OXIMG_RESIZE_BACKEND=fir` on JPEG
+  sources (fir's whole-image intermediate; 835 MB measured against a
+  272 MB estimate), alpha AVIF sources (dav1d's pictures), and lossless
+  WebP (VP8L's ARGB image).
 
 [#130]: https://github.com/oximg/oximg/issues/130
 

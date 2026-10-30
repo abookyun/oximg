@@ -123,7 +123,7 @@ fn first_frame_into_chunk8(
     anyhow::ensure!(src_w > 0 && src_h > 0, "GIF logical screen is empty");
     check_src_pixels(src_w, src_h)?;
     let (out_w, out_h) = fit_dims(src_w, src_h, p.max_width, p.max_height);
-    let mut cost = DecodeCost::full_frame(src_w, src_h, 4, p);
+    let mut cost = DecodeCost::staged(src_w, src_h, 4);
     // Two frame-sized buffers, not one: the decoder stages its own RGBA
     // frame next to the canvas that frame composites onto. The canvas is
     // the screen; the staged frame is the frame's own rectangle, which a
@@ -133,7 +133,7 @@ fn first_frame_into_chunk8(
     cost.staged_bytes =
         canvas_bytes.saturating_add(first_frame_px(src).saturating_mul(4).max(canvas_bytes));
     let mut cost = cost
-        .with_output(out_w, out_h, 4)
+        .with_full_frame_resize((src_w, src_h), (out_w, out_h), 4, p)
         .with_encode(Some(target), out_w, out_h, 4, p)
         .with_compressed(src.len() + s.held_source_bytes);
     if target == ImageFormat::Webp {
@@ -344,7 +344,7 @@ fn try_animated(s: &mut Scratch, src: &[u8], p: &Resolved) -> Result<Option<Vec<
         return Ok(None);
     }
 
-    let mut cost = DecodeCost::full_frame(cw, ch, 4, p);
+    let mut cost = DecodeCost::staged(cw, ch, 4);
     // The canvas, the decoder's staged frame, and — only when a source
     // asks for it — the snapshot the Previous disposal restores from.
     // The canvas and the snapshot are the screen; the staged frame is
@@ -358,7 +358,7 @@ fn try_animated(s: &mut Scratch, src: &[u8], p: &Resolved) -> Result<Option<Vec<
         .saturating_add(scan.max_frame_px.saturating_mul(4).max(canvas_bytes))
         .saturating_add(if scan.needs_previous { canvas_bytes } else { 0 });
     let mut cost = cost
-        .with_output(out_w, out_h, 4)
+        .with_full_frame_resize((cw, ch), (out_w, out_h), 4, p)
         .with_compressed(src.len() + s.held_source_bytes);
     // libwebp retains every frame it has compressed until Assemble.
     // Modeled at one byte per encoded pixel: ~9x the 0.11 B/px measured

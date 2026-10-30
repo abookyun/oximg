@@ -1492,16 +1492,20 @@ pub(crate) const ICC_CAP: usize = 4 * 1024 * 1024;
 /// they were excluded.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct DecodeCost {
-    /// The decoder's own output buffer: pixels it materializes (after
-    /// any shrink-on-load) times bytes per staged pixel. Zero for the
-    /// streaming JPEG path, which only ever holds row bands.
+    /// The decoder's own output buffer (`chunk8`): pixels it
+    /// materializes (after any shrink-on-load) times bytes per staged
+    /// pixel. Zero where the decode streams rows: the JPEG kernel and
+    /// fallback paths, and the fused PNG path, which LUT-maps rows
+    /// straight into `src16`.
     pub staged_bytes: u64,
-    /// The linear-light resize input for full-frame paths: the same
-    /// frame again as u16 (`src16`). Zero when the path streams or
-    /// when linear light is off.
+    /// The full-frame resize's input side: the linear-light frame as
+    /// u16 (`src16`), plus fast_image_resize's whole-image intermediate
+    /// when the resize goes to fir (`resize_uses_fir`). Zero at exact
+    /// size and on the streaming kernels.
     pub resize_input_bytes: u64,
-    /// Output-side buffers every path allocates: `dst16` (u16) plus
-    /// `out8`, i.e. 3x the output frame per channel.
+    /// The output frame: `out8`, plus `dst16` when a full-frame linear
+    /// resize produces it, plus a second `out8` where a rotation needs
+    /// a fresh buffer to land in.
     pub output_bytes: u64,
     /// Whole-source buffering no output size reduces — progressive
     /// JPEG's coefficient arrays.
@@ -1528,32 +1532,86 @@ impl DecodeCost {
             .saturating_add(self.compressed_bytes)
     }
 
-    /// A path that materializes the whole `w x h` frame at `channels`
-    /// bytes per pixel and feeds the full-frame resize: `chunk8` plus,
-    /// under linear light (the default), the same frame as u16.
-    pub fn full_frame(w: usize, h: usize, channels: u64, p: &Resolved) -> Self {
-        let px = (w as u64).saturating_mul(h as u64);
-        let staged = px.saturating_mul(channels);
+    /// A path whose decoder materializes the whole `w x h` frame in
+    /// `chunk8` at `channels` bytes per pixel.
+    pub fn staged(w: usize, h: usize, channels: u64) -> Self {
         DecodeCost {
-            staged_bytes: staged,
-            resize_input_bytes: if p.linear_light { staged * 2 } else { 0 },
+            staged_bytes: pixels_of(w, h).saturating_mul(channels),
             ..Default::default()
         }
     }
 
-    /// A streaming path: no full frame is ever resident, only the
-    /// output-side buffers (added by `with_output`).
+    /// A path whose decoder never holds a full frame of its own.
     pub fn streaming() -> Self {
         DecodeCost::default()
     }
 
-    /// `dst16` + `out8` for the resize target. Every path pays this,
-    /// and on the streaming paths it is the dominant term — measured
-    /// 5.1 B per output pixel against the 9 modeled here (issue #17
-    /// follow-up), i.e. conservative.
-    pub fn with_output(mut self, out_w: usize, out_h: usize, channels: u64) -> Self {
-        let px = (out_w as u64).saturating_mul(out_h as u64);
-        self.output_bytes = px.saturating_mul(channels).saturating_mul(3);
+    /// Output that streamed rows land in directly: `out8` alone. The
+    /// JPEG kernel paths (serial and fused) and every exact-size path.
+    /// The fused jpegli encode does not even hold that, but falls back
+    /// to the serial path when its worker cannot start, so it is priced
+    /// as that path.
+    pub fn with_streamed_output(mut self, w: usize, h: usize, channels: u64) -> Self {
+        self.output_bytes = pixels_of(w, h).saturating_mul(channels);
+        self
+    }
+
+    /// A full-frame resize of a `src` frame to `dst`, as
+    /// `resize_pixels_to` runs it (and the paths that mirror it: the
+    /// fused PNG decode, the JPEG band/fir fallback). At exact size
+    /// that is a copy into `out8`. Otherwise linear light adds `src16`
+    /// and `dst16`, and fir adds its intermediate image.
+    pub fn with_full_frame_resize(
+        mut self,
+        (src_w, src_h): (usize, usize),
+        (dst_w, dst_h): (usize, usize),
+        channels: u64,
+        p: &Resolved,
+    ) -> Self {
+        let out8 = pixels_of(dst_w, dst_h).saturating_mul(channels);
+        if (src_w, src_h) == (dst_w, dst_h) {
+            self.output_bytes = out8;
+            return self;
+        }
+        let (src16, dst16) = if p.linear_light {
+            (
+                pixels_of(src_w, src_h).saturating_mul(channels * 2),
+                out8.saturating_mul(2),
+            )
+        } else {
+            (0, 0)
+        };
+        let pixel = match (p.linear_light, channels) {
+            (true, 4) => PixelType::U16x4,
+            (true, _) => PixelType::U16x3,
+            (false, 4) => PixelType::U8x4,
+            (false, _) => PixelType::U8x3,
+        };
+        // fir runs u8 vertical-first (`src_w x dst_h`) and u16
+        // horizontal-first (`dst_w x src_h`); across bands the
+        // intermediates sum to the same.
+        let fir = if resize_uses_fir(pixel, p.parallel, dst_h) {
+            if p.linear_light {
+                pixels_of(dst_w, src_h).saturating_mul(channels * 2)
+            } else {
+                pixels_of(src_w, dst_h).saturating_mul(channels)
+            }
+        } else {
+            0
+        };
+        self.resize_input_bytes = src16.saturating_add(fir);
+        self.output_bytes = dst16.saturating_add(out8);
+        self
+    }
+
+    /// A rotation that lands in a buffer of its own: the JPEG paths
+    /// whose `chunk8` held only row bands rotate the resized frame into
+    /// it, growing it to a second output frame. (The full-frame paths
+    /// rotate into a `chunk8` already at least that large.)
+    pub fn with_rotation_buffer(mut self, w: usize, h: usize, channels: u64) -> Self {
+        self.output_bytes = self
+            .output_bytes
+            .saturating_add(pixels_of(w, h).saturating_mul(channels));
         self
     }
 
@@ -1591,6 +1649,10 @@ impl DecodeCost {
         self.encode_bytes = target.map_or(0, |t| encode_cost(t, w, h, channels, p));
         self
     }
+}
+
+fn pixels_of(w: usize, h: usize) -> u64 {
+    (w as u64).saturating_mul(h as u64)
 }
 
 /// Histogram-able record of every decode's estimated cost, plus the

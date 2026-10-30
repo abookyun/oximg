@@ -3692,10 +3692,11 @@ fn decoded_bytes_cap_bounds_what_pixels_cannot() {
         1.0,
         "the estimate is recorded even with no cap set"
     );
-    // 3.2 MP RGB: 9.6 MB staged plus 19.2 MB as the linear-light u16
-    // resize input, so ~28 MB — the 32 MiB bucket holds it and the
-    // 16 MiB one does not. This histogram is what an operator reads a
-    // cap off, so its placement is the contract.
+    // 3.2 MP RGB8 takes the fused arm, which decodes rows straight
+    // into the 19.2 MB linear-light u16 resize input and never stages a
+    // u8 frame (issue #130) — the 32 MiB bucket holds it and the 16 MiB
+    // one does not. This histogram is what an operator reads a cap off,
+    // so its placement is the contract.
     assert_eq!(
         metric(
             &body,
@@ -3710,7 +3711,7 @@ fn decoded_bytes_cap_bounds_what_pixels_cannot() {
         ),
         0.0
     );
-    assert!(metric(&body, "oximg_decoded_bytes_estimate_sum") > 25_000_000.0);
+    assert!(metric(&body, "oximg_decoded_bytes_estimate_sum") > 19_200_000.0);
     drop(s);
 
     // A cap above the estimate serves; below it answers 413 (the same

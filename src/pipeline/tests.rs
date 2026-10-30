@@ -909,8 +909,11 @@ fn decode_cost_separates_what_pixel_counts_cannot() {
 
     // Baseline JPEG, 3980x59828 (238 MP) at width=1920, whose WebP
     // output clamps to 16383 tall: streaming, so only the output side
-    // is resident. Measured peak 92 MiB.
-    let baseline = DecodeCost::streaming().with_output(1090, 16383, 3);
+    // is resident — `out8` and the WebP encoder. Measured peak 92 MiB.
+    let webp = Some(ImageFormat::Webp);
+    let baseline = DecodeCost::streaming()
+        .with_streamed_output(1090, 16383, 3)
+        .with_encode(webp, 1090, 16383, 3, p);
     let ratio = mib(baseline.bytes()) / 92.0;
     assert!(
         (1.0..3.0).contains(&ratio),
@@ -922,8 +925,9 @@ fn decode_cost_separates_what_pixel_counts_cannot() {
     // 16383 tall): full frame, plus the linear-light u16 copy, plus the
     // output side. Measured peak 592 MiB — the case the first attempt
     // under-estimated 3.5x, which is the dangerous direction.
-    let png = DecodeCost::full_frame(2250, 26115, 3, p)
-        .with_output(1411, 16383, 3)
+    let png = DecodeCost::staged(2250, 26115, 3)
+        .with_full_frame_resize((2250, 26115), (1411, 16383), 3, p)
+        .with_encode(webp, 1411, 16383, 3, p)
         .with_compressed(12 << 20);
     let ratio = mib(png.bytes()) / 592.0;
     assert!(
@@ -941,8 +945,8 @@ fn decode_cost_separates_what_pixel_counts_cannot() {
     // checked here, not the default.
     let num = dct_scale_num(12247, 12247, 1920, 1920, Some(1.7)) as usize;
     let (dw, dh) = ((12247 * num).div_ceil(8), (12247 * num).div_ceil(8));
-    let prog = DecodeCost::full_frame(dw, dh, 4, p)
-        .with_output(1920, 1920, 4)
+    let prog = DecodeCost::staged(dw, dh, 4)
+        .with_full_frame_resize((dw, dh), (1920, 1920), 3, p)
         .with_progressive_coefficients(12247, 12247, 4);
     let ratio = mib(prog.bytes()) / 1231.0;
     assert!(
@@ -965,8 +969,8 @@ fn decode_cost_separates_what_pixel_counts_cannot() {
     // The progressive term is output-independent: a smaller output
     // barely helps, which is why pixel- and output-based reasoning
     // both fail on those sources.
-    let smaller = DecodeCost::full_frame(dw / 2, dh / 2, 4, p)
-        .with_output(480, 480, 4)
+    let smaller = DecodeCost::staged(dw / 2, dh / 2, 4)
+        .with_full_frame_resize((dw / 2, dh / 2), (480, 480), 3, p)
         .with_progressive_coefficients(12247, 12247, 4);
     assert!(
         smaller.bytes() > prog.bytes() / 2,
@@ -1064,6 +1068,253 @@ fn avif_encode_cost_follows_the_preset() {
     );
 }
 
+/// The estimate the last `process` call on this thread recorded.
+fn cost_of(src: &[u8], p: Params) -> DecodeCost {
+    process(src, &p).unwrap();
+    LAST_COST.get().expect("a decode just ran").0
+}
+
+fn sized(max_width: u32, max_height: u32) -> Params {
+    Params {
+        max_width,
+        max_height,
+        ..Params::default()
+    }
+}
+
+/// fir's intermediate for a full-frame resize, when the dispatch takes
+/// fir on this machine (it depends on the CPU and the knobs).
+fn fir_bytes(px: PixelType, dst_h: usize, intermediate: u64) -> u64 {
+    if resize_uses_fir(px, 1, dst_h) {
+        intermediate
+    } else {
+        0
+    }
+}
+
+/// Issue #130: every JPEG arm is priced by the buffers it holds. A
+/// 320x240 source into a 200x200 box decodes at full size (a 1.6x
+/// reduction engages no shrink-on-load) and resizes to 200x150.
+#[test]
+fn decode_cost_prices_each_jpeg_arm() {
+    let jpeg = make_test_jpeg(320, 240, false);
+    let (src, dst) = (320 * 240, 200 * 150);
+
+    // Exact size: libjpeg writes straight into `out8`.
+    let c = cost_of(&jpeg, sized(320, 240));
+    assert_eq!(
+        (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
+        (0, 0, src * 3)
+    );
+
+    // The row kernel streams into `out8`: nothing full-frame on the
+    // source side.
+    if kernel_streams(&rbox(200, 200)) {
+        let c = cost_of(&jpeg, sized(200, 200));
+        assert_eq!(
+            (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
+            (0, 0, dst * 3)
+        );
+    }
+
+    // sRGB mode decodes the whole frame to u8 and resizes it there.
+    let c = cost_of(
+        &jpeg,
+        Params {
+            linear_light: Some(false),
+            ..sized(200, 200)
+        },
+    );
+    assert_eq!(c.staged_bytes, src * 3);
+    assert_eq!(
+        c.resize_input_bytes,
+        fir_bytes(PixelType::U8x3, 150, 320 * 150 * 3)
+    );
+    assert_eq!(c.output_bytes, dst * 3);
+
+    // Band-parallel takes the full-frame fallback: `src16` filled from
+    // row chunks, every band's fir intermediate, `dst16` + `out8`.
+    let c = cost_of(
+        &jpeg,
+        Params {
+            parallel: 4,
+            ..sized(200, 200)
+        },
+    );
+    assert_eq!(c.staged_bytes, 0);
+    assert_eq!(c.resize_input_bytes, src * 6 + 200 * 240 * 6);
+    assert_eq!(c.output_bytes, dst * 9);
+
+    // Rotated output: the kernel arm's `chunk8` held row chunks, so the
+    // rotation lands in a second output frame. (Orientation 6 displays
+    // 320x240 as 240x320; the box fits it to 150x200, stored 200x150.)
+    let rotated = {
+        let mut exif = b"Exif\0\0".to_vec();
+        exif.extend_from_slice(&tiff_orientation(6));
+        let mut comp = Compress::new(ColorSpace::JCS_RGB);
+        comp.set_size(320, 240);
+        comp.set_quality(90.0);
+        let mut started = comp.start_compress(Vec::new()).unwrap();
+        started.write_marker(mozjpeg::Marker::APP(1), &exif);
+        started
+            .write_scanlines(&vec![128u8; 320 * 240 * 3])
+            .unwrap();
+        started.finish().unwrap()
+    };
+    if kernel_streams(&rbox(200, 200)) {
+        let c = cost_of(&rotated, sized(150, 200));
+        assert_eq!(
+            (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
+            (0, 0, dst * 3 * 2)
+        );
+    }
+
+    // CMYK stages four channels (at its shrink-on-load size), compacts
+    // to RGB in place, and resizes like the buffered formats.
+    let cmyk = make_cmyk_jpeg(320, 240, false);
+    let num = dct_scale_num(320, 240, 200, 150, Some(BUFFERED_DCT_MARGIN)) as usize;
+    let (dw, dh) = ((320 * num).div_ceil(8), (240 * num).div_ceil(8));
+    let c = cost_of(&cmyk, sized(200, 200));
+    assert_eq!(c.staged_bytes, (dw * dh * 4) as u64);
+    if (dw, dh) != (200, 150) {
+        assert_eq!(
+            c.resize_input_bytes,
+            (dw * dh * 6) as u64 + fir_bytes(PixelType::U16x3, 150, (200 * dh * 6) as u64)
+        );
+        assert_eq!(c.output_bytes, dst * 9);
+    }
+}
+
+/// Issue #130: the PNG arm is chosen from the header before the
+/// estimate runs, so the estimate prices that arm — not a staged frame
+/// the fused arm never allocates, nor a resize an exact-size request
+/// never runs.
+#[test]
+fn decode_cost_prices_each_png_arm() {
+    let (src, dst) = (320 * 240, 200 * 150);
+
+    // RGB8 with a reduction: the fused arm, rows straight into `src16`.
+    let rgb = black_white_lines_png(320, 240, 3);
+    let c = cost_of(&rgb, sized(200, 200));
+    assert_eq!(c.staged_bytes, 0);
+    assert_eq!(
+        c.resize_input_bytes,
+        src * 6 + fir_bytes(PixelType::U16x3, 150, 200 * 240 * 6)
+    );
+    assert_eq!(c.output_bytes, dst * 9);
+
+    // Exact size: `chunk8` copied to `out8`, no resize buffers.
+    let c = cost_of(&rgb, sized(320, 240));
+    assert_eq!(
+        (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
+        (src * 3, 0, src * 3)
+    );
+
+    // RGBA takes the general arm: staged, premultiplied into `src16`.
+    let rgba = black_white_lines_png(320, 240, 4);
+    let c = cost_of(&rgba, sized(200, 200));
+    assert_eq!(c.staged_bytes, src * 4);
+    assert_eq!(
+        c.resize_input_bytes,
+        src * 8 + fir_bytes(PixelType::U16x4, 150, 200 * 240 * 8)
+    );
+    assert_eq!(c.output_bytes, dst * 12);
+
+    // eXIf orientation 6 is read before the estimate: a 400x100 source
+    // displays as 100x400, which fits a 120-wide box as it is. The
+    // unoriented fit (120x30) would have priced a resize.
+    let mut oriented = Vec::new();
+    {
+        let mut info = png::Info::with_size(400, 100);
+        info.exif_metadata = Some(std::borrow::Cow::Owned(tiff_orientation(6)));
+        info.color_type = png::ColorType::Rgb;
+        info.bit_depth = png::BitDepth::Eight;
+        let enc = png::Encoder::with_info(&mut oriented, info).unwrap();
+        enc.write_header()
+            .unwrap()
+            .write_image_data(&vec![128u8; 400 * 100 * 3])
+            .unwrap();
+    }
+    let c = cost_of(&oriented, sized(120, 10_000));
+    assert_eq!(
+        (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
+        (400 * 100 * 3, 0, 400 * 100 * 3)
+    );
+}
+
+/// A little-endian TIFF carrying only an Orientation tag.
+fn tiff_orientation(o: u16) -> Vec<u8> {
+    let mut t = b"II*\0\x08\0\0\0".to_vec();
+    t.extend_from_slice(&1u16.to_le_bytes()); // one entry
+    t.extend_from_slice(&0x0112u16.to_le_bytes()); // Orientation
+    t.extend_from_slice(&3u16.to_le_bytes()); // SHORT
+    t.extend_from_slice(&1u32.to_le_bytes()); // count
+    t.extend_from_slice(&o.to_le_bytes());
+    t.extend_from_slice(&[0, 0]); // value padding
+    t.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
+    t
+}
+
+/// Issue #130: libwebp's VP8L decoder holds the whole image as ARGB
+/// words — lossless sources and the alpha plane of lossy ones — so
+/// those are priced above an opaque lossy source at the same size.
+#[test]
+fn decode_cost_prices_webp_alpha_decoding() {
+    let webp_of = |channels: usize| {
+        // A real alpha ramp: libwebp drops an all-opaque alpha plane.
+        let mut px = black_white_lines(320, 240, channels);
+        if channels == 4 {
+            for (i, a) in px.iter_mut().skip(3).step_by(4).enumerate() {
+                *a = (i % 256) as u8;
+            }
+        }
+        let mut png = Vec::new();
+        let mut enc = png::Encoder::new(&mut png, 320, 240);
+        enc.set_color(if channels == 4 {
+            png::ColorType::Rgba
+        } else {
+            png::ColorType::Rgb
+        });
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(&px).unwrap();
+        process(
+            &png,
+            &Params {
+                output: Some(ImageFormat::Webp),
+                ..sized(320, 240)
+            },
+        )
+        .unwrap()
+        .0
+    };
+    let src = 320 * 240;
+    let c = cost_of(&webp_of(3), sized(320, 240));
+    assert_eq!(c.staged_bytes, src * 3, "lossy RGB streams rows");
+    let c = cost_of(&webp_of(4), sized(320, 240));
+    assert_eq!(c.staged_bytes, src * 4 + src * 4, "the alpha plane is VP8L");
+}
+
+/// Issue #130: dav1d's pictures and frame state sit next to `chunk8`
+/// (and stay resident through the resize), so an AVIF source is priced
+/// above its RGBA frame alone.
+#[cfg(feature = "avif")]
+#[test]
+fn decode_cost_prices_dav1d_next_to_the_frame() {
+    let png = black_white_lines_png(320, 240, 3);
+    let (avif, _) = process(
+        &png,
+        &Params {
+            output: Some(ImageFormat::Avif),
+            ..sized(320, 240)
+        },
+    )
+    .unwrap();
+    let c = cost_of(&avif, sized(320, 240));
+    let src = 320 * 240;
+    assert_eq!(c.staged_bytes, src * 4 + src * 12);
+    assert_eq!((c.resize_input_bytes, c.output_bytes), (0, src * 4));
+}
+
 /// Issue #22: a caller-held source buffer is resident for the whole
 /// decode, so the in-memory entry point must count it in the estimate
 /// — the streaming-JPEG path otherwise carries no compressed term at
@@ -1118,38 +1369,6 @@ fn caller_held_source_counts_in_the_decode_estimate() {
         cost.compressed_bytes,
         2 * png.len() as u64,
         "a buffered format holds the source twice: srcbuf + the caller's copy"
-    );
-}
-
-/// `larger_fit` is what keeps the output-side estimate conservative
-/// before a source's orientation is known (issue #17 review): it must
-/// return whichever of the two candidate fits covers more pixels, with
-/// the axes back in stored order.
-#[test]
-fn larger_fit_covers_the_swapped_orientation() {
-    let box_ = |w: u32, h: u32| rbox(w, h);
-    // The review's shape: 4000x1000 under a width-only box. Upright it
-    // fits to 1920x480; presented as 1000x4000 by orientation 6 it fits
-    // to 1000x4000 — four times the pixels, and what must be counted.
-    assert_eq!(
-        super::formats::larger_fit(4000, 1000, &box_(1920, u32::MAX)),
-        (4000, 1000)
-    );
-    // The mirror case: the unoriented fit is already the larger one.
-    assert_eq!(
-        super::formats::larger_fit(1000, 4000, &box_(1920, u32::MAX)),
-        (1000, 4000)
-    );
-    // A symmetric box makes both candidates equal, so the stored
-    // orientation is returned unchanged.
-    assert_eq!(
-        super::formats::larger_fit(4000, 1000, &box_(500, 500)),
-        (500, 125)
-    );
-    // Sources inside the box are never enlarged either way.
-    assert_eq!(
-        super::formats::larger_fit(300, 200, &box_(1920, u32::MAX)),
-        (300, 200)
     );
 }
 
