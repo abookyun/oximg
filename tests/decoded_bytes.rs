@@ -227,7 +227,9 @@ impl Drop for Inputs {
 ///
 /// The bounds are the higher of two measured ratios plus ~25%: M2 Max
 /// (macOS) and Ryzen 7 8745HS (Linux, glibc, SVT-AV1 built as CI builds
-/// it), 2026-10-30. A distribution SVT-AV1 built with its memory
+/// it), 2026-10-30. Where an arm takes a path only aarch64 runs (the
+/// streamed PNG thumbnail), CI's Linux arm64 runner is a third reading
+/// and can set the bound. A distribution SVT-AV1 built with its memory
 /// tracking on holds ~200 MB more per encode; CI does not use one.
 type Cell = (
     &'static str,
