@@ -100,11 +100,16 @@ fn process_gif_src(
     Ok(out)
 }
 
-/// libwebp's working set per output pixel for a GIF frame. GIF alpha
-/// is one bit, which VP8L codes far more cheaply than the general alpha
-/// case `encode_cost` prices: 9.5 B/px measured for a noise frame with
-/// noise transparency (3000², M2 Max), against 37 for 8-bit noise alpha.
-const GIF_WEBP_ENCODE_PER_PX: u64 = 12;
+/// libwebp's working set for a `w x h` GIF frame. GIF alpha is one
+/// bit, which VP8L codes far more cheaply than the general alpha case
+/// `encode_cost` prices: 9.5 B/px measured for a noise frame with noise
+/// transparency at the default quality (3000², M2 Max), against 37 for
+/// 8-bit noise alpha. So: the RGB encode at the requested quality, which
+/// is what moves with it, plus the one-bit alpha plane's share.
+pub(super) fn gif_webp_encode_bytes(w: usize, h: usize, p: &Resolved) -> u64 {
+    let alpha = (w as u64).saturating_mul(h as u64).saturating_mul(4);
+    encode_cost(ImageFormat::Webp, w, h, 3, p).saturating_add(alpha)
+}
 
 /// What libwebp's animation encoder retains per encoded frame pixel
 /// until it assembles the file: measured 4.5 B/px for 1024² noise
@@ -148,9 +153,7 @@ fn first_frame_into_chunk8(
         .with_encode(Some(target), out_w, out_h, 4, p)
         .with_compressed(src.len() + s.held_source_bytes);
     if target == ImageFormat::Webp {
-        cost.encode_bytes = (out_w as u64)
-            .saturating_mul(out_h as u64)
-            .saturating_mul(GIF_WEBP_ENCODE_PER_PX);
+        cost.encode_bytes = gif_webp_encode_bytes(out_w, out_h, p);
     }
     check_decoded_bytes(cost, "GIF")?;
 
@@ -380,9 +383,11 @@ fn try_animated(s: &mut Scratch, src: &[u8], p: &Resolved) -> Result<Option<Vec<
         .saturating_add(work.saturating_mul(ANIM_RETAINED_PER_PX));
     // And each frame passes through the same libwebp encoder a still
     // does, next to the animation encoder's own canvases.
-    cost.encode_bytes = (out_w as u64)
-        .saturating_mul(out_h as u64)
-        .saturating_mul(GIF_WEBP_ENCODE_PER_PX + ANIM_CANVASES_PER_PX);
+    cost.encode_bytes = gif_webp_encode_bytes(out_w, out_h, p).saturating_add(
+        (out_w as u64)
+            .saturating_mul(out_h as u64)
+            .saturating_mul(ANIM_CANVASES_PER_PX),
+    );
     // Over the global cap this animation would be a 413 — but the same
     // GIF as a still fits comfortably, so treat the cap like the
     // animation budgets and serve less instead of refusing. The still

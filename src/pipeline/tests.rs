@@ -1119,6 +1119,21 @@ fn avif_encode_cost_follows_the_preset_and_quality() {
     );
 }
 
+/// A GIF's one-bit alpha is priced on its own, but the RGB encode under
+/// it follows the WebP quality like any other lossy encode.
+#[test]
+fn gif_webp_encode_follows_quality() {
+    let at = |webp_quality| {
+        Resolved::new(&Params {
+            webp_quality: Some(webp_quality),
+            ..Params::default()
+        })
+    };
+    let px = 1000 * 1000;
+    assert_eq!(gif_webp_encode_bytes(1000, 1000, &at(75.0)), px * 12);
+    assert_eq!(gif_webp_encode_bytes(1000, 1000, &at(100.0)), px * 19);
+}
+
 /// The estimate the last `process` call on this thread recorded.
 fn cost_of(src: &[u8], p: Params) -> DecodeCost {
     process(src, &p).unwrap();
