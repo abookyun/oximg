@@ -40,8 +40,9 @@ HTTP interface without notice.
   of a 7000×7000 PNG into a 10×10 box peaks at 57 MiB instead of
   337 MiB on an M2 Max (244 instead of 524 MiB for a lightly
   compressed source, whose bytes are still held whole). Output is
-  byte-identical. It applies to 8-bit RGB, non-interlaced, upright
-  sources resized in linear light, single-band (`OXIMG_PAR=1`, the
+  byte-identical. It applies to opaque RGB sources (8- or 16-bit
+  truecolor, or a palette without transparency), non-interlaced and
+  upright, resized in linear light on one band (`OXIMG_PAR=1`, the
   default, or outputs under two rows per band). amd64 keeps the
   staged frame for now: its resize there has no row-by-row form, and
   switching would change pixels.

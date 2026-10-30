@@ -10,11 +10,13 @@ Sources are sniffed by magic bytes. Extensions are never trusted.
 | AVIF (`--features avif`) | dav1d 8/10/12-bit, all subsamplings, alpha | SVT-AV1 10-bit 4:2:0, tune=ssim, alpha auxiliary | itself |
 | GIF | GIF87a/89a, frames composited onto the logical screen | **none** | WebP (animated GIF → animated WebP) |
 
-PNG has no shrink-on-load. On arm64, an 8-bit RGB, non-interlaced,
-upright source resized in linear light as one band (`OXIMG_PAR=1`, or
-under two output rows per band) streams its rows into the resize, so
-only a window of rows is resident; every other PNG, and every PNG on
-amd64, decodes to a full frame first. Bytes are the same either way.
+PNG has no shrink-on-load. On arm64, an opaque RGB source (8- or
+16-bit truecolor, or a palette without transparency — all decoded to
+8-bit RGB), non-interlaced, upright and resized in linear light as one
+band (`OXIMG_PAR=1`, or under two output rows per band) streams its
+rows into the resize, so only a window of rows is resident; every
+other PNG, and every PNG on amd64, decodes to a full frame first.
+Bytes are the same either way.
 
 Accepted `@{fmt}` tokens: `jpg` / `jpeg` / `png` / `webp` / `avif`.
 `@gif` / `@jxl` / `format=gif` / CLI `.gif` without `-f` are refused
