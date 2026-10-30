@@ -1399,6 +1399,9 @@ fn decode_cost_prices_each_png_arm() {
         (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
         (400 * 100 * 3, 0, 400 * 100 * 3)
     );
+    // The encoder sees the rotated frame: its row allowance is three
+    // rows of the displayed width (100), not the stored one (400).
+    assert_eq!(c.encode_bytes, 400 * 100 * 6 + 256 * 1024 + 3 * 100 * 3);
 }
 
 /// A little-endian TIFF carrying only an Orientation tag.
