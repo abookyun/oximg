@@ -627,6 +627,11 @@ mod tests {
     }
 
     #[test]
+    fn resident_bytes_cover_the_stream_allocation() {
+        testkit::assert_resident_bytes_cover_allocation::<Neon>();
+    }
+
+    #[test]
     fn portable_f16_rounding_matches_hardware() {
         let mut x = 0x2545_f491_4f6c_dd1du64;
         for _ in 0..1_000_000 {

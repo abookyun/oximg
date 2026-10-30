@@ -957,6 +957,14 @@ mod tests {
     }
 
     #[test]
+    fn resident_bytes_cover_the_stream_allocation() {
+        if !detected() {
+            return;
+        }
+        testkit::assert_resident_bytes_cover_allocation::<Avx2>();
+    }
+
+    #[test]
     fn u8_staging_matches_u16() {
         if !detected() {
             return;

@@ -157,17 +157,20 @@ pub(super) fn process_png<R: std::io::BufRead>(
         let (enc_w, enc_h) = orientation.display_dims(dst_w, dst_h);
         // PNG has no shrink-on-load: the general arm stages the whole
         // frame in `chunk8`; the fused arm never does. Streamed, it does
-        // not stage `src16` either: one mapped source row, and `out8`
-        // written straight from the kernel. The kernel's window ring,
-        // staging batch and filter tables scale with the source's sides,
-        // not its area: ~100-160 B per column measured at 7000 and
-        // 32000 px wide (M2 Max), priced at 144 B per row and per column
-        // so a very wide source cannot slip under the cap.
+        // not stage `src16` either: one mapped source row, the kernel's
+        // own buffers (window tables, staging batch, ring — sized from
+        // the shape the way the kernel sizes them; a tall source squeezed
+        // to a few rows keeps a padded ring row per source row), and
+        // `out8` written straight from the kernel.
         let cost = if stream {
             let mut row = DecodeCost::streaming().with_streamed_output(dst_w, dst_h, 3);
-            row.resize_input_bytes = (src_w as u64)
-                .saturating_mul(3 * 2)
-                .saturating_add((src_w as u64 + src_h as u64).saturating_mul(144));
+            #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+            let kernel = crate::resize_kernel::StreamResize::<FuseKernel>::resident_bytes(
+                src_w, src_h, dst_w, dst_h, 3,
+            );
+            #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+            let kernel = 0;
+            row.resize_input_bytes = (src_w as u64).saturating_mul(3 * 2).saturating_add(kernel);
             row
         } else if fused {
             DecodeCost::streaming().with_full_frame_resize(

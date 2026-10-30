@@ -1366,6 +1366,27 @@ fn decode_cost_counts_the_frame_a_pixel_caller_keeps() {
     assert_eq!(c.output_bytes, 320 * 240 * 3);
 }
 
+/// A tall source squeezed to one row keeps a whole column in the row
+/// kernel's ring: one 16-float-padded row per source row (issue #129).
+/// A fitted per-side constant priced 40x32000 -> 1x1 at 4.6 MB against
+/// a 6.1 MB ring; the estimate must cover the ring wherever it streams.
+#[test]
+fn decode_cost_covers_the_stream_ring_of_a_tall_source() {
+    let tall = black_white_lines_png(40, 32_000, 3);
+    let c = cost_of(&tall, sized(1, 1));
+    if bands_use_stream_kernel(PixelType::U16x3, sized(1, 1).parallel, 1) {
+        let ring = 32_000 * 16 * 3 * 4;
+        assert!(
+            c.resize_input_bytes > ring,
+            "resize input {} must cover the {ring}-byte ring",
+            c.resize_input_bytes
+        );
+    } else {
+        // Staged: the whole linear-light frame.
+        assert!(c.resize_input_bytes >= 40 * 32_000 * 6);
+    }
+}
+
 /// Issue #130: the PNG arm is chosen from the header before the
 /// estimate runs, so the estimate prices that arm — not a staged frame
 /// the fused arm never allocates, nor a resize an exact-size request
@@ -1382,9 +1403,11 @@ fn decode_cost_prices_each_png_arm() {
     let c = cost_of(&rgb, sized(200, 200));
     assert_eq!(c.staged_bytes, 0);
     if bands_use_stream_kernel(PixelType::U16x3, sized(200, 200).parallel, 150) {
+        let kernel =
+            crate::resize_kernel::StreamResize::<FuseKernel>::resident_bytes(320, 240, 200, 150, 3);
         assert_eq!(
             (c.resize_input_bytes, c.output_bytes),
-            ((320 * 6 + (320 + 240) * 144) as u64, dst * 3)
+            (320 * 6 + kernel, dst * 3)
         );
     } else {
         assert_eq!(

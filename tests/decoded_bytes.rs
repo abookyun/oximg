@@ -310,7 +310,9 @@ const CELLS: &[Cell] = &[
     // PNG source: the fused arm, exact size, the staged RGBA arm.
     // Streamed on aarch64 (issue #129) the fused thumbnail holds well
     // under a megabyte, where the allocator's share moves the ratio:
-    // 0.91x M2 Max, 1.87x Linux arm64 (CI), 0.97x Ryzen (staged).
+    // 0.81x M2 Max; Linux arm64 (CI) held 462848 bytes, 1.87x of an
+    // earlier 865 KB estimate and ~1.6x of the 744 KB one; 0.97x Ryzen
+    // (staged).
     (
         "png fused thumbnail",
         "noise.png",
