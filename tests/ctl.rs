@@ -345,6 +345,24 @@ fn resize_reports_peak_rss_and_the_decoded_bytes_estimate() {
     // No report asked for, no field.
     let (_, v) = run(&["resize", &fixture("photo.jpg"), "100", "100"]);
     assert!(v.get("decoded_bytes").is_none(), "{v}");
+
+    // A file name containing the report's own words still parses.
+    let dir = std::env::temp_dir().join(format!("oximg-ctl-delim-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let odd = dir.join("a decode needs about b bytes (c.jpg");
+    std::fs::copy(fixture("photo.jpg"), &odd).unwrap();
+    let (code, v) = run(&[
+        "--env",
+        "OXIMG_LOG_DECODED_BYTES_ABOVE=1",
+        "resize",
+        odd.to_str().unwrap(),
+        "100",
+        "100",
+    ]);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["decoded_bytes"]["format"], "JPEG", "{v}");
+    assert_eq!(v["decoded_bytes"]["total"], d["total"], "{v}");
 }
 
 #[test]

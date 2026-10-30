@@ -148,7 +148,9 @@ fn decoded_bytes(stderr: &str) -> Option<Value> {
     let line = stderr
         .lines()
         .find(|l| l.contains(" decode needs about "))?;
-    let (head, tail) = line.split_once(" decode needs about ")?;
+    // The last occurrence: the quoted file name before it may contain
+    // the same words.
+    let (head, tail) = line.rsplit_once(" decode needs about ")?;
     // `oximg: decoded-bytes file="<path>" <format>`; the format may be
     // two words ("animated GIF").
     let format = head.rsplit_once("\" ").map_or(head, |(_, f)| f).trim();
