@@ -18,9 +18,11 @@ HTTP interface without notice.
   real peak was up to 1.8x the estimate (4000² RGBA to AVIF: 406 MB
   estimated, 722 MB measured). The estimate now adds an `encode` term,
   priced per output pixel from the format, the progressive decision,
-  `OXIMG_AVIF_SPEED`, PNG quantization, and alpha. Estimates rise, so
-  a cap that was calibrated on the old figures may now refuse
-  requests it used to admit.
+  the requested quality, `OXIMG_AVIF_SPEED`, PNG quantization, and
+  alpha, at the worst case content can reach (noise: a 2048² noise
+  re-encode to JPEG held 98 MB against a 71 MB estimate priced from
+  photos). Estimates rise, so a cap that was calibrated on the old
+  figures may now refuse requests it used to admit.
 - **The decoded-bytes estimate prices the path that runs** ([#130]).
   It used to assume every request held a staged frame, a u16 resize
   input and a u16 output, so it over-counted the common paths: 2.4x on

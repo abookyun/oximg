@@ -997,21 +997,42 @@ fn encode_cost_follows_what_the_encoder_holds() {
     let def = p(Params::default());
     let px = 4000 * 3000;
 
-    // jpegli: progressive above OXIMG_JPEG_SEQUENTIAL_PIXELS (default
-    // 12000), sequential below it; mozjpeg presets are progressive.
-    assert_eq!(encode_cost(ImageFormat::Jpeg, 4000, 3000, 3, &def), px * 8);
+    // jpegli holds every token at any mode (q80: 10 B/px); progressive
+    // above OXIMG_JPEG_SEQUENTIAL_PIXELS (default 12000) adds the
+    // coefficients, sequential below it does not.
+    assert_eq!(encode_cost(ImageFormat::Jpeg, 4000, 3000, 3, &def), px * 17);
     assert_eq!(
         encode_cost(ImageFormat::Jpeg, 100, 100, 3, &def),
-        100 * 100 * 2
+        100 * 100 * 10
     );
-    for encoder in [Encoder::MozFast, Encoder::MozSmall] {
+    // Tokens follow quality.
+    let q = |quality| {
+        p(Params {
+            quality,
+            ..Params::default()
+        })
+    };
+    assert_eq!(
+        encode_cost(ImageFormat::Jpeg, 100, 100, 3, &q(30.0)),
+        100 * 100 * 4
+    );
+    assert_eq!(
+        encode_cost(ImageFormat::Jpeg, 100, 100, 3, &q(100.0)),
+        100 * 100 * 18
+    );
+    assert_eq!(
+        encode_cost(ImageFormat::Jpeg, 4000, 3000, 3, &q(100.0)),
+        px * 25
+    );
+    // mozjpeg: the fastest profile flat, trellis by quality.
+    for (encoder, per_px) in [(Encoder::MozFast, 10), (Encoder::MozSmall, 14)] {
         let moz = p(Params {
             encoder,
             ..Params::default()
         });
         assert_eq!(
             encode_cost(ImageFormat::Jpeg, 100, 100, 3, &moz),
-            100 * 100 * 8
+            100 * 100 * per_px
         );
     }
 
@@ -1032,9 +1053,28 @@ fn encode_cost_follows_what_the_encoder_holds() {
         px * 16
     );
 
-    // WebP alpha is VP8L-coded, several times the RGB cost.
+    // WebP alpha is VP8L-coded, several times the RGB cost at any
+    // quality; RGB follows quality (default 75).
     assert_eq!(encode_cost(ImageFormat::Webp, 4000, 3000, 3, &def), px * 8);
     assert_eq!(encode_cost(ImageFormat::Webp, 4000, 3000, 4, &def), px * 44);
+    let webp = |webp_quality| {
+        p(Params {
+            webp_quality: Some(webp_quality),
+            ..Params::default()
+        })
+    };
+    assert_eq!(
+        encode_cost(ImageFormat::Webp, 4000, 3000, 3, &webp(90.0)),
+        px * 10
+    );
+    assert_eq!(
+        encode_cost(ImageFormat::Webp, 4000, 3000, 3, &webp(100.0)),
+        px * 15
+    );
+    assert_eq!(
+        encode_cost(ImageFormat::Webp, 4000, 3000, 4, &webp(100.0)),
+        px * 44
+    );
 
     // Nothing encodes GIF.
     assert_eq!(encode_cost(ImageFormat::Gif, 4000, 3000, 4, &def), 0);
@@ -1047,24 +1087,35 @@ fn encode_cost_follows_what_the_encoder_holds() {
     assert!(cost.report("JPEG").contains(&format!("encode {}", px * 8)));
 }
 
-/// SVT-AV1's working set grows as the preset slows, and the alpha
-/// session adds half again; the fixed part does not scale.
+/// SVT-AV1's working set grows as the preset slows and above quality
+/// 90, and the alpha session adds half again; the fixed part does not
+/// scale.
 #[cfg(feature = "avif")]
 #[test]
-fn avif_encode_cost_follows_the_preset() {
+fn avif_encode_cost_follows_the_preset_and_quality() {
     let px = 2000 * 2000;
     let fixed = 16u64 << 20;
-    assert_eq!(avif_encode_cost(px, 3, 8), px * 32 + fixed);
-    assert_eq!(avif_encode_cost(px, 3, 13), px * 32 + fixed);
-    assert_eq!(avif_encode_cost(px, 3, 4), px * 44 + fixed);
-    assert_eq!(avif_encode_cost(px, 3, 2), px * 56 + fixed);
-    assert_eq!(avif_encode_cost(px, 3, 0), px * 56 + fixed);
-    assert_eq!(avif_encode_cost(px, 4, 8), px * 48 + fixed);
-    // The default preset, through the generic entry point.
+    let at = |speed, quality, alpha_quality| crate::avif::AvifParams {
+        speed,
+        quality,
+        alpha_quality,
+        ..Default::default()
+    };
+    assert_eq!(avif_encode_cost(px, 3, &at(8, 60, 60)), px * 32 + fixed);
+    assert_eq!(avif_encode_cost(px, 3, &at(13, 60, 60)), px * 32 + fixed);
+    assert_eq!(avif_encode_cost(px, 3, &at(4, 60, 60)), px * 44 + fixed);
+    assert_eq!(avif_encode_cost(px, 3, &at(2, 60, 60)), px * 56 + fixed);
+    assert_eq!(avif_encode_cost(px, 3, &at(0, 60, 60)), px * 56 + fixed);
+    assert_eq!(avif_encode_cost(px, 4, &at(8, 60, 60)), px * 48 + fixed);
+    // Above quality 90, a third more; for alpha, either quality counts.
+    assert_eq!(avif_encode_cost(px, 3, &at(8, 100, 60)), px * 42 + fixed);
+    assert_eq!(avif_encode_cost(px, 3, &at(8, 60, 100)), px * 32 + fixed);
+    assert_eq!(avif_encode_cost(px, 4, &at(8, 60, 100)), px * 63 + fixed);
+    // The resolved knobs, through the generic entry point.
     let def = Resolved::new(&Params::default());
     assert_eq!(
         encode_cost(ImageFormat::Avif, 2000, 2000, 3, &def),
-        avif_encode_cost(px, 3, def.avif_params().speed)
+        avif_encode_cost(px, 3, &def.avif_params())
     );
 }
 
