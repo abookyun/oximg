@@ -16,13 +16,14 @@ trap 'rm -rf "$OUT"' EXIT
 mkdir -p "$FX"
 
 # The issue's repro inputs, generated once and kept under target/.
+# -seed must come before plasma:fractal, or the image is random.
 if [ ! -f "$FX/huge_8000.jpg" ]; then
-  magick -size 8000x8000 plasma:fractal -seed 7 "$FX/a.png"
+  magick -seed 7 -size 8000x8000 plasma:fractal "$FX/a.png"
   magick "$FX/a.png" -quality 85 "$FX/huge_8000.jpg"
   rm "$FX/a.png"
 fi
 if [ ! -f "$FX/photo_7000.png" ]; then
-  magick -size 7000x7000 plasma:fractal -seed 3 "$FX/raw_7000.png"
+  magick -seed 3 -size 7000x7000 plasma:fractal "$FX/raw_7000.png"
   magick "$FX/raw_7000.png" -quality 85 "$FX/photo_7000.jpg"
   magick "$FX/photo_7000.jpg" "$FX/photo_7000.png"
 fi
