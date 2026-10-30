@@ -10,6 +10,20 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The decoded-bytes estimate counts the output encoder** ([#130]).
+  `OXIMG_MAX_DECODED_BYTES` and `OXIMG_LOG_DECODED_BYTES_ABOVE` left
+  the encoder out, and on AVIF output, alpha WebP and quantized PNG the
+  real peak was up to 1.8x the estimate (4000² RGBA to AVIF: 406 MB
+  estimated, 722 MB measured). The estimate now adds an `encode` term,
+  priced per output pixel from the format, the progressive decision,
+  `OXIMG_AVIF_SPEED`, PNG quantization, and alpha. Estimates rise, so
+  a cap that was calibrated on the old figures may now refuse
+  requests it used to admit.
+
+[#130]: https://github.com/oximg/oximg/issues/130
+
 ## [0.17.0] - 2026-10-26
 
 Private S3 buckets as an image source ([#11], [#86], [#88]):

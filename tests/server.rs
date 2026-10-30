@@ -592,21 +592,21 @@ fn animation_budgets_degrade_to_a_still_instead_of_failing() {
 }
 
 /// The estimated-memory cap degrades too, rather than answering 413 as
-/// it does for a still that cannot fit: at 10 frames of 200x150 the
-/// animation's estimate is over 1 MiB while the same GIF as a still is
-/// comfortably under it, so the cap has a choice — and serving less is
-/// the one that answers the request.
+/// it does for a still that cannot fit: at 40 frames of 200x150 the
+/// animation's estimate is over 2 MiB (the retained frames alone are
+/// 1.2 MB) while the same GIF as a still is under 1.5 MiB, so the cap
+/// has a choice — and serving less is the one that answers the request.
 #[test]
 fn decoded_bytes_cap_degrades_an_animation_it_cannot_afford() {
-    let dir = animated_images_dir("cap", 200, 150, 10);
+    let dir = animated_images_dir("cap", 200, 150, 40);
     let uncapped = Server::start(&[("IMAGES_DIR", dir.clone())]);
     let (status, _, body) = uncapped.get("/resize/200/200/anim.gif").unwrap();
     assert_eq!(status, 200);
-    assert_eq!(frames_of(&body), Some(10), "all ten frames without a cap");
+    assert_eq!(frames_of(&body), Some(40), "all forty frames without a cap");
 
     let capped = Server::start(&[
         ("IMAGES_DIR", dir),
-        ("OXIMG_MAX_DECODED_BYTES", (1024 * 1024).to_string()),
+        ("OXIMG_MAX_DECODED_BYTES", (1536 * 1024).to_string()),
     ]);
     let (status, ct, body) = capped.get("/resize/200/200/anim.gif").unwrap();
     assert_eq!((status, ct.as_str()), (200, "image/webp"));

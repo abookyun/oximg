@@ -491,6 +491,69 @@ pub(super) fn webp_metadata(
     }
 }
 
+/// What the encoder for `target` allocates on top of `out8` for a
+/// `w x h` output with `channels` channels: the decoded-bytes
+/// estimate's encode term (issue #130).
+///
+/// Per output pixel, set ~10-20% above the worst peak measured
+/// (`/usr/bin/time -l`, M2 Max, 2000² and 4000² photo and noise
+/// sources, exact-size re-encodes, the other buffers subtracted). The
+/// figures scale with pixels, not with compressed size, except where
+/// noted: content moves them, which is why the worst case sets them.
+pub(super) fn encode_cost(
+    target: ImageFormat,
+    w: usize,
+    h: usize,
+    channels: u64,
+    p: &Resolved,
+) -> u64 {
+    let px = (w as u64).saturating_mul(h as u64);
+    let per_px = match target {
+        // Progressive output holds whole-image coefficients before the
+        // first scan is written: 4:4:4 int16 is 6 B/px, measured 6.9-7.2
+        // with the token and output buffers. Sequential jpegli streams
+        // (0.9-1.2). Both mozjpeg presets are progressive (6.2-6.6).
+        ImageFormat::Jpeg => match p.encoder {
+            Encoder::Jpegli if !jpegli_progressive(w, h) => 2,
+            _ => 8,
+        },
+        // png's writer zlib-compresses into one Vec and copies it into
+        // the output, both growing by doubling, so the cost follows the
+        // compressed size: 0.8-1.1 B per raw byte on photos, 3.6 on
+        // noise. Quantization adds quantette's working set (17.6-18.2
+        // B/px, RGB only).
+        ImageFormat::Png if p.png_quantize.is_some() && channels == 3 => 20,
+        ImageFormat::Png => 4 * channels,
+        // RGB: 1.7-1.9 on photos, 5.2-6.2 on noise. Alpha is lossless
+        // VP8L, whose cost follows the alpha content: 16.5 for a
+        // gradient, 37 for noise.
+        ImageFormat::Webp if channels == 4 => 44,
+        ImageFormat::Webp => 8,
+        #[cfg(feature = "avif")]
+        ImageFormat::Avif => return avif_encode_cost(px, channels, p.avif_params().speed),
+        // Never encoded: no AVIF in this build, and no GIF encoder.
+        _ => 0,
+    };
+    px.saturating_mul(per_px)
+}
+
+/// SVT-AV1's working set: frame buffers at its internal bit depth,
+/// lookahead, and reconstruction, which the preset sizes. Measured per
+/// output pixel (RGB, 2000²): presets 7-13 29.5, 4-6 39.5, 1-3 50
+/// (preset 0 measured 39, priced with 1-3); the alpha session
+/// multiplies that by ~1.45. Plus ~13 MB per encode that does not scale
+/// with the frame.
+#[cfg(feature = "avif")]
+pub(super) fn avif_encode_cost(px: u64, channels: u64, speed: i8) -> u64 {
+    let rgb: u64 = match speed {
+        7.. => 32,
+        4..=6 => 44,
+        _ => 56,
+    };
+    let per_px = if channels == 4 { rgb * 3 / 2 } else { rgb };
+    px.saturating_mul(per_px).saturating_add(16 << 20)
+}
+
 /// Encode the resized RGB(A)8 pixels in `Scratch::out8` as `target`.
 /// When `target` matches the source format this calls the same encoder
 /// with the same arguments as the pre-cross-format code, so same-format

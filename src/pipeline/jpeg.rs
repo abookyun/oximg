@@ -58,7 +58,15 @@ fn decode_and_resize_inner(
         };
         s.jpeg_progressive = meta.progressive;
         let dec = Decompress::new_mem(jpeg).context("invalid JPEG")?;
-        match decode_resize(s, dec, &p, orientation, Fuse::Off, meta.icc.as_deref())? {
+        match decode_resize(
+            s,
+            dec,
+            &p,
+            orientation,
+            Fuse::Off,
+            meta.icc.as_deref(),
+            None,
+        )? {
             Decoded::Pixels { dst_w, dst_h } => {
                 if orientation.is_upright() {
                     Ok((s.out8[..dst_w * dst_h * 3].to_vec(), dst_w, dst_h))
@@ -164,6 +172,9 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
     // variants embed via their one-shot encoders), while the CMYK arm
     // *consumes* it as the color-conversion input and never emits it.
     icc: Option<&[u8]>,
+    // What the caller will encode the result as, for the estimate's
+    // encode term; `None` when it returns the pixels themselves.
+    target: Option<ImageFormat>,
 ) -> Result<Decoded> {
     let timing = crate::config::config().timing;
     let t0 = crate::clock::Instant::now();
@@ -248,7 +259,9 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
         } else {
             DecodeCost::streaming()
         };
-        cost = cost.with_output(dst_w, dst_h, channels);
+        cost = cost
+            .with_output(dst_w, dst_h, channels)
+            .with_encode(target, dst_w, dst_h, 3, p);
         if s.jpeg_progressive {
             cost = cost.with_progressive_coefficients(src_w, src_h, comps);
         }
@@ -784,7 +797,7 @@ pub(super) fn process_jpeg<R: std::io::BufRead>(
         } else {
             cross_fuse()
         };
-        match decode_resize(s, dec, p, orientation, fuse, icc_dec)? {
+        match decode_resize(s, dec, p, orientation, fuse, icc_dec, Some(target))? {
             Decoded::Encoded(out) => out,
             Decoded::Pixels { dst_w, dst_h } => {
                 let (dw, dh) = if orientation.is_upright() {

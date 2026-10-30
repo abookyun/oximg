@@ -1487,8 +1487,9 @@ pub(crate) const ICC_CAP: usize = 4 * 1024 * 1024;
 /// above measured peaks across four real sources — deliberately on the
 /// conservative side, because under-estimating is the direction that
 /// gets a container OOM-killed while the cap reports itself satisfied.
-/// Encode-side buffers are still excluded, which is why it rounds up
-/// elsewhere.
+/// The output encoder's buffers count too (issue #130): AVIF and
+/// alpha WebP encodes were measured at up to 1.8x the estimate while
+/// they were excluded.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct DecodeCost {
     /// The decoder's own output buffer: pixels it materializes (after
@@ -1505,6 +1506,10 @@ pub(crate) struct DecodeCost {
     /// Whole-source buffering no output size reduces — progressive
     /// JPEG's coefficient arrays.
     pub whole_source_bytes: u64,
+    /// The output encoder's own buffers (issue #130): progressive
+    /// JPEG's coefficients, SVT-AV1's frames, libwebp's and png's
+    /// working sets. Zero where the caller returns pixels unencoded.
+    pub encode_bytes: u64,
     /// The compressed source held whole for the request: `srcbuf` for
     /// the buffered formats, plus any caller-held input buffer (a
     /// buffered remote source, or `process(&bytes, ..)`). The JPEG
@@ -1519,6 +1524,7 @@ impl DecodeCost {
             .saturating_add(self.resize_input_bytes)
             .saturating_add(self.output_bytes)
             .saturating_add(self.whole_source_bytes)
+            .saturating_add(self.encode_bytes)
             .saturating_add(self.compressed_bytes)
     }
 
@@ -1571,6 +1577,20 @@ impl DecodeCost {
         self.compressed_bytes = bytes as u64;
         self
     }
+
+    /// The encoder's buffers for a `w x h` `target` output
+    /// ([`encode_cost`]); `None` for callers that return pixels.
+    pub fn with_encode(
+        mut self,
+        target: Option<ImageFormat>,
+        w: usize,
+        h: usize,
+        channels: u64,
+        p: &Resolved,
+    ) -> Self {
+        self.encode_bytes = target.map_or(0, |t| encode_cost(t, w, h, channels, p));
+        self
+    }
 }
 
 /// Histogram-able record of every decode's estimated cost, plus the
@@ -1586,12 +1606,13 @@ impl DecodeCost {
     fn report(&self, what: &str) -> String {
         format!(
             "{what} decode needs about {} bytes (staged {}, resize input {}, \
-             output {}, whole-source {}, compressed {})",
+             output {}, whole-source {}, encode {}, compressed {})",
             self.bytes(),
             self.staged_bytes,
             self.resize_input_bytes,
             self.output_bytes,
             self.whole_source_bytes,
+            self.encode_bytes,
             self.compressed_bytes,
         )
     }

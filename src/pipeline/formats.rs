@@ -42,6 +42,7 @@ pub(super) fn process_png<R: std::io::Read>(
         check_decoded_bytes(
             DecodeCost::full_frame(sw, sh, channels, p)
                 .with_output(ow, oh, channels)
+                .with_encode(Some(target), ow, oh, channels, p)
                 .with_compressed(s.srcbuf.len() + s.held_source_bytes),
             "PNG",
         )?;
@@ -256,7 +257,8 @@ pub(super) fn process_webp<R: std::io::Read>(
         s.srcbuf.clear();
         s.srcbuf.extend_from_slice(&frame);
     }
-    let (src_w, src_h, channels, dec_w, dec_h) = webp_decode_into_chunk8(s, orientation, p)?;
+    let (src_w, src_h, channels, dec_w, dec_h) =
+        webp_decode_into_chunk8(s, orientation, target, p)?;
     let _ = (src_w, src_h);
     let t_dec = t0.elapsed();
 
@@ -318,6 +320,7 @@ pub(super) fn process_avif<R: std::io::Read>(
         check_decoded_bytes(
             DecodeCost::full_frame(pw, ph, 4, p)
                 .with_output(ow, oh, 4)
+                .with_encode(Some(target), ow, oh, 4, p)
                 .with_compressed(s.srcbuf.len() + s.held_source_bytes),
             "AVIF",
         )?;
@@ -348,6 +351,7 @@ pub(super) fn process_avif<R: std::io::Read>(
 pub(super) fn webp_decode_into_chunk8(
     s: &mut Scratch,
     orientation: crate::meta::Orientation,
+    target: ImageFormat,
     p: &Resolved,
 ) -> Result<(usize, usize, usize, usize, usize)> {
     use libwebp_sys as w;
@@ -381,6 +385,7 @@ pub(super) fn webp_decode_into_chunk8(
         check_decoded_bytes(
             DecodeCost::full_frame(src_w, src_h, channels as u64, p)
                 .with_output(ow, oh, channels as u64)
+                .with_encode(Some(target), ow, oh, channels as u64, p)
                 .with_compressed(s.srcbuf.len() + s.held_source_bytes),
             "WebP",
         )?;

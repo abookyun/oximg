@@ -79,7 +79,7 @@ fn process_gif_src(
     }
     let timing = crate::config::config().timing;
     let t0 = crate::clock::Instant::now();
-    let (src_w, src_h, channels) = first_frame_into_chunk8(s, src, p)?;
+    let (src_w, src_h, channels) = first_frame_into_chunk8(s, src, target, p)?;
     let t_dec = t0.elapsed();
 
     let t1 = crate::clock::Instant::now();
@@ -100,6 +100,12 @@ fn process_gif_src(
     Ok(out)
 }
 
+/// libwebp's working set per output pixel for a GIF frame. GIF alpha
+/// is one bit, which VP8L codes far more cheaply than the general alpha
+/// case `encode_cost` prices: 9.5 B/px measured for a noise frame with
+/// noise transparency (3000², M2 Max), against 37 for 8-bit noise alpha.
+const GIF_WEBP_ENCODE_PER_PX: u64 = 12;
+
 /// Composite the first frame onto the logical screen, leaving the
 /// pixels in `chunk8`. Returns (width, height, channels) — 3 channels
 /// when the result turned out opaque, which most GIFs are.
@@ -109,6 +115,7 @@ fn process_gif_src(
 fn first_frame_into_chunk8(
     s: &mut Scratch,
     src: &[u8],
+    target: ImageFormat,
     p: &Resolved,
 ) -> Result<(usize, usize, usize)> {
     let mut dec = decoder(src)?;
@@ -125,11 +132,16 @@ fn first_frame_into_chunk8(
     let canvas_bytes = cost.staged_bytes;
     cost.staged_bytes =
         canvas_bytes.saturating_add(first_frame_px(src).saturating_mul(4).max(canvas_bytes));
-    check_decoded_bytes(
-        cost.with_output(out_w, out_h, 4)
-            .with_compressed(src.len() + s.held_source_bytes),
-        "GIF",
-    )?;
+    let mut cost = cost
+        .with_output(out_w, out_h, 4)
+        .with_encode(Some(target), out_w, out_h, 4, p)
+        .with_compressed(src.len() + s.held_source_bytes);
+    if target == ImageFormat::Webp {
+        cost.encode_bytes = (out_w as u64)
+            .saturating_mul(out_h as u64)
+            .saturating_mul(GIF_WEBP_ENCODE_PER_PX);
+    }
+    check_decoded_bytes(cost, "GIF")?;
 
     // Transparent background, then paint: a first frame smaller than
     // the screen leaves the rest showing through, which is what a
@@ -353,6 +365,11 @@ fn try_animated(s: &mut Scratch, src: &[u8], p: &Resolved) -> Result<Option<Vec<
     // across the whole corpus in docs/gif-evaluation.md §5, so the
     // estimate errs high against the only figures we have.
     cost.output_bytes = cost.output_bytes.saturating_add(work);
+    // And each frame passes through the same libwebp encoder a still
+    // does, with the same working set.
+    cost.encode_bytes = (out_w as u64)
+        .saturating_mul(out_h as u64)
+        .saturating_mul(GIF_WEBP_ENCODE_PER_PX);
     // Over the global cap this animation would be a 413 — but the same
     // GIF as a still fits comfortably, so treat the cap like the
     // animation budgets and serve less instead of refusing. The still

@@ -63,6 +63,7 @@ fn run_jpeg_icc(jpeg: &[u8], fuse_quality: Option<f32>, icc: Option<&[u8]>) -> V
         crate::meta::Orientation::UPRIGHT,
         fuse,
         icc,
+        None,
     )
     .unwrap()
     {
@@ -136,6 +137,7 @@ fn run_jpeg_pixels(jpeg: &[u8], fuse: Fuse) -> Vec<u8> {
         crate::meta::Orientation::UPRIGHT,
         fuse,
         None,
+        None,
     )
     .unwrap()
     {
@@ -183,6 +185,7 @@ fn run_jpeg_avif_icc(jpeg: &[u8], yuv_fuse: bool, icc: Option<&[u8]>) -> Vec<u8>
         crate::meta::Orientation::UPRIGHT,
         fuse,
         None,
+        None,
     )
     .unwrap()
     {
@@ -213,7 +216,7 @@ fn preheated_session_bytes_match_serial_oriented_avif() {
     let run = |fuse: Fuse| -> Vec<u8> {
         let mut s = Scratch::default();
         let dec = Decompress::new_mem(&jpeg).unwrap();
-        match decode_resize(&mut s, dec, &rbox(320, 320), orientation, fuse, None).unwrap() {
+        match decode_resize(&mut s, dec, &rbox(320, 320), orientation, fuse, None, None).unwrap() {
             Decoded::PixelsSession {
                 dst_w,
                 dst_h,
@@ -306,6 +309,7 @@ fn fused_yuv_survives_truncated_sources() {
             Fuse::Yuv {
                 params: test_avif_params(),
             },
+            None,
             None,
         );
     }
@@ -502,6 +506,7 @@ fn fused_pixels_survive_truncated_sources() {
             crate::meta::Orientation::UPRIGHT,
             Fuse::Pixels,
             None,
+            None,
         );
     }
 }
@@ -529,6 +534,7 @@ fn fused_path_survives_truncated_sources() {
             &rbox(320, 320),
             crate::meta::Orientation::UPRIGHT,
             Fuse::Jpegli { quality: p.quality },
+            None,
             None,
         );
     }
@@ -975,6 +981,86 @@ fn decode_cost_separates_what_pixel_counts_cannot() {
     assert!(
         dear / cheap > 10.0,
         "spread across shapes: {cheap:.3} vs {dear:.3} B per source pixel"
+    );
+}
+
+/// Issue #130: the encoder's buffers count, priced by what decides
+/// them — progressive vs sequential JPEG, quantized PNG, alpha WebP —
+/// and nothing for a caller that keeps the pixels.
+#[test]
+fn encode_cost_follows_what_the_encoder_holds() {
+    let p = |params: Params| Resolved::new(&params);
+    let def = p(Params::default());
+    let px = 4000 * 3000;
+
+    // jpegli: progressive above OXIMG_JPEG_SEQUENTIAL_PIXELS (default
+    // 12000), sequential below it; mozjpeg presets are progressive.
+    assert_eq!(encode_cost(ImageFormat::Jpeg, 4000, 3000, 3, &def), px * 8);
+    assert_eq!(
+        encode_cost(ImageFormat::Jpeg, 100, 100, 3, &def),
+        100 * 100 * 2
+    );
+    for encoder in [Encoder::MozFast, Encoder::MozSmall] {
+        let moz = p(Params {
+            encoder,
+            ..Params::default()
+        });
+        assert_eq!(
+            encode_cost(ImageFormat::Jpeg, 100, 100, 3, &moz),
+            100 * 100 * 8
+        );
+    }
+
+    // PNG scales with the raw frame; quantization (RGB only) with
+    // quantette's working set.
+    assert_eq!(encode_cost(ImageFormat::Png, 4000, 3000, 3, &def), px * 12);
+    assert_eq!(encode_cost(ImageFormat::Png, 4000, 3000, 4, &def), px * 16);
+    let quant = p(Params {
+        png_quantize: Some(true),
+        ..Params::default()
+    });
+    assert_eq!(
+        encode_cost(ImageFormat::Png, 4000, 3000, 3, &quant),
+        px * 20
+    );
+    assert_eq!(
+        encode_cost(ImageFormat::Png, 4000, 3000, 4, &quant),
+        px * 16
+    );
+
+    // WebP alpha is VP8L-coded, several times the RGB cost.
+    assert_eq!(encode_cost(ImageFormat::Webp, 4000, 3000, 3, &def), px * 8);
+    assert_eq!(encode_cost(ImageFormat::Webp, 4000, 3000, 4, &def), px * 44);
+
+    // Nothing encodes GIF.
+    assert_eq!(encode_cost(ImageFormat::Gif, 4000, 3000, 4, &def), 0);
+
+    // `None` is a caller that returns pixels: no encoder runs.
+    let cost = DecodeCost::streaming().with_encode(None, 4000, 3000, 3, &def);
+    assert_eq!(cost.encode_bytes, 0);
+    let cost = DecodeCost::streaming().with_encode(Some(ImageFormat::Webp), 4000, 3000, 3, &def);
+    assert_eq!(cost.bytes(), px * 8);
+    assert!(cost.report("JPEG").contains(&format!("encode {}", px * 8)));
+}
+
+/// SVT-AV1's working set grows as the preset slows, and the alpha
+/// session adds half again; the fixed part does not scale.
+#[cfg(feature = "avif")]
+#[test]
+fn avif_encode_cost_follows_the_preset() {
+    let px = 2000 * 2000;
+    let fixed = 16u64 << 20;
+    assert_eq!(avif_encode_cost(px, 3, 8), px * 32 + fixed);
+    assert_eq!(avif_encode_cost(px, 3, 13), px * 32 + fixed);
+    assert_eq!(avif_encode_cost(px, 3, 4), px * 44 + fixed);
+    assert_eq!(avif_encode_cost(px, 3, 2), px * 56 + fixed);
+    assert_eq!(avif_encode_cost(px, 3, 0), px * 56 + fixed);
+    assert_eq!(avif_encode_cost(px, 4, 8), px * 48 + fixed);
+    // The default preset, through the generic entry point.
+    let def = Resolved::new(&Params::default());
+    assert_eq!(
+        encode_cost(ImageFormat::Avif, 2000, 2000, 3, &def),
+        avif_encode_cost(px, 3, def.avif_params().speed)
     );
 }
 
