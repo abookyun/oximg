@@ -27,9 +27,11 @@ if [ ! -f "$FX/photo_7000.png" ]; then
   magick "$FX/photo_7000.jpg" "$FX/photo_7000.png"
 fi
 
+# A failed run must return non-zero: time still writes its rusage then,
+# and GNU time adds a "Command exited with non-zero status" line first.
 case "$(uname)" in
-  Darwin) rss() { /usr/bin/time -l -o "$1" "${@:2}" >/dev/null 2>&1; awk '/maximum resident/{printf "%.0f", $1/1048576}' "$1"; } ;;
-  *) rss() { /usr/bin/time -f %M -o "$1" "${@:2}" >/dev/null 2>&1; awk '{printf "%.0f", $1/1024}' "$1"; } ;;
+  Darwin) rss() { /usr/bin/time -l -o "$1" "${@:2}" >/dev/null 2>&1 || return 1; awk '/maximum resident/{printf "%.0f", $1/1048576}' "$1"; } ;;
+  *) rss() { /usr/bin/time -f %M -o "$1" "${@:2}" >/dev/null 2>&1 || return 1; tail -n1 "$1" | awk '{printf "%.0f", $1/1024}'; } ;;
 esac
 # Linux hosts may lack shasum; a missing hasher must stop the run, not
 # read as "outputs differ".
@@ -63,17 +65,23 @@ sep=
 for c in "${CASES[@]}"; do
   IFS='|' read -r name envs input w h ext extra <<<"$c"
   [ "${input:0:1}" = / ] || input=$FX/$input
-  ra=() rb=()
+  ra=() rb=() failed=
   for _ in $(seq "$ROUNDS"); do
     for side in a b; do
       bin=$A; [ $side = b ] && bin=$B
+      # A stale output from an earlier round must not be hashed.
+      rm -f "$OUT/$side.$ext"
       # shellcheck disable=SC2086
-      if ! r=$(rss "$OUT/t" env $envs "$bin" resize "$input" "$w" "$h" "$OUT/$side.$ext" $extra); then r=-1; fi
+      if ! r=$(rss "$OUT/t" env $envs "$bin" resize "$input" "$w" "$h" "$OUT/$side.$ext" $extra); then
+        r=-1 failed=1
+      fi
       if [ $side = a ]; then ra+=("$r"); else rb+=("$r"); fi
     done
   done
   ha=$(hash "$OUT/a.$ext" 2>/dev/null || echo none)
   hb=$(hash "$OUT/b.$ext" 2>/dev/null || echo none)
+  # Any failed round voids the identity verdict for the case.
+  [ -n "$failed" ] && ha=failed-a hb=failed-b
   same=false; [ "$ha" = "$hb" ] && [ "$ha" != none ] && same=true
   printf '%s{"case":"%s","rss_a_mib":%s,"rss_b_mib":%s,"identical":%s}' "$sep" "$name" \
     "$(printf '%s\n' "${ra[@]}" | median)" "$(printf '%s\n' "${rb[@]}" | median)" "$same"
