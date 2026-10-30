@@ -563,6 +563,119 @@ fn probe_display_matches_probe_on_unrotated_jpeg() {
     assert_eq!(a, b);
 }
 
+/// Counts what `probe_reader` pulled from its source.
+struct CountingReader<R> {
+    inner: R,
+    read: usize,
+}
+
+impl<R: std::io::Read> std::io::Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.read += n;
+        Ok(n)
+    }
+}
+
+fn probe_counting(bytes: &[u8]) -> (Result<(ImageFormat, usize, usize), Error>, usize) {
+    let mut r = CountingReader {
+        inner: bytes,
+        read: 0,
+    };
+    let got = probe_reader(&mut r);
+    (got, r.read)
+}
+
+/// Both probes' answers, comparable: an error by kind and full message.
+fn probe_outcome(
+    r: Result<(ImageFormat, usize, usize), Error>,
+) -> Result<(ImageFormat, usize, usize), String> {
+    r.map_err(|e| format!("{:?}: {:#}", e.kind(), e))
+}
+
+#[test]
+fn probe_reader_agrees_with_probe_on_every_fixture() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+    let mut seen = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !matches!(ext, "jpg" | "png" | "webp" | "gif" | "avif") {
+            continue;
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        let (got, read) = probe_counting(&bytes);
+        assert_eq!(
+            probe_outcome(got),
+            probe_outcome(probe(&bytes)),
+            "{}",
+            path.display()
+        );
+        // A header that fits the first read is all that gets read.
+        if bytes.len() > PROBE_FIRST_READ && probe(&bytes[..PROBE_FIRST_READ]).is_ok() {
+            assert_eq!(read, PROBE_FIRST_READ, "{}", path.display());
+        }
+        seen += 1;
+    }
+    assert!(seen >= 30, "only {seen} fixtures probed");
+}
+
+/// photo.jpg with `segments` maximum-size APP2 segments ahead of its
+/// frame header and `trailing` bytes after its EOI.
+fn jpeg_with_padding(segments: usize, trailing: usize) -> Vec<u8> {
+    let src = read_fixture("photo.jpg");
+    let mut out = src[..2].to_vec();
+    for _ in 0..segments {
+        out.extend_from_slice(&[0xFF, 0xE2, 0xFF, 0xFF]);
+        out.resize(out.len() + 0xFFFF - 2, 0);
+    }
+    out.extend_from_slice(&src[2..]);
+    out.resize(out.len() + trailing, 0);
+    out
+}
+
+#[test]
+fn probe_reader_stops_at_the_first_read_that_holds_the_header() {
+    let bytes = jpeg_with_padding(0, 4 << 20);
+    let (got, read) = probe_counting(&bytes);
+    assert_eq!(got.unwrap(), (ImageFormat::Jpeg, 200, 150));
+    assert_eq!(read, PROBE_FIRST_READ);
+}
+
+#[test]
+fn probe_reader_reads_past_metadata_larger_than_the_first_read() {
+    // ~131 KB of APP2 ahead of the frame header: 64 and 128 KiB fall
+    // short, 256 KiB holds it, and the 4 MiB behind it stay unread.
+    let bytes = jpeg_with_padding(2, 4 << 20);
+    let (got, read) = probe_counting(&bytes);
+    assert_eq!(got.unwrap(), (ImageFormat::Jpeg, 200, 150));
+    assert_eq!(read, 4 * PROBE_FIRST_READ);
+}
+
+#[test]
+fn probe_reader_reports_the_error_of_the_whole_source() {
+    // A short prefix of a good JPEG and a corrupt one fail alike, so a
+    // failure is final only at EOF, and then it is the full file's.
+    let mut bytes = jpeg_with_padding(0, 1 << 20);
+    bytes[2..200].fill(0x55);
+    let (got, read) = probe_counting(&bytes);
+    assert_eq!(read, bytes.len());
+    assert_eq!(probe_outcome(got), probe_outcome(probe(&bytes)));
+    assert!(probe(&bytes).is_err());
+}
+
+#[test]
+fn probe_reader_classifies_a_read_failure() {
+    struct Failing;
+    impl std::io::Read for Failing {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        }
+    }
+    let err = probe_reader(Failing).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::SourceUnreadable);
+}
+
 #[test]
 fn band_resize_matches_single_thread() {
     // Synthetic gradient image; verify 2/3-band parallel resize is

@@ -442,6 +442,62 @@ pub fn probe(bytes: &[u8]) -> Result<(ImageFormat, usize, usize), Error> {
     probe_inner(bytes).map_err(|e| Error::classify(e, false))
 }
 
+/// First read [`probe_reader`] makes. Every fixture's header fits in
+/// under 400 bytes, and 64 KiB also covers a camera's EXIF block.
+const PROBE_FIRST_READ: usize = 64 << 10;
+
+/// Like [`probe`], but reads only as much of `reader` as the header
+/// needs, so a caller holding a file or a socket does not have to load
+/// the whole source to learn its size.
+///
+/// How much that is cannot be known up front: a JPEG's frame header
+/// sits behind every APP segment (one fixture carries 108 KB of ICC
+/// profile before it), and a PNG's or GIF's behind every chunk or
+/// extension before the image data. So the probe runs on the first
+/// 64 KiB and, while it fails short of EOF, on twice as much. An error
+/// is reported only once the whole source has been read, because a
+/// short prefix fails with the same messages as a corrupt file (libjpeg
+/// says `Bogus Huffman table definition` for both). The result is
+/// therefore [`probe`]'s on the full bytes; on every prefix of every
+/// fixture, a probe either failed or returned the full file's answer.
+///
+/// # Examples
+///
+/// ```
+/// use oximg::pipeline::{self, ImageFormat};
+///
+/// let file = std::fs::File::open(concat!(
+///     env!("CARGO_MANIFEST_DIR"),
+///     "/tests/fixtures/photo.jpg"
+/// ))?;
+/// let (format, w, h) = pipeline::probe_reader(file)?;
+/// assert_eq!(format, ImageFormat::Jpeg);
+/// assert_eq!((w, h), (200, 150));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn probe_reader<R: std::io::Read>(reader: R) -> Result<(ImageFormat, usize, usize), Error> {
+    probe_reader_inner(reader).map_err(|e| Error::classify(e, false))
+}
+
+fn probe_reader_inner<R: std::io::Read>(mut reader: R) -> Result<(ImageFormat, usize, usize)> {
+    use std::io::Read as _;
+    let mut buf = Vec::new();
+    let mut want = PROBE_FIRST_READ;
+    loop {
+        let missing = (want - buf.len()) as u64;
+        reader
+            .by_ref()
+            .take(missing)
+            .read_to_end(&mut buf)
+            .context("read source")?;
+        let eof = buf.len() < want;
+        match probe_inner(&buf) {
+            Err(_) if !eof => want *= 2,
+            result => return result,
+        }
+    }
+}
+
 /// Like [`probe`], but width/height are the **displayed** frame after
 /// auto-rotate (EXIF/PNG eXIf/WebP EXIF/AVIF irot). Orientations 5–8
 /// swap the axes relative to [`probe`]. When `OXIMG_AUTO_ROTATE=0`,

@@ -10,6 +10,15 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+### Added
+
+- **`pipeline::probe_reader` reads a header from a reader** ([#134]),
+  taking only what the header needs: 64 KiB, doubled while the probe
+  fails short of EOF. A JPEG with 131 KB of APP2 ahead of its frame
+  header reads 256 KiB of a 4 MiB file. A failure is reported once the
+  whole source is read, so the answer is always `probe`'s on the full
+  bytes.
+
 ### Changed
 
 - **A PNG probe no longer inflates pixel data** ([#134]). It decoded
