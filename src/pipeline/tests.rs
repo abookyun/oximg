@@ -1793,6 +1793,32 @@ fn exact_size_oriented_png_rotates_the_handed_over_frame() {
 /// rather than trust its length: interleave exact, resized and
 /// oriented requests on one scratch and compare each against a fresh
 /// one.
+/// Consecutive exact-size requests on one worker must not settle at
+/// two frames: scratch is grow-only and kept per thread, so without
+/// the request-start reclaim the second decode allocates a new frame
+/// into `chunk8` while `out8` still holds the first one.
+#[test]
+fn consecutive_exact_size_requests_keep_one_frame() {
+    let (w, h) = (300, 200);
+    let frame = w * h * 3;
+    let png = png_of(&noise_px(w, h, 3, 11), w, h, 3, None);
+    let exact = Params {
+        output: Some(ImageFormat::Png),
+        ..sized(4096, 4096)
+    };
+    for i in 0..3 {
+        process(&png, &exact).unwrap();
+        SCRATCH.with(|s| {
+            let s = s.borrow();
+            let (c, o) = (s.chunk8.capacity(), s.out8.capacity());
+            assert!(
+                c.min(o) < frame,
+                "request {i}: chunk8 {c} and out8 {o} both hold a {frame}-byte frame"
+            );
+        });
+    }
+}
+
 #[test]
 fn exact_size_handoff_leaves_scratch_reusable() {
     let rgb = png_of(&noise_px(120, 80, 3, 1), 120, 80, 3, None);

@@ -717,6 +717,7 @@ fn process_reader<R: std::io::BufRead>(
     SCRATCH.with(|s| {
         let s = &mut *s.borrow_mut();
         s.held_source_bytes = held_source_bytes;
+        s.reclaim_handed_frame();
         let out = match format {
             // The whole JPEG decode is unwind-guarded, not just the
             // header parse: libjpeg signals fatal errors (bogus
@@ -1178,6 +1179,22 @@ struct Scratch {
     cb16: Vec<u16>,
     #[cfg(feature = "avif")]
     cr16: Vec<u16>,
+}
+
+impl Scratch {
+    /// Run at the start of every request. An exact-size request hands
+    /// the decoded frame to `out8` (issue #129), leaving the frame-sized
+    /// allocation there and a short one in `chunk8`; scratch is
+    /// grow-only, so the next decode would allocate a second frame into
+    /// `chunk8` while `out8` still keeps the last — two frames resident
+    /// on every later request on the worker. The decoder fills `chunk8`
+    /// first, so the larger allocation goes back to it. Both buffers
+    /// are sized before every use, so their contents carry nothing.
+    fn reclaim_handed_frame(&mut self) {
+        if self.out8.capacity() > self.chunk8.capacity() {
+            std::mem::swap(&mut self.out8, &mut self.chunk8);
+        }
+    }
 }
 
 /// Grow-only scratch access: ensures length without re-zeroing retained
