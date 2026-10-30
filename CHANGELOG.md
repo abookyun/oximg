@@ -24,9 +24,10 @@ HTTP interface without notice.
 - **PNG sources decode straight from the file or the caller's buffer**
   ([#129]): the whole compressed PNG is no longer copied onto the heap
   before decoding. Peak RSS for a 7000x7000 source drops by about the
-  file size — 337 → 285 MiB for a photo thumbnail, 524 → 285 MiB for
-  an unfiltered (246 MB) one, 453 → 401 MiB at full size (M2 Max,
-  `bench/peak-rss.sh`, 3 rounds); output is byte-identical. The
+  file size — 337 → 285 MiB for a photo thumbnail, 522 → 285 MiB for
+  an unfiltered (246 MB) one, 254 → 202 MiB at full size (M2 Max,
+  `bench/peak-rss.sh`, 3 rounds), on every request a server worker
+  serves; output is byte-identical. The
   decoded-bytes estimate (`OXIMG_MAX_DECODED_BYTES`, the
   `oximg_decoded_bytes_estimate` histogram) drops by the same amount:
   its `compressed` term is now 0 for a local PNG and the fetched
