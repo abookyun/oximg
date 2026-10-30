@@ -259,6 +259,25 @@ const CELLS: &[Cell] = &[
         &["OXIMG_JPEG_PROGRESSIVE=0"],
         2.4,
     ),
+    // Issue #133: the threshold dropped to 0 so a 2048² output streams.
+    (
+        "jpeg exact, streaming",
+        "noise.jpg",
+        "0",
+        "0",
+        "jpg",
+        &["OXIMG_JPEG_STREAMING_PIXELS=0"],
+        1.6,
+    ),
+    (
+        "jpeg kernel resize, streaming",
+        "noise.jpg",
+        "1024",
+        "1024",
+        "jpg",
+        &["OXIMG_JPEG_STREAMING_PIXELS=0"],
+        1.6,
+    ),
     (
         "jpeg kernel resize",
         "noise.jpg",
@@ -296,7 +315,7 @@ const CELLS: &[Cell] = &[
         &[],
         1.3,
     ),
-    ("png exact to png", "noise.png", "0", "0", "png", &[], 1.7),
+    ("png exact to png", "noise.png", "0", "0", "png", &[], 1.5),
     ("png exact to jpeg", "noise.png", "0", "0", "jpg", &[], 1.5),
     (
         "png rgba resize",
@@ -317,6 +336,26 @@ const CELLS: &[Cell] = &[
         &[],
         1.6,
     ),
+    // libwebp's working set triples from method 3 on RGB, and method
+    // 6's lossless search doubles it on alpha.
+    (
+        "jpeg to webp, effort 3",
+        "noise.jpg",
+        "0",
+        "0",
+        "webp",
+        &["OXIMG_WEBP_EFFORT=3"],
+        2.0,
+    ),
+    (
+        "png rgba to webp, effort 6",
+        "noise_rgba.png",
+        "1024",
+        "1024",
+        "webp",
+        &["OXIMG_WEBP_EFFORT=6"],
+        2.0,
+    ),
     (
         "png quantized",
         "noise.png",
@@ -327,7 +366,7 @@ const CELLS: &[Cell] = &[
         1.5,
     ),
     // WebP source: VP8L-coded alpha.
-    ("webp alpha exact", "alpha.webp", "0", "0", "png", &[], 1.8),
+    ("webp alpha exact", "alpha.webp", "0", "0", "png", &[], 1.6),
     // VP8L holds the whole image as ARGB while it decodes.
     (
         "webp lossless exact",
@@ -336,7 +375,7 @@ const CELLS: &[Cell] = &[
         "0",
         "png",
         &[],
-        2.5,
+        1.8,
     ),
     // A resize turns GIF's one-bit alpha into 8-bit alpha.
     (
@@ -352,7 +391,7 @@ const CELLS: &[Cell] = &[
     ("gif animation", "anim.gif", "0", "0", "webp", &[], 3.0),
     // Photo content: the low end of the content-dependent encoders,
     // which the header cannot tell from noise.
-    ("photo png exact", "photo.png", "0", "0", "png", &[], 3.6),
+    ("photo png exact", "photo.png", "0", "0", "png", &[], 2.4),
     ("photo jpeg exact", "photo.jpg", "0", "0", "jpg", &[], 3.5),
 ];
 

@@ -997,7 +997,7 @@ fn encode_cost_follows_what_the_encoder_holds() {
     let def = p(Params::default());
     let px = 4000 * 3000;
 
-    // jpegli holds every token at any mode (q80: 10 B/px); progressive
+    // Below 16 MP jpegli holds every token (q80: 10 B/px); progressive
     // above OXIMG_JPEG_SEQUENTIAL_PIXELS (default 12000) adds the
     // coefficients, sequential below it does not.
     assert_eq!(encode_cost(ImageFormat::Jpeg, 4000, 3000, 3, &def), px * 17);
@@ -1024,6 +1024,21 @@ fn encode_cost_follows_what_the_encoder_holds() {
         encode_cost(ImageFormat::Jpeg, 4000, 3000, 3, &q(100.0)),
         px * 25
     );
+    // Above OXIMG_JPEG_STREAMING_PIXELS (default 16 MP) the encoder
+    // holds its output (up to twice it, by quality) and a few rows.
+    let big = 5000 * 4000;
+    for (quality, tenths) in [(30.0, 11), (50.0, 15), (80.0, 30), (90.0, 42), (100.0, 95)] {
+        assert_eq!(
+            encode_cost(ImageFormat::Jpeg, 5000, 4000, 3, &q(quality)),
+            big * tenths / 10 + 5000 * 1024,
+            "q{quality}"
+        );
+    }
+    assert_eq!(
+        encode_cost(ImageFormat::Jpeg, 4000, 4000, 3, &def),
+        4000 * 4000 * 17,
+        "16 MP exactly is not streamed"
+    );
     // mozjpeg: the fastest profile flat, trellis by quality.
     for (encoder, per_px) in [(Encoder::MozFast, 10), (Encoder::MozSmall, 14)] {
         let moz = p(Params {
@@ -1036,27 +1051,42 @@ fn encode_cost_follows_what_the_encoder_holds() {
         );
     }
 
-    // PNG scales with the raw frame; quantization (RGB only) with
-    // quantette's working set.
-    assert_eq!(encode_cost(ImageFormat::Png, 4000, 3000, 3, &def), px * 12);
-    assert_eq!(encode_cost(ImageFormat::Png, 4000, 3000, 4, &def), px * 16);
+    // PNG holds up to twice the raw frame plus its chunk buffer and three
+    // rows; quantization (RGB only) adds quantette's working set.
+    let rows = |ch: u64| 256 * 1024 + 3 * 4000 * ch;
+    assert_eq!(
+        encode_cost(ImageFormat::Png, 4000, 3000, 3, &def),
+        px * 6 + rows(3)
+    );
+    assert_eq!(
+        encode_cost(ImageFormat::Png, 4000, 3000, 4, &def),
+        px * 8 + rows(4)
+    );
     let quant = p(Params {
         png_quantize: Some(true),
         ..Params::default()
     });
     assert_eq!(
         encode_cost(ImageFormat::Png, 4000, 3000, 3, &quant),
-        px * 20
+        px * 20 + rows(3)
     );
     assert_eq!(
         encode_cost(ImageFormat::Png, 4000, 3000, 4, &quant),
-        px * 16
+        px * 8 + rows(4)
     );
 
     // WebP alpha is VP8L-coded, several times the RGB cost at any
-    // quality; RGB follows quality (default 75).
-    assert_eq!(encode_cost(ImageFormat::Webp, 4000, 3000, 3, &def), px * 8);
-    assert_eq!(encode_cost(ImageFormat::Webp, 4000, 3000, 4, &def), px * 44);
+    // quality; RGB follows quality (default 75). Both carry ~4 MiB that
+    // does not scale.
+    let fixed = 4u64 << 20;
+    assert_eq!(
+        encode_cost(ImageFormat::Webp, 4000, 3000, 3, &def),
+        px * 8 + fixed
+    );
+    assert_eq!(
+        encode_cost(ImageFormat::Webp, 4000, 3000, 4, &def),
+        px * 44 + fixed
+    );
     let webp = |webp_quality| {
         p(Params {
             webp_quality: Some(webp_quality),
@@ -1065,15 +1095,15 @@ fn encode_cost_follows_what_the_encoder_holds() {
     };
     assert_eq!(
         encode_cost(ImageFormat::Webp, 4000, 3000, 3, &webp(90.0)),
-        px * 10
+        px * 10 + fixed
     );
     assert_eq!(
         encode_cost(ImageFormat::Webp, 4000, 3000, 3, &webp(100.0)),
-        px * 15
+        px * 15 + fixed
     );
     assert_eq!(
         encode_cost(ImageFormat::Webp, 4000, 3000, 4, &webp(100.0)),
-        px * 44
+        px * 44 + fixed
     );
 
     // Nothing encodes GIF.
@@ -1083,8 +1113,42 @@ fn encode_cost_follows_what_the_encoder_holds() {
     let cost = DecodeCost::streaming().with_encode(None, 4000, 3000, 3, &def);
     assert_eq!(cost.encode_bytes, 0);
     let cost = DecodeCost::streaming().with_encode(Some(ImageFormat::Webp), 4000, 3000, 3, &def);
-    assert_eq!(cost.bytes(), px * 8);
-    assert!(cost.report("JPEG").contains(&format!("encode {}", px * 8)));
+    assert_eq!(cost.bytes(), px * 8 + fixed);
+    assert!(
+        cost.report("JPEG")
+            .contains(&format!("encode {}", px * 8 + fixed))
+    );
+}
+
+/// OXIMG_WEBP_EFFORT moves libwebp's working set more than quality
+/// does: from method 3 RGB holds three times as much, and method 6's
+/// lossless alpha search twice the rest.
+#[test]
+fn webp_cost_follows_the_method() {
+    for method in 0..=2 {
+        assert_eq!(webp_cost_per_px(3, 75.0, method), 8);
+        assert_eq!(webp_cost_per_px(3, 90.0, method), 10);
+        assert_eq!(webp_cost_per_px(3, 100.0, method), 15);
+        assert_eq!(webp_cost_per_px(4, 100.0, method), 44);
+    }
+    for method in 3..=6 {
+        assert_eq!(webp_cost_per_px(3, 50.0, method), 22);
+        assert_eq!(webp_cost_per_px(3, 90.0, method), 29);
+        assert_eq!(webp_cost_per_px(3, 100.0, method), 38);
+    }
+    for method in 3..=5 {
+        assert_eq!(webp_cost_per_px(4, 75.0, method), 44);
+        assert_eq!(webp_cost_per_px(4, 90.0, method), 50);
+        assert_eq!(webp_cost_per_px(4, 100.0, method), 56);
+    }
+    assert_eq!(webp_cost_per_px(4, 75.0, 6), 110);
+    assert_eq!(webp_fixed_cost(4, 6), 32 << 20);
+    for method in 0..=5 {
+        assert_eq!(webp_fixed_cost(4, method), 4 << 20);
+    }
+    for method in 0..=6 {
+        assert_eq!(webp_fixed_cost(3, method), 4 << 20);
+    }
 }
 
 /// SVT-AV1's working set grows as the preset slows and above quality
@@ -1130,14 +1194,21 @@ fn gif_webp_encode_follows_quality() {
         })
     };
     let px = 1000 * 1000;
+    let fixed = 4 << 20;
     let same = ((1000, 1000), (1000, 1000));
-    assert_eq!(gif_webp_encode_bytes(same.0, same.1, &at(75.0)), px * 12);
-    assert_eq!(gif_webp_encode_bytes(same.0, same.1, &at(100.0)), px * 19);
+    assert_eq!(
+        gif_webp_encode_bytes(same.0, same.1, &at(75.0)),
+        px * 12 + fixed
+    );
+    assert_eq!(
+        gif_webp_encode_bytes(same.0, same.1, &at(100.0)),
+        px * 19 + fixed
+    );
     // A resize filters the one-bit alpha into 8-bit values: the general
     // RGBA price.
     assert_eq!(
         gif_webp_encode_bytes((2000, 2000), (1000, 1000), &at(75.0)),
-        px * 44
+        px * 44 + fixed
     );
 }
 
@@ -1328,6 +1399,9 @@ fn decode_cost_prices_each_png_arm() {
         (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
         (400 * 100 * 3, 0, 400 * 100 * 3)
     );
+    // The encoder sees the rotated frame: its row allowance is three
+    // rows of the displayed width (100), not the stored one (400).
+    assert_eq!(c.encode_bytes, 400 * 100 * 6 + 256 * 1024 + 3 * 100 * 3);
 }
 
 /// A little-endian TIFF carrying only an Orientation tag.
@@ -1661,4 +1735,146 @@ fn truncated_in_memory_source_is_still_too_short() {
         format!("{e:#}").contains("source too short"),
         "unexpected error: {e:#}"
     );
+}
+
+/// Decode a PNG to its 8-bit pixels and list its IDAT chunk lengths.
+fn png_pixels_and_idats(b: &[u8]) -> (Vec<u8>, Vec<usize>) {
+    let mut r = png::Decoder::new(std::io::Cursor::new(b))
+        .read_info()
+        .unwrap();
+    let mut px = vec![0; r.output_buffer_size().unwrap()];
+    let n = r.next_frame(&mut px).unwrap().buffer_size();
+    px.truncate(n);
+    let (mut i, mut idats) = (8, Vec::new());
+    while i + 8 <= b.len() {
+        let len = u32::from_be_bytes(b[i..i + 4].try_into().unwrap()) as usize;
+        if &b[i + 4..i + 8] == b"IDAT" {
+            idats.push(len);
+        }
+        i += 12 + len;
+    }
+    (px, idats)
+}
+
+/// The PNG encoder streams deflate output into 256 KiB IDAT chunks
+/// (issue #133) instead of one IDAT built in a second buffer: the same
+/// pixels, and the same deflate stream `write_image_data` produced, so
+/// the file differs only by the extra chunk framing.
+#[test]
+fn png_streams_its_idat_chunks() {
+    let def = Resolved::new(&Params::default());
+    let (w, h) = (900, 700);
+    for channels in [3, 4] {
+        // A gradient under four bits of noise: compressible, but to
+        // more than one chunk.
+        let mut seed = 0x9E3779B9u32;
+        let px: Vec<u8> = (0..w * h * channels)
+            .map(|i| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                ((i % (w * channels)) * 255 / (w * channels)) as u8 ^ (seed >> 28) as u8
+            })
+            .collect();
+        let out = encode_png(&px, w, h, channels, None, &def).unwrap();
+        let (decoded, idats) = png_pixels_and_idats(&out);
+        assert!(decoded == px, "{channels} channels: pixels changed");
+        assert!(idats.len() > 1, "{channels} channels: {idats:?}");
+        let (last, full) = idats.split_last().unwrap();
+        assert!(full.iter().all(|&n| n == 256 * 1024), "{idats:?}");
+        assert!(*last <= 256 * 1024);
+
+        let mut whole = Vec::new();
+        let mut enc = png::Encoder::new(&mut whole, w as u32, h as u32);
+        enc.set_color(if channels == 4 {
+            png::ColorType::Rgba
+        } else {
+            png::ColorType::Rgb
+        });
+        enc.set_depth(png::BitDepth::Eight);
+        enc.set_compression(png::Compression::Fast);
+        let mut writer = enc.write_header().unwrap();
+        writer.write_image_data(&px).unwrap();
+        writer.finish().unwrap();
+        let framing = 12 * (idats.len() - 1);
+        assert_eq!(out.len(), whole.len() + framing, "{channels} channels");
+    }
+}
+
+/// fdeflate expands noise; like `write_image_data`, the encoder then
+/// falls back to stored blocks rather than ship the expansion, and
+/// zlib's levels hold to the stored size by themselves.
+#[test]
+fn incompressible_png_falls_back_to_stored_blocks() {
+    let (w, h): (usize, usize) = (600, 400);
+    let mut seed = 0x2545F491u32;
+    let px: Vec<u8> = (0..w * h * 3)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed >> 24) as u8
+        })
+        .collect();
+    let raw = (w * 3 + 1) * h;
+    let stored = 2 + raw + 5 * raw.div_ceil(65535) + 4;
+    for effort in [PngEffort::Fastest, PngEffort::Fast, PngEffort::Balanced] {
+        let p = Resolved::new(&Params {
+            png_effort: Some(effort),
+            ..Params::default()
+        });
+        let out = encode_png(&px, w, h, 3, None, &p).unwrap();
+        let (decoded, idats) = png_pixels_and_idats(&out);
+        assert!(decoded == px, "{effort:?}: pixels changed");
+        let idat: usize = idats.iter().sum();
+        // flate2's stored blocks run ~0.01% over the 65535-byte ideal.
+        assert!(
+            idat <= stored + stored / 1000,
+            "{effort:?}: {idat} > stored {stored}"
+        );
+    }
+}
+
+/// A capped attempt reports itself wherever the cap falls, including in
+/// the last bytes fdeflate writes from its `finish`, which unwraps them:
+/// the writer must drop past the cap, not fail.
+#[test]
+fn a_capped_png_attempt_never_panics() {
+    // The 256 KiB chunk buffer flushes into the capped writer only when
+    // it fills, so the crossing lands in `finish` when the deflate stream
+    // ends 1-12 bytes past a chunk boundary. Search noise sizes for one.
+    let fast = png::Compression::Fast;
+    let rgb = png::ColorType::Rgb;
+    let mut seed = 0x2545F491u32;
+    let noise: Vec<u8> = (0..400 * 400 * 3)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed >> 24) as u8
+        })
+        .collect();
+    let (w, h, full) = (200usize..400)
+        .flat_map(|w| (1..=400).map(move |h| (w, h)))
+        .filter(|&(w, h)| {
+            // fdeflate expands noise: ~1.36 B per filtered raw byte.
+            let est = (w * 3 + 1) * h * 136 / 100;
+            est.abs_diff(256 * 1024) < 4096
+        })
+        .find_map(|(w, h)| {
+            let mut full = Vec::new();
+            let px = &noise[..w * h * 3];
+            write_png(&mut full, usize::MAX, w, h, None, rgb, None, px, fast).unwrap();
+            let (_, idats) = png_pixels_and_idats(&full);
+            (idats.len() == 2 && (1..=12).contains(&idats[1])).then_some((w, h, full))
+        })
+        .expect("a size whose stream ends just past a chunk");
+    let px = &noise[..w * h * 3];
+    for cap in full.len() - 40..full.len() {
+        let mut out = Vec::new();
+        let fits = write_png(&mut out, cap, w, h, None, rgb, None, px, fast).unwrap();
+        assert!(!fits, "cap {cap} of {}", full.len());
+        assert!(out.len() <= cap);
+    }
+    let mut out = Vec::new();
+    assert!(write_png(&mut out, full.len(), w, h, None, rgb, None, px, fast).unwrap());
+    assert!(out == full);
 }
