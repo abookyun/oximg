@@ -1304,10 +1304,6 @@ pub(crate) mod testkit {
         }
     }
 
-    /// Pushing every source row (including trailing rows past the last
-    /// vertical window, which a streaming decoder will do) emits each
-    /// output row exactly once, in order, bit-identical to the
-    /// full-frame path.
     /// [`StreamResize::resident_bytes`] against what `with_capacity`
     /// actually allocates, on a fresh thread so no pooled scratch is
     /// reused: never below it (the estimate must not under-count), and
@@ -1356,6 +1352,10 @@ pub(crate) mod testkit {
         }
     }
 
+    /// Pushing every source row (including trailing rows past the last
+    /// vertical window, which a streaming decoder will do) emits each
+    /// output row exactly once, in order, bit-identical to the
+    /// full-frame path.
     pub(crate) fn assert_streaming_with_trailing_rows<K: RowKernel>() {
         for &(sw, sh, dw, dh) in &SHAPES {
             for ch in [3usize, 4] {
