@@ -17,7 +17,10 @@ HTTP interface without notice.
   the decoded frame now goes to the encoder without a full-frame
   copy. A 7000×7000 PNG served at full size peaks about 140 MiB lower
   (453 → 313 MiB to PNG, 658 → 516 MiB to JPEG, 415 → 274 MiB to WebP;
-  `bench/peak-rss.sh` on an M2 Max). Output is byte-identical.
+  `bench/peak-rss.sh` on an M2 Max). Output is byte-identical. The
+  decoded-bytes estimate drops by the same frame on these paths, so a
+  cap admits correspondingly larger unscaled requests; an oriented
+  source still counts a second frame, which its rotation needs.
 
 ### Fixed
 

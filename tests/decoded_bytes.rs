@@ -352,7 +352,10 @@ const CELLS: &[Cell] = &[
     ("gif animation", "anim.gif", "0", "0", "webp", &[], 3.0),
     // Photo content: the low end of the content-dependent encoders,
     // which the header cannot tell from noise.
-    ("photo png exact", "photo.png", "0", "0", "png", &[], 3.6),
+    // Since the exact-size hand-off (issue #129) this holds one frame,
+    // not two, against an encode priced at noise: 4.36x M2 Max, 4.55x
+    // Ryzen.
+    ("photo png exact", "photo.png", "0", "0", "png", &[], 5.7),
     ("photo jpeg exact", "photo.jpg", "0", "0", "jpg", &[], 3.5),
 ];
 

@@ -88,6 +88,7 @@ pub(super) fn process_png<R: std::io::Read>(
         };
         check_decoded_bytes(
             cost.with_full_frame_resize((src_w, src_h), (dst_w, dst_h), channels, p)
+                .with_exact_size_rotation((src_w, src_h), (dst_w, dst_h), channels, orientation)
                 .with_encode(Some(target), dst_w, dst_h, channels, p)
                 .with_compressed(s.srcbuf.len() + s.held_source_bytes),
             "PNG",
@@ -330,6 +331,7 @@ pub(super) fn process_avif<R: std::io::Read>(
             .saturating_add((pw as u64).saturating_mul(ph as u64).saturating_mul(12));
         check_decoded_bytes(
             cost.with_full_frame_resize((pw, ph), (ow, oh), 4, p)
+                .with_exact_size_rotation((pw, ph), (ow, oh), 4, orientation)
                 .with_encode(Some(target), ow, oh, 4, p)
                 .with_compressed(s.srcbuf.len() + s.held_source_bytes),
             "AVIF",
@@ -406,6 +408,7 @@ pub(super) fn webp_decode_into_chunk8(
         }
         check_decoded_bytes(
             cost.with_full_frame_resize((src_w, src_h), (ow, oh), channels as u64, p)
+                .with_exact_size_rotation((src_w, src_h), (ow, oh), channels as u64, orientation)
                 .with_encode(Some(target), ow, oh, channels as u64, p)
                 .with_compressed(s.srcbuf.len() + s.held_source_bytes),
             "WebP",

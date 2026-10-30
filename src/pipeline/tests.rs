@@ -902,6 +902,28 @@ fn webp_output_is_clamped_to_the_format_ceiling() {
 /// decode cost varies by more than an order of magnitude, so a pixel
 /// cap cannot bound memory while a byte estimate can. The shapes and
 /// the measured peaks come from the field validation on the issue.
+/// At exact size the full-frame paths hand the decoded frame to `out8`
+/// (issue #129): the staged frame is the only one, until a rotation
+/// grows the swapped-in `chunk8` back to a second. A resize keeps its
+/// own output frame and rotates into the frame-sized `chunk8`.
+#[test]
+fn decode_cost_prices_the_exact_size_hand_off() {
+    let p = &Resolved::new(&Params::default());
+    let rot = crate::meta::Orientation::from_rot_mirror(1, None);
+    let up = crate::meta::Orientation::UPRIGHT;
+    let frame = 400 * 300 * 3;
+    let cost = |dst: (usize, usize), o| {
+        DecodeCost::staged(400, 300, 3)
+            .with_full_frame_resize((400, 300), dst, 3, p)
+            .with_exact_size_rotation((400, 300), dst, 3, o)
+    };
+    assert_eq!(cost((400, 300), up).bytes(), frame);
+    assert_eq!(cost((400, 300), rot).bytes(), 2 * frame);
+    let resized = cost((200, 150), up).bytes();
+    assert!(resized > frame, "a resize holds its own output");
+    assert_eq!(cost((200, 150), rot).bytes(), resized);
+}
+
 #[test]
 fn decode_cost_separates_what_pixel_counts_cannot() {
     let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
@@ -1291,11 +1313,12 @@ fn decode_cost_prices_each_png_arm() {
     );
     assert_eq!(c.output_bytes, dst * 9);
 
-    // Exact size: `chunk8` copied to `out8`, no resize buffers.
+    // Exact size: `chunk8` handed to `out8` (issue #129), no resize
+    // buffers and no second frame.
     let c = cost_of(&rgb, sized(320, 240));
     assert_eq!(
         (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
-        (src * 3, 0, src * 3)
+        (src * 3, 0, 0)
     );
 
     // RGBA takes the general arm: staged, premultiplied into `src16`.
@@ -1400,7 +1423,8 @@ fn decode_cost_prices_dav1d_next_to_the_frame() {
     let c = cost_of(&avif, sized(320, 240));
     let src = 320 * 240;
     assert_eq!(c.staged_bytes, src * 4 + src * 12);
-    assert_eq!((c.resize_input_bytes, c.output_bytes), (0, src * 4));
+    // Exact size: the frame is handed to `out8` (issue #129).
+    assert_eq!((c.resize_input_bytes, c.output_bytes), (0, 0));
 }
 
 /// Issue #22: a caller-held source buffer is resident for the whole
