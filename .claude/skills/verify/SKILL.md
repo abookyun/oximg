@@ -164,6 +164,9 @@ $CTL probe tests/fixtures/photo.jpg
 $CTL probe tests/fixtures/anim.gif
 $CTL resize tests/fixtures/photo.jpg 100 100 --out /tmp/oximg-verify-out.jpg
 $CTL resize tests/fixtures/anim.gif 100 100 -f webp --out /tmp/oximg-verify-out.webp
+# Memory: the decoded-bytes estimate beside the child's peak RSS
+# (`decoded_bytes.total` vs `peak_rss_bytes`).
+$CTL --env OXIMG_LOG_DECODED_BYTES_ABOVE=1 resize tests/fixtures/photo.jpg 0 0
 
 # Signing: same HMAC as tests/server.rs `signing_gate` / tests/ctl.rs
 KEY=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef

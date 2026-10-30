@@ -592,21 +592,22 @@ fn animation_budgets_degrade_to_a_still_instead_of_failing() {
 }
 
 /// The estimated-memory cap degrades too, rather than answering 413 as
-/// it does for a still that cannot fit: at 10 frames of 200x150 the
-/// animation's estimate is over 1 MiB while the same GIF as a still is
-/// comfortably under it, so the cap has a choice — and serving less is
-/// the one that answers the request.
+/// it does for a still that cannot fit: at 40 frames of 200x150 the
+/// animation's estimate is ~12.7 MB (1.2 M encoded pixels retained at
+/// 6 B each, plus libwebp's 4 MiB that does not scale) while the same
+/// GIF as a still is ~4.9 MB, so an 8 MiB cap has a choice — and
+/// serving less is the one that answers the request.
 #[test]
 fn decoded_bytes_cap_degrades_an_animation_it_cannot_afford() {
-    let dir = animated_images_dir("cap", 200, 150, 10);
+    let dir = animated_images_dir("cap", 200, 150, 40);
     let uncapped = Server::start(&[("IMAGES_DIR", dir.clone())]);
     let (status, _, body) = uncapped.get("/resize/200/200/anim.gif").unwrap();
     assert_eq!(status, 200);
-    assert_eq!(frames_of(&body), Some(10), "all ten frames without a cap");
+    assert_eq!(frames_of(&body), Some(40), "all forty frames without a cap");
 
     let capped = Server::start(&[
         ("IMAGES_DIR", dir),
-        ("OXIMG_MAX_DECODED_BYTES", (1024 * 1024).to_string()),
+        ("OXIMG_MAX_DECODED_BYTES", (8 << 20).to_string()),
     ]);
     let (status, ct, body) = capped.get("/resize/200/200/anim.gif").unwrap();
     assert_eq!((status, ct.as_str()), (200, "image/webp"));
@@ -1080,6 +1081,47 @@ fn jpegli_scan_script_and_the_sequential_cases() {
     for url in large.iter().chain(&small) {
         let (sof, scans) = common::jpeg_scans(&s.get(url).unwrap().2);
         assert_eq!((sof, scans), (0xC1, sequential.clone()), "{url}");
+    }
+}
+
+/// Above OXIMG_JPEG_STREAMING_PIXELS every route into jpegli writes one
+/// sequential scan on the standard Huffman tables (issue #133),
+/// overriding progressive and the optimized sequential tables; at or
+/// below it nothing changes.
+#[test]
+fn jpegli_streams_above_the_streaming_threshold() {
+    let sequential: Vec<common::Scan> = vec![(vec![0, 1, 2], 0, 63, 0, 0)];
+    // JPEG Annex K.3: the standard luminance DC table's code counts.
+    let std_dc_luma: &[u8] = &[0x00, 0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0];
+    let standard = |b: &[u8]| b.windows(std_dc_luma.len()).any(|w| w == std_dc_luma);
+    // 200x150 (30000 px) and 100x75 (7500 px) outputs.
+    let large = ["/resize/200/200/photo.jpg", "/resize/200/200/rgb.png@jpg"];
+    let small = ["/resize/100/100/photo.jpg", "/resize/100/100/rgb.png@jpg"];
+    let stream = ("OXIMG_JPEG_STREAMING_PIXELS", "10000".to_string());
+    for (overlap, progressive) in [("1", "1"), ("0", "1"), ("1", "0")] {
+        let s = Server::start(&[
+            ("OXIMG_OVERLAP", overlap.into()),
+            ("OXIMG_JPEG_PROGRESSIVE", progressive.into()),
+            stream.clone(),
+        ]);
+        let what = format!("OVERLAP={overlap} PROGRESSIVE={progressive}");
+        for url in large {
+            let body = s.get(url).unwrap().2;
+            let (sof, scans) = common::jpeg_scans(&body);
+            assert_eq!((sof, scans), (0xC1, sequential.clone()), "{what} {url}");
+            assert!(standard(&body), "{what} {url}: optimized tables");
+        }
+        for url in small {
+            let body = s.get(url).unwrap().2;
+            assert_eq!(common::jpeg_scans(&body).0, 0xC1, "{what} {url}");
+            assert!(!standard(&body), "{what} {url}: standard tables");
+        }
+    }
+    // The default (16 MP) leaves display sizes alone.
+    let s = Server::start(&[]);
+    for url in large {
+        let body = s.get(url).unwrap().2;
+        assert_eq!(common::jpeg_scans(&body).0, 0xC2, "default {url}");
     }
 }
 
@@ -3692,10 +3734,11 @@ fn decoded_bytes_cap_bounds_what_pixels_cannot() {
         1.0,
         "the estimate is recorded even with no cap set"
     );
-    // 3.2 MP RGB: 9.6 MB staged plus 19.2 MB as the linear-light u16
-    // resize input, so ~28 MB — the 32 MiB bucket holds it and the
-    // 16 MiB one does not. This histogram is what an operator reads a
-    // cap off, so its placement is the contract.
+    // 3.2 MP RGB8 takes the fused arm, which decodes rows straight
+    // into the 19.2 MB linear-light u16 resize input and never stages a
+    // u8 frame (issue #130) — the 32 MiB bucket holds it and the 16 MiB
+    // one does not. This histogram is what an operator reads a cap off,
+    // so its placement is the contract.
     assert_eq!(
         metric(
             &body,
@@ -3710,7 +3753,7 @@ fn decoded_bytes_cap_bounds_what_pixels_cannot() {
         ),
         0.0
     );
-    assert!(metric(&body, "oximg_decoded_bytes_estimate_sum") > 25_000_000.0);
+    assert!(metric(&body, "oximg_decoded_bytes_estimate_sum") > 19_200_000.0);
     drop(s);
 
     // A cap above the estimate serves; below it answers 413 (the same
@@ -3950,19 +3993,17 @@ fn decoded_bytes_cap_reaches_every_source_path() {
     );
 }
 
-/// The conservative both-orientations fit, end to end. The check runs
-/// before a PNG's `eXIf` chunk is parsed, so it cannot know which way
-/// the fit will go — and therefore assumes the larger candidate for
-/// *every* source. That is deliberate: an axis-swapping source under an
-/// asymmetric box really does produce the larger frame, and
-/// under-counting it is the failure mode this cap exists to prevent.
+/// The oriented fit, end to end (issue #130). The PNG estimate runs
+/// after the `eXIf` chunk is read, so each source is priced on the fit
+/// it will actually take, where it used to assume the larger of the two
+/// candidates for every source.
 #[test]
-fn oriented_sources_are_capped_on_the_larger_fit() {
+fn oriented_sources_are_capped_on_their_own_fit() {
     let dir = std::env::temp_dir().join(format!("oximg-orientcap-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    // 1200x300 stored; orientation 6 presents it as 300x1200, so a
-    // width-only box of 1000 fits the displayed frame to 300x1200 —
-    // 360k pixels of output against the unoriented fit's 250k.
+    // 1200x300 stored; orientation 6 presents it as 300x1200, which a
+    // width-only box of 1000 leaves at its own size, while the upright
+    // source resizes to 1000x250.
     let (w, h) = (1200usize, 300usize);
     let px = vec![120u8; w * h * 3];
     std::fs::write(
@@ -3977,7 +4018,6 @@ fn oriented_sources_are_capped_on_the_larger_fit() {
     .unwrap();
     let images = dir.to_str().unwrap().to_string();
 
-    // The rotated source really does produce the swapped, larger frame.
     let loose = Server::start(&[("IMAGES_DIR", images.clone())]);
     let (_, _, body) = loose.get("/resize/1000/0/rotated.png").unwrap();
     let (_, ow, oh) = oximg::pipeline::probe(&body).unwrap();
@@ -3986,24 +4026,20 @@ fn oriented_sources_are_capped_on_the_larger_fit() {
     let (_, ow, oh) = oximg::pipeline::probe(&body).unwrap();
     assert_eq!((ow, oh), (1000, 250));
 
-    // A cap between the unoriented estimate (3.24 MB source-side plus
-    // 2.25 MB of 1000x250 output) and the conservative one (the same
-    // source side plus 3.24 MB of 1200x300) refuses *both*: the
-    // estimate cannot yet know which way the fit goes, so it assumes
-    // the larger for either. Refusing the upright source is the price
-    // of never under-counting the rotated one.
+    // The rotated source is an exact-size re-encode: the staged frame,
+    // a copy into `out8` and the PNG encoder (twice the raw frame, its
+    // 256 KiB chunk buffer and three rows), 1.08 + 1.08 + 2.43 MB =
+    // 4.59 MB. The upright one takes the fused resize: `src16` 2.16 MB,
+    // `dst16` + `out8` 2.25 MB and the encoder 1.77 MB = 6.18 MB. A cap
+    // between the two serves the first and refuses the second, which
+    // only an estimate that knows each source's orientation can do.
     let capped = Server::start(&[
         ("IMAGES_DIR", images.clone()),
-        ("OXIMG_MAX_DECODED_BYTES", (6 * 1024 * 1024).to_string()),
+        ("OXIMG_MAX_DECODED_BYTES", 5_400_000.to_string()),
     ]);
-    for file in ["rotated.png", "upright.png"] {
-        assert_eq!(
-            capped.status_of(&format!("/resize/1000/0/{file}")),
-            413,
-            "{file} is estimated on the larger candidate fit"
-        );
-    }
-    // Above the conservative figure, both serve.
+    assert_eq!(capped.status_of("/resize/1000/0/rotated.png"), 200);
+    assert_eq!(capped.status_of("/resize/1000/0/upright.png"), 413);
+    // Above both, both serve.
     let generous = Server::start(&[
         ("IMAGES_DIR", images),
         ("OXIMG_MAX_DECODED_BYTES", (16 * 1024 * 1024).to_string()),
@@ -4012,7 +4048,7 @@ fn oriented_sources_are_capped_on_the_larger_fit() {
         assert_eq!(
             generous.get(&format!("/resize/1000/0/{file}")).unwrap().0,
             200,
-            "{file} serves above the conservative estimate"
+            "{file} serves above its estimate"
         );
     }
 }
