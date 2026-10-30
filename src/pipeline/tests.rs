@@ -1829,3 +1829,49 @@ fn incompressible_png_falls_back_to_stored_blocks() {
         );
     }
 }
+
+/// A capped attempt reports itself wherever the cap falls, including in
+/// the last bytes fdeflate writes from its `finish`, which unwraps them:
+/// the writer must drop past the cap, not fail.
+#[test]
+fn a_capped_png_attempt_never_panics() {
+    // The 256 KiB chunk buffer flushes into the capped writer only when
+    // it fills, so the crossing lands in `finish` when the deflate stream
+    // ends 1-12 bytes past a chunk boundary. Search noise sizes for one.
+    let fast = png::Compression::Fast;
+    let rgb = png::ColorType::Rgb;
+    let mut seed = 0x2545F491u32;
+    let noise: Vec<u8> = (0..400 * 400 * 3)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed >> 24) as u8
+        })
+        .collect();
+    let (w, h, full) = (200usize..400)
+        .flat_map(|w| (1..=400).map(move |h| (w, h)))
+        .filter(|&(w, h)| {
+            // fdeflate expands noise: ~1.36 B per filtered raw byte.
+            let est = (w * 3 + 1) * h * 136 / 100;
+            est.abs_diff(256 * 1024) < 4096
+        })
+        .find_map(|(w, h)| {
+            let mut full = Vec::new();
+            let px = &noise[..w * h * 3];
+            write_png(&mut full, usize::MAX, w, h, None, rgb, None, px, fast).unwrap();
+            let (_, idats) = png_pixels_and_idats(&full);
+            (idats.len() == 2 && (1..=12).contains(&idats[1])).then_some((w, h, full))
+        })
+        .expect("a size whose stream ends just past a chunk");
+    let px = &noise[..w * h * 3];
+    for cap in full.len() - 40..full.len() {
+        let mut out = Vec::new();
+        let fits = write_png(&mut out, cap, w, h, None, rgb, None, px, fast).unwrap();
+        assert!(!fits, "cap {cap} of {}", full.len());
+        assert!(out.len() <= cap);
+    }
+    let mut out = Vec::new();
+    assert!(write_png(&mut out, full.len(), w, h, None, rgb, None, px, fast).unwrap());
+    assert!(out == full);
+}

@@ -60,7 +60,10 @@ pub(super) fn encode_png(
 /// three rows.
 const PNG_IDAT_CHUNK: usize = 256 * 1024;
 
-/// `out`, refusing to grow past `cap`.
+/// `out`, refusing to grow past `cap`. Past it, writes are dropped and
+/// `over` is set, never failed: fdeflate unwraps the writes in its
+/// `finish` (the last bit-buffer bytes and the Adler-32), so an error
+/// there would panic instead of reaching the fallback.
 struct Capped<'a> {
     out: &'a mut Vec<u8>,
     cap: usize,
@@ -69,11 +72,11 @@ struct Capped<'a> {
 
 impl std::io::Write for Capped<'_> {
     fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-        if self.out.len() + b.len() > self.cap {
+        if *self.over || self.out.len() + b.len() > self.cap {
             *self.over = true;
-            return Err(std::io::Error::other("PNG output past its cap"));
+        } else {
+            self.out.extend_from_slice(b);
         }
-        self.out.extend_from_slice(b);
         Ok(b.len())
     }
 
@@ -84,7 +87,7 @@ impl std::io::Write for Capped<'_> {
 
 /// Encode into `out`; `Ok(false)` when the output would pass `cap`.
 #[allow(clippy::too_many_arguments)]
-fn write_png(
+pub(super) fn write_png(
     out: &mut Vec<u8>,
     cap: usize,
     w: usize,
@@ -110,10 +113,12 @@ fn write_png(
         data,
         compression,
     );
-    match r {
-        Err(_) if over => Ok(false),
-        r => r.map(|()| true),
+    // A capped attempt left `out` truncated; whatever png made of that
+    // (its last chunk's flush error is dropped silently), it is discarded.
+    if over {
+        return Ok(false);
     }
+    r.map(|()| true)
 }
 
 #[allow(clippy::too_many_arguments)]
