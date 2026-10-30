@@ -1216,6 +1216,14 @@ const SOURCE_FIXTURES: &[&str] = &[
     "cmyk_icc.jpg",
     "rgb.png",
     "interlaced.png",
+    // PNG decodes straight from the reader (issue #129): every color
+    // type and depth must come out the same through either entry.
+    "rgba.png",
+    "gray.png",
+    "gray16.png",
+    "graya.png",
+    "palette.png",
+    "rgb16.png",
     "photo.webp",
     "still.gif",
     "anim.gif",
@@ -1289,4 +1297,195 @@ fn truncated_in_memory_source_is_still_too_short() {
         format!("{e:#}").contains("source too short"),
         "unexpected error: {e:#}"
     );
+}
+
+/// `ForwardOnly` answers position queries from its byte counter and
+/// refuses every seek that would move the stream (issue #129).
+#[test]
+fn forward_only_answers_position_and_refuses_moving_seeks() {
+    use super::formats::ForwardOnly;
+    use std::io::{BufRead, Read, Seek, SeekFrom};
+    let data: Vec<u8> = (0u8..64).collect();
+    let mut r = ForwardOnly::new(std::io::BufReader::with_capacity(16, &data[..]));
+    assert_eq!(r.stream_position().unwrap(), 0);
+
+    // Both read paths advance the counter.
+    let mut four = [0u8; 4];
+    r.read_exact(&mut four).unwrap();
+    assert_eq!(four, [0, 1, 2, 3]);
+    let avail = r.fill_buf().unwrap().len();
+    assert!(avail >= 3, "the BufReader still holds bytes");
+    r.consume(3);
+    assert_eq!(r.stream_position().unwrap(), 7);
+    let mut next = [0u8; 1];
+    r.read_exact(&mut next).unwrap();
+    assert_eq!(next, [7], "consume moved the inner reader too");
+
+    // Seeks that stay put are answered; everything else is refused.
+    // The literal Current(0) is the point: it is the call a decoder
+    // makes when it does not use `stream_position`.
+    #[allow(clippy::seek_from_current)]
+    let here = r.seek(SeekFrom::Current(0)).unwrap();
+    assert_eq!(here, 8);
+    assert_eq!(r.seek(SeekFrom::Start(8)).unwrap(), 8);
+    for to in [
+        SeekFrom::Start(0),
+        SeekFrom::Start(9),
+        SeekFrom::Current(-1),
+        SeekFrom::Current(1),
+        SeekFrom::End(0),
+    ] {
+        let e = r.seek(to).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::Unsupported, "{to:?}");
+        assert!(e.to_string().contains("forward-only"), "{e}");
+    }
+    assert_eq!(
+        r.stream_position().unwrap(),
+        8,
+        "a refused seek moves nothing"
+    );
+}
+
+/// Every PNG shape the pipeline decodes, including the ones carrying
+/// the ancillary chunks it reads (`eXIf`, `iCCP`).
+fn png_shapes() -> Vec<(String, Vec<u8>)> {
+    let mut shapes: Vec<(String, Vec<u8>)> = [
+        "rgb.png",
+        "rgba.png",
+        "gray.png",
+        "gray16.png",
+        "graya.png",
+        "palette.png",
+        "interlaced.png",
+        "rgb16.png",
+    ]
+    .iter()
+    .map(|n| (n.to_string(), read_fixture(n)))
+    .collect();
+    let (w, h) = (40u32, 30u32);
+    let px: Vec<u8> = (0..w * h * 3).map(|i| (i * 7 % 251) as u8).collect();
+    let mut info = png::Info::with_size(w, h);
+    // Raw little-endian TIFF, one IFD entry: orientation 6.
+    info.exif_metadata = Some(std::borrow::Cow::Owned(vec![
+        b'I', b'I', 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
+    ]));
+    info.icc_profile = Some(std::borrow::Cow::Owned(vec![0x5a; 600]));
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::with_info(&mut out, info).unwrap();
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut writer = enc.write_header().unwrap();
+    writer.write_image_data(&px).unwrap();
+    writer.finish().unwrap();
+    shapes.push(("exif_iccp (generated)".into(), out));
+    shapes
+}
+
+/// Everything the pipeline reads out of a PNG: header facts, the
+/// ancillary chunks, the frame (once whole, once row by row, the two
+/// decode arms of `process_png`), then the trailing chunks to IEND.
+fn decode_png_fully<R: std::io::BufRead + std::io::Seek>(
+    open: impl Fn() -> R,
+) -> Result<(String, Vec<u8>, Vec<u8>), png::DecodingError> {
+    let decoder = || {
+        let mut d = png::Decoder::new(open());
+        d.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+        d
+    };
+    let mut r = decoder().read_info()?;
+    let info = r.info();
+    let meta = format!(
+        "{}x{} {:?} interlaced={} exif={:?} icc={:?}",
+        info.width,
+        info.height,
+        info.color_type,
+        info.interlaced,
+        info.exif_metadata,
+        info.icc_profile.as_ref().map(|c| c.len()),
+    );
+    let mut frame = vec![0u8; r.output_buffer_size().unwrap()];
+    r.next_frame(&mut frame)?;
+    r.finish()?;
+    let mut r = decoder().read_info()?;
+    let mut rows = Vec::new();
+    while let Some(row) = r.next_row()? {
+        rows.extend_from_slice(row.data());
+    }
+    r.finish()?;
+    Ok((meta, frame, rows))
+}
+
+/// Pins the assumption `ForwardOnly` rests on (issue #129): png 0.18
+/// bounds its decoder on `Seek` but never seeks. Should a png upgrade
+/// start seeking, the refused seek surfaces here as a decode error —
+/// at every buffer granularity, so a seek that only fires on a short
+/// read cannot hide.
+#[test]
+fn png_never_seeks_through_forward_only() {
+    use super::formats::ForwardOnly;
+    for (name, bytes) in png_shapes() {
+        let want = decode_png_fully(|| std::io::Cursor::new(&bytes[..]))
+            .unwrap_or_else(|e| panic!("{name}: Cursor decode: {e}"));
+        for cap in [1, 7, 8192] {
+            let got = decode_png_fully(|| {
+                ForwardOnly::new(std::io::BufReader::with_capacity(cap, &bytes[..]))
+            })
+            .unwrap_or_else(|e| panic!("{name} at {cap}-byte reads: png tried to seek? {e}"));
+            assert!(
+                got == want,
+                "{name} at {cap}-byte reads decoded differently"
+            );
+        }
+    }
+}
+
+/// Streaming the PNG must not change how a truncated or corrupt source
+/// fails: the in-memory and file entry points agree, cut for cut, and
+/// every failure is still a client-side `Undecodable`. Covers both
+/// decode arms: the row-streamed RGB8 resize (rgb.png into a smaller
+/// box) and the whole-frame arm (everything else).
+#[test]
+fn truncated_png_fails_alike_in_memory_and_from_a_file() {
+    let dir = std::env::temp_dir().join(format!("oximg-pngcut-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = Params {
+        max_width: 64,
+        max_height: 64,
+        ..Params::default()
+    };
+    let mut failures = 0;
+    for (name, bytes) in png_shapes() {
+        let n = bytes.len();
+        // Inside the signature, inside IHDR, mid-IDAT, and the IEND
+        // chunk dropped; plus one flipped byte mid-stream.
+        let mut cuts: Vec<Vec<u8>> = [12, 30, n / 2, n - 12]
+            .iter()
+            .map(|&c| bytes[..c].to_vec())
+            .collect();
+        let mut flipped = bytes.clone();
+        flipped[n / 2] ^= 0xff;
+        cuts.push(flipped);
+        for (i, src) in cuts.iter().enumerate() {
+            let path = dir.join(format!("cut{i}.png"));
+            std::fs::write(&path, src).unwrap();
+            let mem = process(src, &p);
+            let file = process_path(&path, &p);
+            match (mem, file) {
+                (Ok(a), Ok(b)) => assert!(a.0 == b.0, "{name} cut {i}: bytes differ"),
+                (Err(a), Err(b)) => {
+                    failures += 1;
+                    assert_eq!(a.kind(), ErrorKind::Undecodable, "{name} cut {i}: {a:#}");
+                    assert_eq!(b.kind(), ErrorKind::Undecodable, "{name} cut {i}: {b:#}");
+                    assert_eq!(format!("{a:#}"), format!("{b:#}"), "{name} cut {i}");
+                }
+                (a, b) => panic!(
+                    "{name} cut {i}: in-memory {:?} vs file {:?}",
+                    a.map(|x| x.1),
+                    b.map(|x| x.1)
+                ),
+            }
+        }
+    }
+    assert!(failures > 0, "the cuts must exercise the error path");
+    let _ = std::fs::remove_dir_all(&dir);
 }
