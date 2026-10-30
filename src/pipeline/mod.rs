@@ -776,6 +776,7 @@ fn process_reader<R: std::io::BufRead>(
     SCRATCH.with(|s| {
         let s = &mut *s.borrow_mut();
         s.held_source_bytes = held_source_bytes;
+        s.reclaim_handed_frame();
         let out = match format {
             // The whole JPEG decode is unwind-guarded, not just the
             // header parse: libjpeg signals fatal errors (bogus
@@ -1239,6 +1240,23 @@ struct Scratch {
     cr16: Vec<u16>,
 }
 
+impl Scratch {
+    /// Run first by every entry point that borrows `SCRATCH`
+    /// (`process_reader`, `decode_and_resize`). An exact-size request hands
+    /// the decoded frame to `out8` (issue #129), leaving the frame-sized
+    /// allocation there and a short one in `chunk8`; scratch is
+    /// grow-only, so the next decode would allocate a second frame into
+    /// `chunk8` while `out8` still keeps the last — two frames resident
+    /// on every later request on the worker. The decoder fills `chunk8`
+    /// first, so the larger allocation goes back to it. Both buffers
+    /// are sized before every use, so their contents carry nothing.
+    fn reclaim_handed_frame(&mut self) {
+        if self.out8.capacity() > self.chunk8.capacity() {
+            std::mem::swap(&mut self.out8, &mut self.chunk8);
+        }
+    }
+}
+
 /// Grow-only scratch access: ensures length without re-zeroing retained
 /// bytes (a full-size memset per request on multi-megabyte buffers) and
 /// returns the exactly-sized view. Callers must fully overwrite the
@@ -1617,9 +1635,11 @@ impl DecodeCost {
 
     /// A full-frame resize of a `src` frame to `dst`, as
     /// `resize_pixels_to` runs it (and the paths that mirror it: the
-    /// fused PNG decode, the JPEG band/fir fallback). At exact size
-    /// that is a copy into `out8`. Otherwise linear light adds `src16`
-    /// and `dst16`, and fir adds its intermediate image.
+    /// fused PNG decode, the JPEG band/fir fallback). At exact size it
+    /// holds nothing of its own: the decoded frame is handed to `out8`
+    /// (issue #129; a rotation after it is
+    /// [`Self::with_exact_size_rotation`]). Otherwise linear light adds
+    /// `src16` and `dst16`, and fir adds its intermediate image.
     pub fn with_full_frame_resize(
         mut self,
         (src_w, src_h): (usize, usize),
@@ -1629,7 +1649,7 @@ impl DecodeCost {
     ) -> Self {
         let out8 = pixels_of(dst_w, dst_h).saturating_mul(channels);
         if (src_w, src_h) == (dst_w, dst_h) {
-            self.output_bytes = out8;
+            self.output_bytes = 0;
             return self;
         }
         let (src16, dst16) = if p.linear_light {
@@ -1661,6 +1681,24 @@ impl DecodeCost {
         self.resize_input_bytes = src16.saturating_add(fir);
         self.output_bytes = dst16.saturating_add(out8);
         self
+    }
+
+    /// The rotation after an exact-size [`Self::with_full_frame_resize`]:
+    /// the hand-off leaves `chunk8` holding whatever `out8` held, often
+    /// far short of a frame, and rotating into it grows it back to one.
+    /// Resized frames rotate into a `chunk8` already at least that large.
+    pub fn with_exact_size_rotation(
+        self,
+        src: (usize, usize),
+        dst: (usize, usize),
+        channels: u64,
+        orientation: crate::meta::Orientation,
+    ) -> Self {
+        if src == dst && !orientation.is_upright() {
+            self.with_extra_output_frame(dst.0, dst.1, channels)
+        } else {
+            self
+        }
     }
 
     /// A second output frame next to `out8`: the rotation's destination
@@ -1911,5 +1949,5 @@ use gif::*;
 pub use jpeg::decode_and_resize;
 #[cfg_attr(not(test), allow(unused_imports))] // tests.rs reaches these via super::*
 use jpeg::*;
-use jpegli_enc::{JPEG_APP2, JpegliEncoder};
+use jpegli_enc::{JPEG_APP2, JpegMode, JpegliEncoder};
 use resolved::Resolved;

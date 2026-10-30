@@ -10,10 +10,14 @@ change and needs a changelog.
 - Target box applies to the **displayed** frame (after orientation).
 - WebP output is additionally scaled to fit the 16383 px side limit.
 - `tiny.jpg` (40×30) into 100×100 stays 40×30.
+- A box at or above the source size resamples nothing: the decoded
+  frame goes to the encoder as is (after any rotation), so
+  unquantized PNG→PNG reproduces the source samples, alpha included.
 
 ```sh
 oximg-ctl get /resize/100/100/photo.jpg   # 200×150 source → 100×75
 oximg-ctl get /resize/100/100/tiny.jpg    # stays 40×30
+oximg-ctl get /resize/400/400/rgba.png    # 200×150, same RGBA bytes
 ```
 
 ## Color and samples

@@ -21,6 +21,37 @@ HTTP interface without notice.
 
 ### Changed
 
+- **Unscaled PNG, WebP, AVIF and GIF requests hold one decoded frame,
+  not two** ([#129]). When the box is at or above the source size,
+  the decoded frame now goes to the encoder without a full-frame
+  copy. A 7000×7000 PNG served at full size peaks about 140 MiB lower
+  (453 → 313 MiB to PNG, 658 → 516 MiB to JPEG, 415 → 274 MiB to WebP;
+  `bench/peak-rss.sh` on an M2 Max). Output is byte-identical. The
+  decoded-bytes estimate drops by the same frame on these paths, so a
+  cap admits correspondingly larger unscaled requests; an oriented
+  source still counts a second frame, which its rotation needs.
+- **JPEG outputs above 16 MP stream through the encoder** ([#133]).
+  jpegli held the whole image's coefficients (progressive) or tokens
+  (optimized Huffman tables) until the end, so an 8000² re-encode
+  peaked at 663 MB on a photo and 1048 MB on noise. Outputs above
+  `OXIMG_JPEG_STREAMING_PIXELS` (new, default 16,000,000) are now
+  written sequential on the standard Huffman tables, which jpegli
+  codes row by row: 213 MB and 287 MB, and the decoded-bytes estimate
+  prices the encoder at its output size instead of the whole image.
+  Same pixels; photos come out ~6% larger than progressive (+5% over
+  optimized sequential), noise ~30%. `OXIMG_JPEG_STREAMING_PIXELS`
+  set very high restores the previous layouts at every size.
+- **PNG output streams into IDAT chunks** ([#133]). The encoder
+  deflated the whole image into one buffer and then copied it into the
+  output as a single IDAT, so it held up to 3.6 B per raw byte on
+  incompressible content. It now writes 256 KiB IDAT chunks as it
+  deflates: peak RSS -22 to -27% on photos and -49 to -50% on noise
+  (2000² and 4000² re-encodes, M2 Max), and the decoded-bytes estimate
+  prices the PNG encoder at half what it did. At the default effort
+  the deflate stream is unchanged (the zlib levels add a few bytes), so
+  files differ only by the extra chunk framing (+0.01%) and decode to
+  the same pixels; output that fdeflate would expand still falls back
+  to stored blocks.
 - **A PNG probe no longer inflates pixel data** ([#134]). It decoded
   the first row and discarded it, which was 85–98% of its time: 1 µs
   instead of 6–83 µs on the fixtures (Apple M2 Max; 5–66 µs on a Ryzen
@@ -28,6 +59,14 @@ HTTP interface without notice.
 
 ### Fixed
 
+- **The decoded-bytes estimate follows `OXIMG_WEBP_EFFORT`** ([#133]).
+  The WebP encoder was priced at the default method 2 whatever the
+  knob said, but from method 3 libwebp holds ~3x as much on RGB and at
+  6 twice as much on alpha: 2000² noise held 18.9 B/px against an 8
+  B/px price (RGB, method 3) and 80 against 44 (alpha, method 6). The
+  price now follows the method, plus the 4 MiB the encoder holds that
+  does not scale with the image (32 MiB for method 6 with alpha), which
+  small outputs were under-counted by.
 - **The decoded-bytes estimate counts the output encoder** ([#130]).
   `OXIMG_MAX_DECODED_BYTES` and `OXIMG_LOG_DECODED_BYTES_ABOVE` left
   the encoder out, and on AVIF output, alpha WebP and quantized PNG the
@@ -57,7 +96,9 @@ HTTP interface without notice.
   held 74 MB against a 40 MB estimate. Over `OXIMG_MAX_DECODED_BYTES`
   an animation still degrades to a still rather than answering 413.
 
+[#129]: https://github.com/oximg/oximg/issues/129
 [#130]: https://github.com/oximg/oximg/issues/130
+[#133]: https://github.com/oximg/oximg/issues/133
 [#134]: https://github.com/oximg/oximg/issues/134
 
 ## [0.17.0] - 2026-10-26

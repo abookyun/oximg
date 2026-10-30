@@ -21,39 +21,179 @@ pub(super) fn encode_png(
     } else {
         None
     };
+    let (color, palette, data, row) = match &quantized {
+        Some((palette, indices)) => (png::ColorType::Indexed, Some(&palette[..]), &indices[..], w),
+        None if channels == 4 => (png::ColorType::Rgba, None, pixels, w * 4),
+        None => (png::ColorType::Rgb, None, pixels, w * 3),
+    };
+    let compression = p.png_compression(quantized.is_some());
+    let stored = zlib_stored_len((row + 1) * h);
     let mut out = Vec::with_capacity(64 * 1024);
+    // `write_image_data` wrote stored blocks when its fdeflate output
+    // came out larger than them (noise: +37% at 2000² otherwise), and a
+    // stream cannot take back what it wrote. `out` can: the rare image
+    // that does not compress is encoded a second time, stored. The
+    // first attempt stops, at the next band of rows, once its output
+    // passes everything a stored PNG could hold, so `out` never grows
+    // past one and the doomed deflate does not run to the end.
+    let fdeflate = matches!(
+        compression,
+        png::Compression::Fastest | png::Compression::Fast
+    );
+    let cap = if fdeflate {
+        let framing = 12 * stored.div_ceil(PNG_IDAT_CHUNK);
+        let other = 1024 + icc.map_or(0, <[u8]>::len) + palette.map_or(0, <[u8]>::len);
+        stored + framing + other
+    } else {
+        usize::MAX
+    };
+    let fits = write_png(&mut out, cap, w, h, icc, color, palette, data, compression)?;
+    if !fits || (fdeflate && idat_len(&out) > stored) {
+        out.clear();
+        let none = png::Compression::NoCompression;
+        write_png(&mut out, usize::MAX, w, h, icc, color, palette, data, none)?;
+    }
+    Ok(out)
+}
+
+/// IDAT payload per chunk: 12 bytes of chunk framing per 256 KiB, and
+/// the stream writer's one buffer of this size is all it holds besides
+/// three rows.
+const PNG_IDAT_CHUNK: usize = 256 * 1024;
+
+/// `out`, refusing to grow past `cap`. Past it, writes are dropped and
+/// `over` is set, never failed: fdeflate unwraps the writes in its
+/// `finish` (the last bit-buffer bytes and the Adler-32), so an error
+/// there would panic instead of reaching the fallback. The caller stops
+/// feeding rows once `over` is set.
+struct Capped<'a> {
+    out: &'a mut Vec<u8>,
+    cap: usize,
+    over: &'a std::cell::Cell<bool>,
+}
+
+impl std::io::Write for Capped<'_> {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        if self.over.get() || self.out.len() + b.len() > self.cap {
+            self.over.set(true);
+        } else {
+            self.out.extend_from_slice(b);
+        }
+        Ok(b.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Encode into `out`; `Ok(false)` when the output would pass `cap`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn write_png(
+    out: &mut Vec<u8>,
+    cap: usize,
+    w: usize,
+    h: usize,
+    icc: Option<&[u8]>,
+    color: png::ColorType,
+    palette: Option<&[u8]>,
+    data: &[u8],
+    compression: png::Compression,
+) -> Result<bool> {
+    let over = std::cell::Cell::new(false);
+    let r = write_png_capped(
+        Capped {
+            out,
+            cap,
+            over: &over,
+        },
+        &over,
+        w,
+        h,
+        icc,
+        color,
+        palette,
+        data,
+        compression,
+    );
+    // A capped attempt left `out` truncated; whatever png made of that
+    // (its last chunk's flush error is dropped silently), it is discarded.
+    if over.get() {
+        return Ok(false);
+    }
+    r.map(|()| true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_png_capped(
+    out: Capped<'_>,
+    over: &std::cell::Cell<bool>,
+    w: usize,
+    h: usize,
+    icc: Option<&[u8]>,
+    color: png::ColorType,
+    palette: Option<&[u8]>,
+    data: &[u8],
+    compression: png::Compression,
+) -> Result<()> {
     // The no-profile arm constructs the encoder exactly as the pre-ICC
-    // code did, keeping profile-less output byte-identical.
+    // code did.
     let mut enc = match icc {
         Some(icc) => {
             let mut info = png::Info::with_size(w as u32, h as u32);
             info.icc_profile = Some(std::borrow::Cow::Borrowed(icc));
-            png::Encoder::with_info(&mut out, info).context("PNG info")?
+            png::Encoder::with_info(out, info).context("PNG info")?
         }
-        None => png::Encoder::new(&mut out, w as u32, h as u32),
+        None => png::Encoder::new(out, w as u32, h as u32),
     };
     enc.set_depth(png::BitDepth::Eight);
-    enc.set_compression(p.png_compression(quantized.is_some()));
-    match &quantized {
-        Some((palette, indices)) => {
-            enc.set_color(png::ColorType::Indexed);
-            enc.set_palette(palette.as_slice());
-            let mut writer = enc.write_header().context("PNG header")?;
-            writer.write_image_data(indices).context("PNG encode")?;
-            writer.finish().context("PNG finish")?;
-        }
-        None => {
-            enc.set_color(if channels == 4 {
-                png::ColorType::Rgba
-            } else {
-                png::ColorType::Rgb
-            });
-            let mut writer = enc.write_header().context("PNG header")?;
-            writer.write_image_data(pixels).context("PNG encode")?;
-            writer.finish().context("PNG finish")?;
+    enc.set_compression(compression);
+    enc.set_color(color);
+    if let Some(palette) = palette {
+        enc.set_palette(palette);
+    }
+    let mut writer = enc.write_header().context("PNG header")?;
+    // `write_image_data` deflates the whole image into its own Vec before
+    // copying it into `out` as one IDAT, so both grew with the compressed
+    // size (3.6 B per raw byte held on noise). The stream writer deflates
+    // the same filtered rows straight into IDAT chunks of `out` (issue
+    // #133). Chunk boundaries, and so the bytes, differ from the one-IDAT
+    // layout; the pixels do not.
+    let mut stream = writer
+        .stream_writer_with_size(PNG_IDAT_CHUNK)
+        .context("PNG stream")?;
+    // Bands of rows, so a capped attempt stops soon after it overflows.
+    // Leaving rows unwritten makes the stream's own finish (and drop)
+    // refuse before fdeflate's.
+    for band in data.chunks((data.len() / h.max(1)).max(1) * 64) {
+        std::io::Write::write_all(&mut stream, band).context("PNG encode")?;
+        if over.get() {
+            anyhow::bail!("PNG output past its cap");
         }
     }
-    Ok(out)
+    stream.finish().context("PNG encode")?;
+    writer.finish().context("PNG finish")?;
+    Ok(())
+}
+
+/// Total IDAT payload of a PNG the encoder above just wrote.
+fn idat_len(png: &[u8]) -> usize {
+    let mut i = 8;
+    let mut total = 0;
+    while i + 8 <= png.len() {
+        let len = u32::from_be_bytes(png[i..i + 4].try_into().unwrap()) as usize;
+        if &png[i + 4..i + 8] == b"IDAT" {
+            total += len;
+        }
+        i += 12 + len;
+    }
+    total
+}
+
+/// A zlib stream of `raw` bytes in stored blocks: header, 5 bytes per
+/// 65535-byte block, Adler-32.
+fn zlib_stored_len(raw: usize) -> usize {
+    2 + raw + 5 * raw.div_ceil(65535).max(1) + 4
 }
 
 /// Wu color quantization (quantette) with Floyd-Steinberg dithering,
@@ -517,30 +657,39 @@ pub(super) fn encode_cost(
         ImageFormat::Jpeg => {
             let tokens = jpeg_token_cost(p.quality);
             match p.encoder {
-                Encoder::Jpegli if jpegli_progressive(w, h) => tokens + 7,
-                Encoder::Jpegli => tokens,
+                Encoder::Jpegli => match jpegli_mode(w, h) {
+                    JpegMode::Progressive => tokens + 7,
+                    JpegMode::Sequential => tokens,
+                    JpegMode::Streaming => return jpeg_streaming_cost(w, px, p.quality),
+                },
                 // The fastest profile: 6.2-8.5 B/px at any quality.
                 Encoder::MozFast => 10,
                 // Trellis + progressive: 6.3-18.9.
                 Encoder::MozSmall => tokens + 4,
             }
         }
-        // png's writer zlib-compresses into one Vec and copies it into
-        // the output, both growing by doubling, so the cost follows the
-        // compressed size: 0.8-1.1 B per raw byte on photos, 3.6 on
-        // noise. Quantization adds quantette's working set (17.6-18.2
-        // B/px, RGB only).
-        ImageFormat::Png if p.png_quantize.is_some() && channels == 3 => 20,
-        ImageFormat::Png => 4 * channels,
-        // Alpha is lossless VP8L, which dominates at any quality (36-37
-        // on noise alpha, 16.5 on a gradient). RGB follows quality:
-        // 4.7 at q50, 6.1 at q75, 7.9 at q90, 12.7 at q100.
-        ImageFormat::Webp if channels == 4 => 44,
-        ImageFormat::Webp => match p.webp_quality as u32 {
-            0..=75 => 8,
-            76..=90 => 10,
-            _ => 15,
-        },
+        // The stream writer holds only its output, which `encode_png`
+        // caps at about the stored size, the raw frame, and which can
+        // touch twice that while its Vec doubles. Measured 1.1 B per raw
+        // byte on noise (2048², M2 Max; 3.6 before #133 streamed it),
+        // 0.3 on a photo. Quantization adds quantette's working set
+        // (17.6-18.2 B/px, RGB only).
+        // Plus the writer's chunk buffer and three rows.
+        ImageFormat::Png => {
+            let per_px = if p.png_quantize.is_some() && channels == 3 {
+                20
+            } else {
+                2 * channels
+            };
+            let fixed = PNG_IDAT_CHUNK as u64 + 3 * w as u64 * channels;
+            return px.saturating_mul(per_px).saturating_add(fixed);
+        }
+        ImageFormat::Webp => {
+            let method = webp_effort().clamp(0, 6);
+            return px
+                .saturating_mul(webp_cost_per_px(channels, p.webp_quality, method))
+                .saturating_add(webp_fixed_cost(channels, method));
+        }
         #[cfg(feature = "avif")]
         ImageFormat::Avif => return avif_encode_cost(px, channels, &p.avif_params()),
         // Never encoded: no AVIF in this build, and no GIF encoder.
@@ -564,6 +713,78 @@ pub(super) fn jpeg_token_cost(quality: f32) -> u64 {
         91..=95 => 15,
         _ => 18,
     }
+}
+
+/// libwebp's working set per output pixel at `quality` and `method`
+/// (OXIMG_WEBP_EFFORT), on noise (B/px, 2000², M2 Max), priced ~15-20%
+/// above it. No method bounds it to the content: at the default 2 a
+/// photo holds 2.7 (RGB) and 17.5 (RGBA) against noise's 5.8 and 36.
+///
+/// - RGB, methods 0-2: 4.1-5.5 at q50, 4.9-5.8 at q75, 5.5-8.6 at q90,
+///   13.3 at q100. From method 3 libwebp keeps more analysis per
+///   macroblock: 16.4, 18.9, 25.4 and 33.4.
+/// - RGBA codes alpha lossless (VP8L), which dominates: 28-37 at
+///   methods 0-2 at any quality; 37-38 at 3-5 up to q75, 43.4 at q90,
+///   49 at q100; and at method 6 VP8L's exhaustive search, which does
+///   not scale evenly: 104-106 at 1024² and 1448², 75 at 2000².
+///
+/// Part of it does not scale at all (fits over 512² to 2000²): 2-7 MB
+/// at methods 0-5, ~27 MB of method 6's search on alpha. [`webp_fixed_cost`]
+/// prices that.
+pub(super) fn webp_cost_per_px(channels: u64, quality: f32, method: i32) -> u64 {
+    let q = quality as u32;
+    match (channels == 4, method) {
+        (true, 0..=2) => 44,
+        (true, 3..=5) => match q {
+            0..=75 => 44,
+            76..=90 => 50,
+            _ => 56,
+        },
+        (true, _) => 110,
+        (false, 0..=2) => match q {
+            0..=75 => 8,
+            76..=90 => 10,
+            _ => 15,
+        },
+        (false, _) => match q {
+            0..=75 => 22,
+            76..=90 => 29,
+            _ => 38,
+        },
+    }
+}
+
+/// The part of libwebp's working set that does not scale with the
+/// image (see [`webp_cost_per_px`]).
+pub(super) fn webp_fixed_cost(channels: u64, method: i32) -> u64 {
+    if channels == 4 && method >= 6 {
+        32 << 20
+    } else {
+        4 << 20
+    }
+}
+
+/// [`JpegMode::Streaming`] holds its output and a few rows. The output
+/// is the one part that still follows content; on noise, by quality
+/// (B/px, 8000², M2 Max): 0.48 at q30, 0.68 at q50, 1.06 at q70, 1.35 at
+/// q80, 1.87 at q90, 2.41 at q95, 4.31 at q100, against 0.09-0.73 on a
+/// photo. `Dest` grows its `Vec` by doubling, and the last growth
+/// touches the old buffer and its copy at once, so the output can hold
+/// up to twice its size (macOS remaps large reallocations instead, ~1x
+/// at 8000²; the 2048² cell in tests/decoded_bytes.rs held ~1.6x).
+/// Priced at twice noise plus 10%, in tenths of a byte. The rows are
+/// three iMCU rows of float planes, ~600 B per column, priced at 1 KiB.
+pub(super) fn jpeg_streaming_cost(w: usize, px: u64, quality: f32) -> u64 {
+    let tenths: u64 = match quality as u32 {
+        0..=30 => 11,
+        31..=50 => 15,
+        51..=70 => 24,
+        71..=80 => 30,
+        81..=90 => 42,
+        91..=95 => 53,
+        _ => 95,
+    };
+    (px.saturating_mul(tenths) / 10).saturating_add((w as u64).saturating_mul(1024))
 }
 
 /// SVT-AV1's working set: frame buffers at its internal bit depth,
@@ -758,9 +979,18 @@ pub(super) fn icc_app2_chunks(icc: &[u8]) -> impl Iterator<Item = Vec<u8>> + '_ 
 ///
 /// Below OXIMG_JPEG_SEQUENTIAL_PIXELS output pixels the default is
 /// sequential too: the identical pixels in fewer bytes and less CPU.
-pub(super) fn jpegli_progressive(w: usize, h: usize) -> bool {
+/// Above OXIMG_JPEG_STREAMING_PIXELS either mode gives way to
+/// [`JpegMode::Streaming`], which holds rows instead of the image.
+pub(super) fn jpegli_mode(w: usize, h: usize) -> JpegMode {
     let c = crate::config::config();
-    c.jpegli_progressive && (w as u64) * (h as u64) > c.jpegli_sequential_pixels
+    let px = (w as u64) * (h as u64);
+    if px > c.jpegli_streaming_pixels {
+        JpegMode::Streaming
+    } else if c.jpegli_progressive && px > c.jpegli_sequential_pixels {
+        JpegMode::Progressive
+    } else {
+        JpegMode::Sequential
+    }
 }
 
 pub(super) fn encode_jpegli(
@@ -773,7 +1003,7 @@ pub(super) fn encode_jpegli(
     // cjpegli emits progressive by default; the libjpeg-compat layer does
     // not. Progressive is worth several percent at these sizes; the scan
     // script is oximg's own (see jpegli_enc.rs), not jpegli's level 2.
-    let mut enc = JpegliEncoder::new(w, h, quality, jpegli_progressive(w, h));
+    let mut enc = JpegliEncoder::new(w, h, quality, jpegli_mode(w, h));
     if let Some(icc) = icc {
         for chunk in icc_app2_chunks(icc) {
             enc.write_marker(JPEG_APP2, &chunk);

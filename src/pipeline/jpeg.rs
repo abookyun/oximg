@@ -39,6 +39,7 @@ fn decode_and_resize_inner(
     });
     SCRATCH.with(|s| {
         let s = &mut *s.borrow_mut();
+        s.reclaim_handed_frame();
         // The ICC scan feeds the CMYK→RGB conversion only (this
         // helper returns raw pixels, so there is no pass-through);
         // OXIMG_ICC=0 downgrades CMYK sources to the naive composite
@@ -280,7 +281,9 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
         let mut cost = if buffered {
             // Staged whole (4-channel CMYK), compacted to RGB in place,
             // and fed to the full-frame resize like the buffered formats.
-            DecodeCost::staged(dec_w, dec_h, 4).with_full_frame_resize(dec, dst, 3, p)
+            DecodeCost::staged(dec_w, dec_h, 4)
+                .with_full_frame_resize(dec, dst, 3, p)
+                .with_exact_size_rotation(dec, dst, 3, orientation)
         } else if dec == dst || (p.linear_light && kernel_streams(p)) {
             DecodeCost::streaming().with_streamed_output(dst_w, dst_h, 3)
         } else if p.linear_light {
@@ -298,7 +301,8 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
         } else if rows_only && !orientation.is_upright() {
             cost = cost.with_extra_output_frame(dst_w, dst_h, 3);
         }
-        cost = cost.with_encode(target, dst_w, dst_h, 3, p);
+        let (enc_w, enc_h) = orientation.display_dims(dst_w, dst_h);
+        cost = cost.with_encode(target, enc_w, enc_h, 3, p);
         if s.jpeg_progressive {
             cost = cost.with_progressive_coefficients(src_w, src_h, comps);
         }
