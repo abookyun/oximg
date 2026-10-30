@@ -1089,6 +1089,66 @@ fn jpeg_chroma_is_replicated_when_reducing_and_filtered_at_one_to_one() {
     );
 }
 
+/// The linear-light RGB8 PNG path streams decoded rows into the resize
+/// on single-band requests and stages the frame for band-parallel ones
+/// (issue #129). Through the binary, both must answer the fitted size —
+/// including an output height that does not divide the source and a
+/// 2000-row source reduced to one row — and a stream that ends early
+/// must still be a 422, never a partially resized image.
+#[test]
+fn png_rgb8_resize_streams_and_truncation_is_422() {
+    let dir = std::env::temp_dir().join(format!("oximg-ctl-pngstream-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let rgb = std::fs::read(fixture("rgb.png")).unwrap();
+    std::fs::write(dir.join("rgb.png"), &rgb).unwrap();
+    std::fs::write(dir.join("cut.png"), &rgb[..rgb.len() / 3]).unwrap();
+    let (tw, th) = (4u32, 2000u32);
+    let mut tall = Vec::new();
+    let mut enc = png::Encoder::new(&mut tall, tw, th);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    let px: Vec<u8> = (0..tw * th * 3).map(|i| (i * 7 % 251) as u8).collect();
+    enc.write_header().unwrap().write_image_data(&px).unwrap();
+    std::fs::write(dir.join("tall.png"), &tall).unwrap();
+
+    let images = dir.to_str().unwrap();
+    for par in ["1", "4"] {
+        let env = format!("OXIMG_PAR={par}");
+        let get = |path: &str, expect: &str| {
+            let (code, v) = run(&[
+                "--images-dir",
+                images,
+                "--env",
+                &env,
+                "get",
+                path,
+                "--expect",
+                expect,
+            ]);
+            assert_eq!(code, 0, "PAR={par} {path}: {v}");
+            v
+        };
+        // 200x150 into 37x37: 37x28, and 150 / 28 is not whole.
+        let v = get("/resize/37/37/rgb.png", "200");
+        assert_eq!(v["content_type"], "image/png", "{v}");
+        assert_eq!(
+            (v["probe"]["width"].as_u64(), v["probe"]["height"].as_u64()),
+            (Some(37), Some(28)),
+            "{v}"
+        );
+        let v = get("/resize/1/1/tall.png", "200");
+        assert_eq!(
+            (v["probe"]["width"].as_u64(), v["probe"]["height"].as_u64()),
+            (Some(1), Some(1)),
+            "{v}"
+        );
+        let v = get("/resize/37/37/cut.png", "422");
+        assert_eq!(v["body_text"], "decode PNG", "{v}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// --dry-run prints the plan without spawning, reading, or signing.
 #[test]
 fn dry_runs_print_the_plan_without_side_effects() {
