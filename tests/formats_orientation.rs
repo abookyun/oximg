@@ -379,6 +379,20 @@ fn avif_irot_imir_match_libheif_rendering() {
         assert_eq!(corners, expected, "{name}");
     }
 
+    // At a box larger than the source nothing resizes: the decoded
+    // frame is handed straight to the output buffer (issue #129) and
+    // must still rotate and mirror exactly as libheif shows it.
+    for (name, (dw, dh), expected) in cases {
+        let p = Params {
+            output: Some(ImageFormat::Jpeg),
+            ..params(4096)
+        };
+        let (out, _) = pipeline::process(&fixture(name), &p).unwrap();
+        let (ow, oh, corners) = common::corner_classes(&out);
+        assert_eq!((ow, oh), (dw * 2, dh * 2), "{name} at exact size");
+        assert_eq!(corners, expected, "{name} at exact size");
+    }
+
     // Rotation and ICC compose on AVIF sources too: irot=3 displays as
     // a 90° CW turn and the profile still passes through.
     let p = Params {
