@@ -106,6 +106,17 @@ fn process_gif_src(
 /// noise transparency (3000², M2 Max), against 37 for 8-bit noise alpha.
 const GIF_WEBP_ENCODE_PER_PX: u64 = 12;
 
+/// What libwebp's animation encoder retains per encoded frame pixel
+/// until it assembles the file: measured 4.5 B/px for 1024² noise
+/// frames with one-bit transparency (M2 Max), from the slope across
+/// frame counts.
+const ANIM_RETAINED_PER_PX: u64 = 6;
+
+/// `WebPAnimEncoder`'s own RGBA canvases (the previous frame, its
+/// disposed copy, the current frame's copy) and candidate rectangles:
+/// ~17 B per canvas pixel measured, from the same runs' intercept.
+const ANIM_CANVASES_PER_PX: u64 = 20;
+
 /// Composite the first frame onto the logical screen, leaving the
 /// pixels in `chunk8`. Returns (width, height, channels) — 3 channels
 /// when the result turned out opaque, which most GIFs are.
@@ -360,16 +371,18 @@ fn try_animated(s: &mut Scratch, src: &[u8], p: &Resolved) -> Result<Option<Vec<
     let mut cost = cost
         .with_full_frame_resize((cw, ch), (out_w, out_h), 4, p)
         .with_compressed(src.len() + s.held_source_bytes);
-    // libwebp retains every frame it has compressed until Assemble.
-    // Modeled at one byte per encoded pixel: ~9x the 0.11 B/px measured
-    // across the whole corpus in docs/gif-evaluation.md §5, so the
-    // estimate errs high against the only figures we have.
-    cost.output_bytes = cost.output_bytes.saturating_add(work);
+    // libwebp retains every frame it has compressed until Assemble:
+    // 0.11 B per encoded pixel across the corpus in
+    // docs/gif-evaluation.md §5, but 4.5 on noise frames (issue #130),
+    // which a hostile upload can choose and the header cannot rule out.
+    cost.output_bytes = cost
+        .output_bytes
+        .saturating_add(work.saturating_mul(ANIM_RETAINED_PER_PX));
     // And each frame passes through the same libwebp encoder a still
-    // does, with the same working set.
+    // does, next to the animation encoder's own canvases.
     cost.encode_bytes = (out_w as u64)
         .saturating_mul(out_h as u64)
-        .saturating_mul(GIF_WEBP_ENCODE_PER_PX);
+        .saturating_mul(GIF_WEBP_ENCODE_PER_PX + ANIM_CANVASES_PER_PX);
     // Over the global cap this animation would be a 413 — but the same
     // GIF as a still fits comfortably, so treat the cap like the
     // animation budgets and serve less instead of refusing. The still

@@ -35,6 +35,11 @@ HTTP interface without notice.
   sources (fir's whole-image intermediate; 835 MB measured against a
   272 MB estimate), alpha AVIF sources (dav1d's pictures), and lossless
   WebP (VP8L's ARGB image).
+- **Animated GIF estimates count libwebp's animation encoder** ([#130]):
+  its canvases, and the frames it retains at 6 B per encoded pixel
+  rather than 1 (4.5 measured on noise frames). Six 1024² noise frames
+  held 74 MB against a 40 MB estimate. Over `OXIMG_MAX_DECODED_BYTES`
+  an animation still degrades to a still rather than answering 413.
 
 [#130]: https://github.com/oximg/oximg/issues/130
 
