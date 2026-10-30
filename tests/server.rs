@@ -4144,6 +4144,74 @@ fn expensive_requests_are_reported_without_being_refused() {
     );
 }
 
+/// Issue #129: a local PNG decodes straight from the file, so the
+/// decoded-bytes estimate carries no compressed-source term — and a
+/// cap set between "frame only" and "frame plus a whole-file copy"
+/// serves the request the old buffered decode refused.
+#[test]
+fn local_png_estimate_counts_no_compressed_source() {
+    let dir = std::env::temp_dir().join(format!("oximg-pngstream-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // Noise does not deflate, so the file is about as large as the
+    // frame: the compressed term, were it counted, would be ~3 MB.
+    let (w, h) = (1000u32, 1000u32);
+    let mut x = 0x9e37_79b9_u32;
+    let px: Vec<u8> = (0..w * h * 3)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x as u8
+        })
+        .collect();
+    let mut png = Vec::new();
+    let mut enc = png::Encoder::new(&mut png, w, h);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut writer = enc.write_header().unwrap();
+    writer.write_image_data(&px).unwrap();
+    writer.finish().unwrap();
+    assert!(
+        png.len() > 2_000_000,
+        "noise must stay large: {}",
+        png.len()
+    );
+    std::fs::write(dir.join("noise.png"), &png).unwrap();
+    let images = dir.to_str().unwrap().to_string();
+    let path = "/resize/500/500/noise.png";
+
+    let (status, logs) = run_once(
+        &images,
+        &[("OXIMG_LOG_DECODED_BYTES_ABOVE", "1".to_string())],
+        path,
+    );
+    assert_eq!(status, 200);
+    let line = logs
+        .iter()
+        .find(|l| l.contains("decoded-bytes"))
+        .unwrap_or_else(|| panic!("the request must be reported: {logs:?}"));
+    assert!(
+        line.contains("compressed 0)"),
+        "a streamed local PNG holds no source copy: {line}"
+    );
+    let total: u64 = line
+        .split("needs about ")
+        .nth(1)
+        .and_then(|r| r.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no total in {line}"));
+
+    // Halfway into the margin the old whole-file copy used to add.
+    let cap = total + png.len() as u64 / 2;
+    let (status, logs) = run_once(
+        &images,
+        &[("OXIMG_MAX_DECODED_BYTES", cap.to_string())],
+        path,
+    );
+    assert_eq!(status, 200, "cap {cap} over estimate {total}: {logs:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Issue #8: `OXIMG_LOG` takes the RUST_LOG level names, and an
 /// unknown value boots with a warning instead of crash-looping the
 /// deployment — verbosity cannot make output wrong.
