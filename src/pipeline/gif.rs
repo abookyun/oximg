@@ -396,11 +396,19 @@ fn try_animated(s: &mut Scratch, src: &[u8], p: &Resolved) -> Result<Option<Vec<
 
         if emitted == 0 || (dirty && index % step == 0) {
             let t = crate::clock::Instant::now();
-            resize_pixels_to(s, 4, cw, ch, out_w, out_h, p)?;
+            // The canvas persists across frames, and resize_pixels_to
+            // consumes chunk8 (at exact size it becomes out8). Unscaled,
+            // the canvas already is the straight-alpha frame: encode it
+            // in place, which also skips a full-canvas copy per frame.
+            let frame_px = if (cw, ch) == (out_w, out_h) {
+                &s.chunk8[..canvas_len]
+            } else {
+                resize_pixels_to(s, 4, cw, ch, out_w, out_h, p)?;
+                &s.out8[..out_w * out_h * 4]
+            };
             t_frames += t.elapsed();
             let t = crate::clock::Instant::now();
-            enc.add(&s.out8[..out_w * out_h * 4], ts)
-                .context(ServerFault)?;
+            enc.add(frame_px, ts).context(ServerFault)?;
             t_encode += t.elapsed();
             emitted += 1;
             dirty = false;

@@ -498,6 +498,11 @@ pub(super) fn resize_pixels_oriented(
 /// `out8` at exactly `dst_w`x`dst_h`. RGB follows the same
 /// linear-light path as JPEG; alpha images are premultiplied before
 /// resampling and unpremultiplied after.
+///
+/// `chunk8` is consumed: at exact size its buffer *becomes* `out8`
+/// (and `chunk8` is left holding the old `out8`), and in sRGB mode
+/// alpha is premultiplied in place. A caller that needs the source
+/// afterwards (the animated-GIF canvas) must not route it through here.
 pub(super) fn resize_pixels_to(
     s: &mut Scratch,
     channels: usize,
@@ -509,9 +514,13 @@ pub(super) fn resize_pixels_to(
 ) -> Result<(usize, usize)> {
     let src_len = src_w * src_h * channels;
     if (src_w, src_h) == (dst_w, dst_h) {
-        scratch_u8(&mut s.out8, src_len);
-        let (chunk8, out8) = (&s.chunk8, &mut s.out8);
-        out8[..src_len].copy_from_slice(&chunk8[..src_len]);
+        // No resize: hand the decoded frame over instead of copying it.
+        // A copy kept two full frames resident (147 MB each at 7000^2
+        // RGB, issue #129). Every decoder sizes chunk8 to at least the
+        // frame, and every later chunk8 user re-sizes it through
+        // scratch_u8 or `resize`, so the shorter buffer swapped in is safe.
+        debug_assert!(s.chunk8.len() >= src_len);
+        std::mem::swap(&mut s.out8, &mut s.chunk8);
         return Ok((dst_w, dst_h));
     }
 
