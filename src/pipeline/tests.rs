@@ -1947,8 +1947,10 @@ fn truncated_png_fails_alike_in_memory_and_from_a_file() {
     let mut failures = 0;
     for (name, bytes) in png_shapes() {
         let n = bytes.len();
-        // Inside the signature, inside IHDR, mid-IDAT, and the IEND
-        // chunk dropped; plus one flipped byte mid-stream.
+        // Just past IHDR's length (a cut inside the 8-byte signature
+        // never reaches the decoder: the 12-byte sniff fails first),
+        // inside IHDR's CRC, mid-IDAT, and the IEND chunk dropped; plus
+        // one flipped byte mid-stream.
         let mut cuts: Vec<Vec<u8>> = [12, 30, n / 2, n - 12]
             .iter()
             .map(|&c| bytes[..c].to_vec())
