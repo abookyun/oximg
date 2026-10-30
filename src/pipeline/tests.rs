@@ -1906,6 +1906,11 @@ const PNG_STREAM_SHAPES: &[(Dims, Dims)] = &[
 #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
 #[test]
 fn png_streamed_resize_matches_the_full_frame_kernel() {
+    // The arch cfg does not promise the CPU features: an x86-64 host
+    // without AVX2/FMA falls back to the staged path, correctly.
+    if !fuse_kernel_available() {
+        return;
+    }
     for &((sw, sh), (dw, dh)) in PNG_STREAM_SHAPES {
         let png_bytes = noisy_rgb_png(sw, sh);
         let (got, streamed) = png_linear(&png_bytes, (dw, dh), 1, true).unwrap();
