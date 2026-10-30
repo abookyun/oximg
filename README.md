@@ -87,7 +87,7 @@ combines with any encode column:
 
 | Format | Decode | Encode |
 |---|---|---|
-| JPEG | baseline, extended sequential (SOF1) & progressive, grayscale; streaming, full-size decode (4:2:0 luma at 1/2 in linear light from ~3.8x; libjpeg shrink-on-load opt-in) | jpegli progressive (default; sequential up to 12k output pixels) or sequential (SOF1, `OXIMG_JPEG_PROGRESSIVE=0`), mozjpeg profiles via `PRESET` |
+| JPEG | baseline, extended sequential (SOF1) & progressive, grayscale; streaming, full-size decode (4:2:0 luma at 1/2 in linear light from ~3.8x; libjpeg shrink-on-load opt-in) | jpegli progressive (default; sequential up to 12k output pixels) or sequential (SOF1, `OXIMG_JPEG_PROGRESSIVE=0`); above 16 MP output sequential on the standard Huffman tables, encoded row by row (`OXIMG_JPEG_STREAMING_PIXELS`); mozjpeg profiles via `PRESET` |
 | PNG | palette / grayscale / 16-bit, normalized to RGB(A)8 | lossless RGB(A); opt-in palette quantization (`OXIMG_PNG_QUANTIZE`) |
 | WebP | lossy & lossless, alpha | lossy (`OXIMG_WEBP_QUALITY`, 75), alpha; output is scaled to fit WebP's 16383 px limit |
 | AVIF (`--features avif`) | dav1d: 8/10/12-bit, all subsamplings, alpha | SVT-AV1: 10-bit 4:2:0, tune=ssim, alpha as auxiliary image |
@@ -577,7 +577,7 @@ never silently falls back to a default.
 |---|---|---|
 | `QUALITY` | `80` | JPEG quality |
 | `PRESET` | `jpegli` | `fast` = mozjpeg baseline, `small` = mozjpeg trellis+progressive |
-| `OXIMG_JPEG_PROGRESSIVE` | `1` | `0` = sequential jpegli (SOF1, extended sequential; not baseline SOF0) with optimized Huffman tables, at every size: the speed profile. Same pixels; output +2.2% at fit 512 (up to +10.7% on graphics) for -5.5% server CPU at fit 512 and -28% on large graphics (Zen 4, single client) |
+| `OXIMG_JPEG_PROGRESSIVE` | `1` | `0` = sequential jpegli (SOF1, extended sequential; not baseline SOF0) with optimized Huffman tables, at every size up to `OXIMG_JPEG_STREAMING_PIXELS` (above it, the standard tables): the speed profile. Same pixels; output +2.2% at fit 512 (up to +10.7% on graphics) for -5.5% server CPU at fit 512 and -28% on large graphics (Zen 4, single client) |
 | `OXIMG_JPEG_SEQUENTIAL_PIXELS` | `12000` | With progressive on, outputs of at most this many pixels are written sequential: on thumbnails that is both smaller and cheaper. `0` = progressive at every size |
 | `OXIMG_JPEG_STREAMING_PIXELS` | `16000000` | Outputs of more than this many pixels are written sequential on the standard Huffman tables, whatever the two knobs above say: the one layout jpegli encodes row by row instead of holding the whole image. An 8000² re-encode peaks at 213 MB instead of 663 MB on a photo (287 MB instead of 1048 MB on noise; M2 Max), for photos ~6% larger than progressive. `0` = every output |
 | `OXIMG_WEBP_QUALITY` | `75` | WebP quality |
