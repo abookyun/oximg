@@ -301,7 +301,8 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
         } else if rows_only && !orientation.is_upright() {
             cost = cost.with_extra_output_frame(dst_w, dst_h, 3);
         }
-        cost = cost.with_encode(target, dst_w, dst_h, 3, p);
+        let (enc_w, enc_h) = orientation.display_dims(dst_w, dst_h);
+        cost = cost.with_encode(target, enc_w, enc_h, 3, p);
         if s.jpeg_progressive {
             cost = cost.with_progressive_coefficients(src_w, src_h, comps);
         }

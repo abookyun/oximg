@@ -593,9 +593,10 @@ fn animation_budgets_degrade_to_a_still_instead_of_failing() {
 
 /// The estimated-memory cap degrades too, rather than answering 413 as
 /// it does for a still that cannot fit: at 40 frames of 200x150 the
-/// animation's estimate is ~8.5 MB (1.2 M encoded pixels retained at
-/// 6 B each) while the same GIF as a still is ~0.7 MB, so a 1.5 MiB cap
-/// has a choice — and serving less is the one that answers the request.
+/// animation's estimate is ~12.7 MB (1.2 M encoded pixels retained at
+/// 6 B each, plus libwebp's 4 MiB that does not scale) while the same
+/// GIF as a still is ~4.9 MB, so an 8 MiB cap has a choice — and
+/// serving less is the one that answers the request.
 #[test]
 fn decoded_bytes_cap_degrades_an_animation_it_cannot_afford() {
     let dir = animated_images_dir("cap", 200, 150, 40);
@@ -606,7 +607,7 @@ fn decoded_bytes_cap_degrades_an_animation_it_cannot_afford() {
 
     let capped = Server::start(&[
         ("IMAGES_DIR", dir),
-        ("OXIMG_MAX_DECODED_BYTES", (1536 * 1024).to_string()),
+        ("OXIMG_MAX_DECODED_BYTES", (8 << 20).to_string()),
     ]);
     let (status, ct, body) = capped.get("/resize/200/200/anim.gif").unwrap();
     assert_eq!((status, ct.as_str()), (200, "image/webp"));
@@ -1080,6 +1081,47 @@ fn jpegli_scan_script_and_the_sequential_cases() {
     for url in large.iter().chain(&small) {
         let (sof, scans) = common::jpeg_scans(&s.get(url).unwrap().2);
         assert_eq!((sof, scans), (0xC1, sequential.clone()), "{url}");
+    }
+}
+
+/// Above OXIMG_JPEG_STREAMING_PIXELS every route into jpegli writes one
+/// sequential scan on the standard Huffman tables (issue #133),
+/// overriding progressive and the optimized sequential tables; at or
+/// below it nothing changes.
+#[test]
+fn jpegli_streams_above_the_streaming_threshold() {
+    let sequential: Vec<common::Scan> = vec![(vec![0, 1, 2], 0, 63, 0, 0)];
+    // JPEG Annex K.3: the standard luminance DC table's code counts.
+    let std_dc_luma: &[u8] = &[0x00, 0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0];
+    let standard = |b: &[u8]| b.windows(std_dc_luma.len()).any(|w| w == std_dc_luma);
+    // 200x150 (30000 px) and 100x75 (7500 px) outputs.
+    let large = ["/resize/200/200/photo.jpg", "/resize/200/200/rgb.png@jpg"];
+    let small = ["/resize/100/100/photo.jpg", "/resize/100/100/rgb.png@jpg"];
+    let stream = ("OXIMG_JPEG_STREAMING_PIXELS", "10000".to_string());
+    for (overlap, progressive) in [("1", "1"), ("0", "1"), ("1", "0")] {
+        let s = Server::start(&[
+            ("OXIMG_OVERLAP", overlap.into()),
+            ("OXIMG_JPEG_PROGRESSIVE", progressive.into()),
+            stream.clone(),
+        ]);
+        let what = format!("OVERLAP={overlap} PROGRESSIVE={progressive}");
+        for url in large {
+            let body = s.get(url).unwrap().2;
+            let (sof, scans) = common::jpeg_scans(&body);
+            assert_eq!((sof, scans), (0xC1, sequential.clone()), "{what} {url}");
+            assert!(standard(&body), "{what} {url}: optimized tables");
+        }
+        for url in small {
+            let body = s.get(url).unwrap().2;
+            assert_eq!(common::jpeg_scans(&body).0, 0xC1, "{what} {url}");
+            assert!(!standard(&body), "{what} {url}: standard tables");
+        }
+    }
+    // The default (16 MP) leaves display sizes alone.
+    let s = Server::start(&[]);
+    for url in large {
+        let body = s.get(url).unwrap().2;
+        assert_eq!(common::jpeg_scans(&body).0, 0xC2, "default {url}");
     }
 }
 
@@ -3985,14 +4027,15 @@ fn oriented_sources_are_capped_on_their_own_fit() {
     assert_eq!((ow, oh), (1000, 250));
 
     // The rotated source is an exact-size re-encode: the staged frame,
-    // a copy into `out8` and the PNG encoder, 1.08 + 1.08 + 4.32 MB =
-    // 6.48 MB. The upright one takes the fused resize: `src16` 2.16 MB,
-    // `dst16` + `out8` 2.25 MB and the encoder 3.0 MB = 7.41 MB. A cap
+    // a copy into `out8` and the PNG encoder (twice the raw frame, its
+    // 256 KiB chunk buffer and three rows), 1.08 + 1.08 + 2.43 MB =
+    // 4.59 MB. The upright one takes the fused resize: `src16` 2.16 MB,
+    // `dst16` + `out8` 2.25 MB and the encoder 1.77 MB = 6.18 MB. A cap
     // between the two serves the first and refuses the second, which
     // only an estimate that knows each source's orientation can do.
     let capped = Server::start(&[
         ("IMAGES_DIR", images.clone()),
-        ("OXIMG_MAX_DECODED_BYTES", 6_950_000.to_string()),
+        ("OXIMG_MAX_DECODED_BYTES", 5_400_000.to_string()),
     ]);
     assert_eq!(capped.status_of("/resize/1000/0/rotated.png"), 200);
     assert_eq!(capped.status_of("/resize/1000/0/upright.png"), 413);

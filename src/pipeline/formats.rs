@@ -79,6 +79,8 @@ pub(super) fn process_png<R: std::io::Read>(
             _ => 3,
         };
         let (dst_w, dst_h) = oriented_fit(src_w, src_h, orientation, p);
+        // The encoder sees the frame after rotation.
+        let (enc_w, enc_h) = orientation.display_dims(dst_w, dst_h);
         // PNG has no shrink-on-load: the general arm stages the whole
         // frame in `chunk8`; the fused arm never does.
         let cost = if fused {
@@ -89,7 +91,7 @@ pub(super) fn process_png<R: std::io::Read>(
         check_decoded_bytes(
             cost.with_full_frame_resize((src_w, src_h), (dst_w, dst_h), channels, p)
                 .with_exact_size_rotation((src_w, src_h), (dst_w, dst_h), channels, orientation)
-                .with_encode(Some(target), dst_w, dst_h, channels, p)
+                .with_encode(Some(target), enc_w, enc_h, channels, p)
                 .with_compressed(s.srcbuf.len() + s.held_source_bytes),
             "PNG",
         )?;
@@ -320,6 +322,7 @@ pub(super) fn process_avif<R: std::io::Read>(
         let (pw, ph) = crate::avif::probe_avif(&s.srcbuf)?;
         check_src_pixels(pw, ph)?;
         let (ow, oh) = oriented_fit(pw, ph, orientation, p);
+        let (enc_w, enc_h) = orientation.display_dims(ow, oh);
         let mut cost = DecodeCost::staged(pw, ph, 4);
         // dav1d's pictures and frame state next to `chunk8`, still
         // resident when the resize allocates (freed memory the
@@ -332,7 +335,7 @@ pub(super) fn process_avif<R: std::io::Read>(
         check_decoded_bytes(
             cost.with_full_frame_resize((pw, ph), (ow, oh), 4, p)
                 .with_exact_size_rotation((pw, ph), (ow, oh), 4, orientation)
-                .with_encode(Some(target), ow, oh, 4, p)
+                .with_encode(Some(target), enc_w, enc_h, 4, p)
                 .with_compressed(s.srcbuf.len() + s.held_source_bytes),
             "AVIF",
         )?;
@@ -394,6 +397,7 @@ pub(super) fn webp_decode_into_chunk8(
         // this below the source (decided a few lines down), so the
         // full frame is an upper bound, not the exact figure.
         let (ow, oh) = oriented_fit(src_w, src_h, orientation, p);
+        let (enc_w, enc_h) = orientation.display_dims(ow, oh);
         let mut cost = DecodeCost::staged(src_w, src_h, channels as u64);
         // VP8L keeps the whole image as ARGB words while it decodes,
         // even when the output is scaled: lossless sources, and the
@@ -409,7 +413,7 @@ pub(super) fn webp_decode_into_chunk8(
         check_decoded_bytes(
             cost.with_full_frame_resize((src_w, src_h), (ow, oh), channels as u64, p)
                 .with_exact_size_rotation((src_w, src_h), (ow, oh), channels as u64, orientation)
-                .with_encode(Some(target), ow, oh, channels as u64, p)
+                .with_encode(Some(target), enc_w, enc_h, channels as u64, p)
                 .with_compressed(s.srcbuf.len() + s.held_source_bytes),
             "WebP",
         )?;
