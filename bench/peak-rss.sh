@@ -39,7 +39,7 @@ esac
 if command -v sha256sum >/dev/null; then hash() { sha256sum "$1" | cut -d' ' -f1; }
 elif command -v shasum >/dev/null; then hash() { shasum -a 256 "$1" | cut -d' ' -f1; }
 else echo "peak-rss.sh: need sha256sum or shasum" >&2; exit 1; fi
-median() { sort -n | awk '{a[NR]=$1} END{print a[int((NR+1)/2)]}'; }
+median() { sort -n | awk '{a[NR]=$1} END{if (NR%2) print a[(NR+1)/2]; else printf "%.0f\n", (a[NR/2]+a[NR/2+1])/2}'; }
 
 # name|env|input|w|h|ext|extra args
 CASES=(
