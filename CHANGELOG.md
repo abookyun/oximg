@@ -12,6 +12,15 @@ HTTP interface without notice.
 
 ### Changed
 
+- **Unscaled PNG, WebP, AVIF and GIF requests hold one decoded frame,
+  not two** ([#129]). When the box is at or above the source size,
+  the decoded frame now goes to the encoder without a full-frame
+  copy. A 7000×7000 PNG served at full size peaks about 140 MiB lower
+  (453 → 313 MiB to PNG, 658 → 516 MiB to JPEG, 415 → 274 MiB to WebP;
+  `bench/peak-rss.sh` on an M2 Max). Output is byte-identical. The
+  decoded-bytes estimate drops by the same frame on these paths, so a
+  cap admits correspondingly larger unscaled requests; an oriented
+  source still counts a second frame, which its rotation needs.
 - **JPEG outputs above 16 MP stream through the encoder** ([#133]).
   jpegli held the whole image's coefficients (progressive) or tokens
   (optimized Huffman tables) until the end, so an 8000² re-encode
@@ -74,6 +83,7 @@ HTTP interface without notice.
   held 74 MB against a 40 MB estimate. Over `OXIMG_MAX_DECODED_BYTES`
   an animation still degrades to a still rather than answering 413.
 
+[#129]: https://github.com/oximg/oximg/issues/129
 [#130]: https://github.com/oximg/oximg/issues/130
 [#133]: https://github.com/oximg/oximg/issues/133
 

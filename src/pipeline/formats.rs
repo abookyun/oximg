@@ -90,6 +90,7 @@ pub(super) fn process_png<R: std::io::Read>(
         };
         check_decoded_bytes(
             cost.with_full_frame_resize((src_w, src_h), (dst_w, dst_h), channels, p)
+                .with_exact_size_rotation((src_w, src_h), (dst_w, dst_h), channels, orientation)
                 .with_encode(Some(target), enc_w, enc_h, channels, p)
                 .with_compressed(s.srcbuf.len() + s.held_source_bytes),
             "PNG",
@@ -333,6 +334,7 @@ pub(super) fn process_avif<R: std::io::Read>(
             .saturating_add((pw as u64).saturating_mul(ph as u64).saturating_mul(12));
         check_decoded_bytes(
             cost.with_full_frame_resize((pw, ph), (ow, oh), 4, p)
+                .with_exact_size_rotation((pw, ph), (ow, oh), 4, orientation)
                 .with_encode(Some(target), enc_w, enc_h, 4, p)
                 .with_compressed(s.srcbuf.len() + s.held_source_bytes),
             "AVIF",
@@ -410,6 +412,7 @@ pub(super) fn webp_decode_into_chunk8(
         }
         check_decoded_bytes(
             cost.with_full_frame_resize((src_w, src_h), (ow, oh), channels as u64, p)
+                .with_exact_size_rotation((src_w, src_h), (ow, oh), channels as u64, orientation)
                 .with_encode(Some(target), enc_w, enc_h, channels as u64, p)
                 .with_compressed(s.srcbuf.len() + s.held_source_bytes),
             "WebP",
@@ -516,6 +519,14 @@ pub(super) fn resize_pixels_oriented(
 /// `out8` at exactly `dst_w`x`dst_h`. RGB follows the same
 /// linear-light path as JPEG; alpha images are premultiplied before
 /// resampling and unpremultiplied after.
+///
+/// `chunk8` does not survive: at exact size its buffer *becomes*
+/// `out8` (and `chunk8` is left holding the old `out8`), and in sRGB
+/// mode alpha is premultiplied in place. The animated-GIF canvas,
+/// which persists across frames, therefore skips this at exact size;
+/// its resized frames still come here, where the in-place premultiply
+/// is an exact no-op: every canvas pixel is either opaque (drawn) or
+/// all zero (never drawn, or cleared).
 pub(super) fn resize_pixels_to(
     s: &mut Scratch,
     channels: usize,
@@ -527,9 +538,13 @@ pub(super) fn resize_pixels_to(
 ) -> Result<(usize, usize)> {
     let src_len = src_w * src_h * channels;
     if (src_w, src_h) == (dst_w, dst_h) {
-        scratch_u8(&mut s.out8, src_len);
-        let (chunk8, out8) = (&s.chunk8, &mut s.out8);
-        out8[..src_len].copy_from_slice(&chunk8[..src_len]);
+        // No resize: hand the decoded frame over instead of copying it.
+        // A copy kept two full frames resident (147 MB each at 7000^2
+        // RGB, issue #129). Every decoder sizes chunk8 to at least the
+        // frame, and every later chunk8 user re-sizes it through
+        // scratch_u8 or `resize`, so the shorter buffer swapped in is safe.
+        debug_assert!(s.chunk8.len() >= src_len);
+        std::mem::swap(&mut s.out8, &mut s.chunk8);
         return Ok((dst_w, dst_h));
     }
 

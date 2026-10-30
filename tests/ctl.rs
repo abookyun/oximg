@@ -286,6 +286,92 @@ fn get_cross_format_token() {
     assert_eq!(v["probe"]["content_type"], "image/webp");
 }
 
+/// RGBA8 samples and dims of a PNG file.
+fn png_rgba(path: &str) -> (u32, u32, Vec<u8>) {
+    let file = std::fs::File::open(path).unwrap_or_else(|e| panic!("open {path}: {e}"));
+    let mut r = png::Decoder::new(std::io::BufReader::new(file))
+        .read_info()
+        .unwrap();
+    let mut buf = vec![0u8; r.output_buffer_size().unwrap()];
+    let info = r.next_frame(&mut buf).unwrap();
+    assert_eq!(info.color_type, png::ColorType::Rgba, "{path}");
+    buf.truncate(info.buffer_size());
+    (info.width, info.height, buf)
+}
+
+/// A box larger than the source resizes nothing: the decoded frame is
+/// handed straight to the encoder (issue #129, no second full-frame
+/// copy). Through the server that must still be lossless into PNG,
+/// alpha included, keep every animation frame, and serve the other
+/// full-frame formats at their stored size.
+#[test]
+fn get_exact_size_hands_the_frame_through_unchanged() {
+    let out = std::env::temp_dir().join(format!("oximg-ctl-exact-{}.png", std::process::id()));
+    let out_s = out.to_str().unwrap();
+    let (code, v) = run(&[
+        "get",
+        "/resize/400/400/rgba.png",
+        "--expect",
+        "200",
+        "--write",
+        out_s,
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["content_type"], "image/png");
+    assert_eq!(
+        (&v["probe"]["width"], &v["probe"]["height"]),
+        (&200.into(), &150.into())
+    );
+    assert!(
+        png_rgba(out_s) == png_rgba(&fixture("rgba.png")),
+        "exact-size PNG must reproduce the source RGBA bytes"
+    );
+    let _ = std::fs::remove_file(&out);
+
+    let (code, v) = run(&["get", "/resize/400/400/alpha.webp@png", "--expect", "200"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(
+        (&v["probe"]["width"], &v["probe"]["height"]),
+        (&200.into(), &150.into())
+    );
+
+    // JPEG cannot carry alpha: the handed-over RGBA frame flattens.
+    let (code, v) = run(&["get", "/resize/400/400/rgba.png@jpg", "--expect", "200"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["content_type"], "image/jpeg");
+    assert_eq!(
+        (&v["probe"]["width"], &v["probe"]["height"]),
+        (&200.into(), &150.into())
+    );
+
+    // The animated-GIF loop keeps its canvas across frames instead.
+    let (code, v) = run(&["get", "/resize/400/400/anim.gif", "--expect", "200"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["probe"]["animation"]["frames"], 3, "{v}");
+    assert_eq!(
+        (&v["probe"]["width"], &v["probe"]["height"]),
+        (&120.into(), &90.into())
+    );
+}
+
+/// AVIF `irot` at exact size: the handed-over frame still rotates
+/// (stored 240x180 displays 180x240).
+#[cfg(feature = "avif")]
+#[test]
+fn get_exact_size_avif_still_rotates() {
+    let (code, v) = run(&[
+        "get",
+        "/resize/400/400/orient_irot1.avif@png",
+        "--expect",
+        "200",
+    ]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(
+        (&v["probe"]["width"], &v["probe"]["height"]),
+        (&180.into(), &240.into())
+    );
+}
+
 #[test]
 fn resize_shells_out_to_the_cli() {
     let out = std::env::temp_dir().join(format!("oximg-ctl-test-{}.jpg", std::process::id()));

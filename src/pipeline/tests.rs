@@ -898,6 +898,28 @@ fn webp_output_is_clamped_to_the_format_ceiling() {
     }
 }
 
+/// At exact size the full-frame paths hand the decoded frame to `out8`
+/// (issue #129): the staged frame is the only one, until a rotation
+/// grows the swapped-in `chunk8` back to a second. A resize keeps its
+/// own output frame and rotates into the frame-sized `chunk8`.
+#[test]
+fn decode_cost_prices_the_exact_size_hand_off() {
+    let p = &Resolved::new(&Params::default());
+    let rot = crate::meta::Orientation::from_rot_mirror(1, None);
+    let up = crate::meta::Orientation::UPRIGHT;
+    let frame = 400 * 300 * 3;
+    let cost = |dst: (usize, usize), o| {
+        DecodeCost::staged(400, 300, 3)
+            .with_full_frame_resize((400, 300), dst, 3, p)
+            .with_exact_size_rotation((400, 300), dst, 3, o)
+    };
+    assert_eq!(cost((400, 300), up).bytes(), frame);
+    assert_eq!(cost((400, 300), rot).bytes(), 2 * frame);
+    let resized = cost((200, 150), up).bytes();
+    assert!(resized > frame, "a resize holds its own output");
+    assert_eq!(cost((200, 150), rot).bytes(), resized);
+}
+
 /// Issue #17's core claim in arithmetic: at equal pixel counts the
 /// decode cost varies by more than an order of magnitude, so a pixel
 /// cap cannot bound memory while a byte estimate can. The shapes and
@@ -1362,11 +1384,12 @@ fn decode_cost_prices_each_png_arm() {
     );
     assert_eq!(c.output_bytes, dst * 9);
 
-    // Exact size: `chunk8` copied to `out8`, no resize buffers.
+    // Exact size: `chunk8` handed to `out8` (issue #129), no resize
+    // buffers and no second frame.
     let c = cost_of(&rgb, sized(320, 240));
     assert_eq!(
         (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
-        (src * 3, 0, src * 3)
+        (src * 3, 0, 0)
     );
 
     // RGBA takes the general arm: staged, premultiplied into `src16`.
@@ -1474,7 +1497,8 @@ fn decode_cost_prices_dav1d_next_to_the_frame() {
     let c = cost_of(&avif, sized(320, 240));
     let src = 320 * 240;
     assert_eq!(c.staged_bytes, src * 4 + src * 12);
-    assert_eq!((c.resize_input_bytes, c.output_bytes), (0, src * 4));
+    // Exact size: the frame is handed to `out8` (issue #129).
+    assert_eq!((c.resize_input_bytes, c.output_bytes), (0, 0));
 }
 
 /// Issue #22: a caller-held source buffer is resident for the whole
@@ -1735,6 +1759,181 @@ fn truncated_in_memory_source_is_still_too_short() {
         format!("{e:#}").contains("source too short"),
         "unexpected error: {e:#}"
     );
+}
+
+/// Deterministic noise frame: no two neighbors alike, so a dropped,
+/// shifted or stale pixel cannot pass a byte-for-byte comparison.
+fn noise_px(w: usize, h: usize, channels: usize, seed: u32) -> Vec<u8> {
+    let mut x = seed;
+    (0..w * h * channels)
+        .map(|_| {
+            x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+/// Lossless PNG of `px`, optionally carrying an eXIf orientation.
+fn png_of(px: &[u8], w: usize, h: usize, channels: usize, orientation: Option<u16>) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut info = png::Info::with_size(w as u32, h as u32);
+    if let Some(o) = orientation {
+        // Big-endian TIFF with a single Orientation (0x0112) entry.
+        let mut tiff = b"MM\0\x2a\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01".to_vec();
+        tiff.extend_from_slice(&o.to_be_bytes());
+        tiff.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        info.exif_metadata = Some(std::borrow::Cow::Owned(tiff));
+    }
+    let mut enc = png::Encoder::with_info(&mut out, info).unwrap();
+    enc.set_color(if channels == 4 {
+        png::ColorType::Rgba
+    } else {
+        png::ColorType::Rgb
+    });
+    enc.set_depth(png::BitDepth::Eight);
+    let mut wr = enc.write_header().unwrap();
+    wr.write_image_data(px).unwrap();
+    wr.finish().unwrap();
+    out
+}
+
+/// (width, height, 8-bit samples) of a PNG the pipeline wrote.
+fn png_pixels(bytes: &[u8]) -> (usize, usize, Vec<u8>) {
+    let mut r = png::Decoder::new(std::io::Cursor::new(bytes))
+        .read_info()
+        .unwrap();
+    let mut buf = vec![0u8; r.output_buffer_size().unwrap()];
+    let info = r.next_frame(&mut buf).unwrap();
+    buf.truncate(info.buffer_size());
+    (info.width as usize, info.height as usize, buf)
+}
+
+/// PNG source through the full-frame path into a lossless PNG target.
+fn png_to_png(s: &mut Scratch, src: &[u8], max: u32) -> (usize, usize, Vec<u8>) {
+    let out = formats::process_png(s, src, ImageFormat::Png, &rbox(max, max)).unwrap();
+    png_pixels(&out)
+}
+
+/// At exact size the decoded frame is handed to `out8` rather than
+/// copied (issue #129): the pixels must come through untouched — alpha
+/// included, colors under transparent pixels included, since nothing
+/// premultiplies without a resize — and only one frame-sized buffer
+/// may stay resident in scratch.
+#[test]
+fn exact_size_png_passes_pixels_through_without_a_second_frame() {
+    let (w, h) = (97, 61);
+    for channels in [3, 4] {
+        let px = noise_px(w, h, channels, 7 + channels as u32);
+        let mut s = Scratch::default();
+        let (ow, oh, got) = png_to_png(&mut s, &png_of(&px, w, h, channels, None), 4096);
+        assert_eq!((ow, oh), (w, h), "ch={channels}");
+        assert!(got == px, "ch={channels}: exact size must be lossless");
+        let frame = w * h * channels;
+        assert!(s.out8.len() >= frame, "ch={channels}: out8 holds the frame");
+        assert!(
+            s.chunk8.len() < frame,
+            "ch={channels}: chunk8 must not keep a second copy ({} bytes)",
+            s.chunk8.len()
+        );
+    }
+}
+
+/// Exact size with an eXIf rotation: the handed-over frame rotates
+/// into the short buffer swapped back into `chunk8`, which must grow
+/// to fit. Orientation 6 displays stored (x, y) at (sh-1-y, x).
+#[test]
+fn exact_size_oriented_png_rotates_the_handed_over_frame() {
+    let (sw, sh) = (53, 31);
+    for channels in [3, 4] {
+        let px = noise_px(sw, sh, channels, 11 + channels as u32);
+        let mut s = Scratch::default();
+        let (ow, oh, got) = png_to_png(&mut s, &png_of(&px, sw, sh, channels, Some(6)), 4096);
+        assert_eq!((ow, oh), (sh, sw), "ch={channels}: axes swap");
+        let mut want = vec![0u8; px.len()];
+        for y in 0..sh {
+            for x in 0..sw {
+                let d = (x * ow + (sh - 1 - y)) * channels;
+                let o = (y * sw + x) * channels;
+                want[d..d + channels].copy_from_slice(&px[o..o + channels]);
+            }
+        }
+        assert!(got == want, "ch={channels}: rotated pixels");
+    }
+}
+
+/// Consecutive exact-size requests on one worker must not settle at
+/// two frames: scratch is grow-only and kept per thread, so without
+/// the request-start reclaim the second decode allocates a new frame
+/// into `chunk8` while `out8` still holds the first one.
+#[test]
+fn consecutive_exact_size_requests_keep_one_frame() {
+    let (w, h) = (300, 200);
+    let frame = w * h * 3;
+    let png = png_of(&noise_px(w, h, 3, 11), w, h, 3, None);
+    let exact = Params {
+        output: Some(ImageFormat::Png),
+        ..sized(4096, 4096)
+    };
+    for i in 0..3 {
+        process(&png, &exact).unwrap();
+        SCRATCH.with(|s| {
+            let s = s.borrow();
+            let (c, o) = (s.chunk8.capacity(), s.out8.capacity());
+            assert!(
+                c.min(o) < frame,
+                "request {i}: chunk8 {c} and out8 {o} both hold a {frame}-byte frame"
+            );
+        });
+    }
+}
+
+/// The same for `decode_and_resize`, the other entry point that borrows
+/// `SCRATCH`: a CMYK JPEG stages the whole frame and hands it over at
+/// exact size.
+#[test]
+fn consecutive_exact_size_decode_and_resize_keeps_one_frame() {
+    let jpeg = read_fixture("cmyk_icc.jpg");
+    for i in 0..3 {
+        let (_, w, h) = decode_and_resize(&jpeg, 4096, 4096, 1).unwrap();
+        SCRATCH.with(|s| {
+            let s = s.borrow();
+            let (c, o) = (s.chunk8.capacity(), s.out8.capacity());
+            assert!(
+                c.min(o) < w * h * 3,
+                "request {i}: chunk8 {c} and out8 {o} both hold a {w}x{h} frame"
+            );
+        });
+    }
+}
+
+/// Scratch survives across requests on a worker thread, and after an
+/// exact-size request `chunk8` is whatever `out8` held before — often
+/// far shorter than the frame. Every later request must size it again
+/// rather than trust its length: interleave exact, resized and
+/// oriented requests on one scratch and compare each against a fresh
+/// one.
+#[test]
+fn exact_size_handoff_leaves_scratch_reusable() {
+    let rgb = png_of(&noise_px(120, 80, 3, 1), 120, 80, 3, None);
+    let rgba = png_of(&noise_px(64, 90, 4, 2), 64, 90, 4, None);
+    let oriented = png_of(&noise_px(70, 40, 3, 3), 70, 40, 3, Some(8));
+    let requests: [(&[u8], u32); 6] = [
+        (&rgb, 4096),
+        (&rgba, 32),
+        (&oriented, 4096),
+        (&rgba, 4096),
+        (&rgb, 50),
+        (&rgb, 4096),
+    ];
+    let mut shared = Scratch::default();
+    for (i, (src, max)) in requests.iter().enumerate() {
+        let got = png_to_png(&mut shared, src, *max);
+        let want = png_to_png(&mut Scratch::default(), src, *max);
+        assert!(
+            got == want,
+            "request {i} (max {max}) differs on reused scratch"
+        );
+    }
 }
 
 /// Decode a PNG to its 8-bit pixels and list its IDAT chunk lengths.
