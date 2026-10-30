@@ -475,25 +475,23 @@ const PROBE_FIRST_READ: usize = 64 << 10;
 /// assert_eq!((w, h), (200, 150));
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub fn probe_reader<R: std::io::Read>(reader: R) -> Result<(ImageFormat, usize, usize), Error> {
-    probe_reader_inner(reader).map_err(|e| Error::classify(e, false))
-}
-
-fn probe_reader_inner<R: std::io::Read>(mut reader: R) -> Result<(ImageFormat, usize, usize)> {
+pub fn probe_reader<R: std::io::Read>(mut reader: R) -> Result<(ImageFormat, usize, usize), Error> {
     use std::io::Read as _;
     let mut buf = Vec::new();
     let mut want = PROBE_FIRST_READ;
     loop {
         let missing = (want - buf.len()) as u64;
+        // A read failure is the source's, never bad image data, so it is
+        // classified apart from the parser's errors.
         reader
             .by_ref()
             .take(missing)
             .read_to_end(&mut buf)
-            .context("read source")?;
+            .map_err(Error::source_read)?;
         let eof = buf.len() < want;
         match probe_inner(&buf) {
             Err(_) if !eof => want *= 2,
-            result => return result,
+            result => return result.map_err(|e| Error::classify(e, false)),
         }
     }
 }

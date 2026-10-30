@@ -17,7 +17,8 @@ HTTP interface without notice.
   fails short of EOF. A JPEG with 131 KB of APP2 ahead of its frame
   header reads 256 KiB of a 4 MiB file. A failure is reported once the
   whole source is read, so the answer is always `probe`'s on the full
-  bytes.
+  bytes. A failing reader is `SourceUnreadable` (or `SourceNotFound` /
+  `SourceTooLarge`), never `Undecodable`.
 
 ### Changed
 

@@ -666,14 +666,53 @@ fn probe_reader_reports_the_error_of_the_whole_source() {
 
 #[test]
 fn probe_reader_classifies_a_read_failure() {
-    struct Failing;
+    use std::io::ErrorKind as Io;
+    /// Serves `ok` bytes of a valid JPEG prefix, then fails, so the
+    /// failure lands both on the first read and on a later one.
+    struct Failing {
+        bytes: Vec<u8>,
+        ok: usize,
+        kind: Io,
+    }
     impl std::io::Read for Failing {
-        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            if self.ok == 0 {
+                return Err(std::io::Error::new(self.kind, "reader detail"));
+            }
+            let n = out.len().min(self.ok);
+            let start = self.bytes.len() - self.ok;
+            out[..n].copy_from_slice(&self.bytes[start..start + n]);
+            self.ok -= n;
+            Ok(n)
         }
     }
-    let err = probe_reader(Failing).unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::SourceUnreadable);
+    // Header behind 131 KB of APP2, so the first 64 KiB parse fails and
+    // the reader is asked again.
+    let bytes = jpeg_with_padding(2, 0);
+    for (kind, want) in [
+        (Io::PermissionDenied, ErrorKind::SourceUnreadable),
+        (Io::Other, ErrorKind::SourceUnreadable),
+        (Io::TimedOut, ErrorKind::SourceUnreadable),
+        (Io::ConnectionReset, ErrorKind::SourceUnreadable),
+        (Io::UnexpectedEof, ErrorKind::SourceUnreadable),
+        (Io::NotFound, ErrorKind::SourceNotFound),
+        (Io::FileTooLarge, ErrorKind::SourceTooLarge),
+    ] {
+        for ok in [0, 64 << 10] {
+            let err = probe_reader(Failing {
+                bytes: bytes.clone(),
+                ok,
+                kind,
+            })
+            .unwrap_err();
+            assert_eq!(err.kind(), want, "{kind:?} after {ok} bytes");
+            // The reader's own error survives as the cause.
+            let cause = std::error::Error::source(&err)
+                .and_then(|c| c.downcast_ref::<std::io::Error>())
+                .unwrap_or_else(|| panic!("{kind:?}: no io cause in {err:#}"));
+            assert_eq!(cause.kind(), kind);
+        }
+    }
 }
 
 #[test]
