@@ -16,7 +16,13 @@ trap 'rm -rf "$OUT"' EXIT
 mkdir -p "$FX"
 
 # The issue's repro inputs, generated once and kept under target/.
-# -seed must come before plasma:fractal, or the image is random.
+# -seed must come before plasma:fractal, or the image is random. The
+# stamp names the generator: inputs cached by an older one (unseeded,
+# so different on every host) are regenerated.
+STAMP=$FX/.inputs-seeded-v1
+if [ ! -f "$STAMP" ]; then
+  rm -f "$FX"/huge_8000.jpg "$FX"/raw_7000.png "$FX"/photo_7000.jpg "$FX"/photo_7000.png
+fi
 if [ ! -f "$FX/huge_8000.jpg" ]; then
   magick -seed 7 -size 8000x8000 plasma:fractal "$FX/a.png"
   magick "$FX/a.png" -quality 85 "$FX/huge_8000.jpg"
@@ -27,6 +33,7 @@ if [ ! -f "$FX/photo_7000.png" ]; then
   magick "$FX/raw_7000.png" -quality 85 "$FX/photo_7000.jpg"
   magick "$FX/photo_7000.jpg" "$FX/photo_7000.png"
 fi
+touch "$STAMP"
 
 # A failed run must return non-zero: time still writes its rusage then,
 # and GNU time adds a "Command exited with non-zero status" line first.
