@@ -93,45 +93,29 @@ pub(super) fn process_png<R: std::io::Read>(
             // rather than teaching the row-streaming path to rotate.
             && orientation.is_upright()
         {
-            let fwd = fwd_lut();
-            // Fully filled row by row; the row-count check below rejects
-            // truncated streams before the buffer is consumed.
-            scratch_u16(&mut s.src16, src_w * src_h * 3);
-            let mut y = 0usize;
-            while let Some(row) = png_reader.next_row().context("decode PNG")? {
-                let dst = &mut s.src16[y * src_w * 3..(y + 1) * src_w * 3];
-                for (d, &b) in dst.iter_mut().zip(row.data()) {
-                    *d = fwd[b as usize];
-                }
-                y += 1;
-            }
-            anyhow::ensure!(y == src_h, "PNG row count mismatch");
-            let t_decode = t0.elapsed();
-            let t1 = crate::clock::Instant::now();
-            scratch_u16(&mut s.dst16, dst_w * dst_h * 3);
-            resize_bands(
-                u16_as_bytes(&s.src16[..src_w * src_h * 3]),
-                src_w,
-                src_h,
-                u16_as_bytes_mut(&mut s.dst16[..dst_w * dst_h * 3]),
-                dst_w,
-                dst_h,
-                PixelType::U16x3,
+            let stream = bands_use_stream_kernel(PixelType::U16x3, p.parallel, dst_h);
+            // Field borrows: the decoder still borrows `s.srcbuf`.
+            let bufs = LinearBufs {
+                src16: &mut s.src16,
+                dst16: &mut s.dst16,
+                out8: &mut s.out8,
+                resizer: &mut s.resizer,
+            };
+            let streamed = png_rgb8_linear_resize(
+                bufs,
+                &mut png_reader,
+                (src_w, src_h),
+                (dst_w, dst_h),
                 p.parallel,
-                &mut s.resizer,
+                stream,
             )?;
-            let back = back_lut();
-            let out = scratch_u8(&mut s.out8, dst_w * dst_h * 3);
-            for (d, &v) in out.iter_mut().zip(&s.dst16[..dst_w * dst_h * 3]) {
-                *d = back[v as usize];
-            }
-            let t_resize = t1.elapsed();
+            let t_resize = t0.elapsed();
             let t2 = crate::clock::Instant::now();
             let out = encode_output(s, dst_w, dst_h, 3, target, p, icc.as_deref());
             if timing {
+                let how = if streamed { "streamed" } else { "fused" };
                 eprintln!(
-                    "timing png(fused) decode+fwd({src_w}x{src_h})={:.1}ms resize+back={:.1}ms encode={:.1}ms",
-                    t_decode.as_secs_f64() * 1e3,
+                    "timing png({how}) decode+fwd+resize+back({src_w}x{src_h})={:.1}ms encode={:.1}ms",
                     t_resize.as_secs_f64() * 1e3,
                     t2.elapsed().as_secs_f64() * 1e3
                 );
@@ -178,6 +162,97 @@ pub(super) fn process_png<R: std::io::Read>(
         );
     }
     out
+}
+
+/// The [`Scratch`] buffers [`png_rgb8_linear_resize`] writes, borrowed
+/// field by field while the PNG decoder holds `srcbuf`.
+pub(super) struct LinearBufs<'a> {
+    pub(super) src16: &'a mut Vec<u16>,
+    pub(super) dst16: &'a mut Vec<u16>,
+    pub(super) out8: &'a mut Vec<u8>,
+    pub(super) resizer: &'a mut Option<Resizer>,
+}
+
+/// The linear-light resize of a plain RGB8, non-interlaced PNG into
+/// `out8[..dst_w * dst_h * 3]`, reading the decoder's remaining rows.
+/// Each row is sRGB->linear LUT-mapped as it is decoded.
+///
+/// With `stream` (see [`bands_use_stream_kernel`]) the mapped rows go
+/// straight into the row-push kernel that `resize_bands` would have run
+/// over the staged frame, so only one source row plus the kernel's
+/// window ring is resident: bounded by the output and the filter
+/// support, not the source (issue #129: 294 MB of u16 staging for a
+/// 7000x7000 source, even for a thumbnail). The kernel's full-frame
+/// driver pushes exactly these rows in this order, so the bytes match.
+/// Otherwise the frame is staged as u16 in `src16` and resized by
+/// `resize_bands` (band-parallel, pic-scale on x86-64, fir).
+///
+/// Every row is decoded either way: a truncated or corrupt tail fails
+/// the request before anything is encoded. Returns whether it streamed.
+pub(super) fn png_rgb8_linear_resize<R: std::io::BufRead + std::io::Seek>(
+    s: LinearBufs<'_>,
+    png_reader: &mut png::Reader<R>,
+    (src_w, src_h): (usize, usize),
+    (dst_w, dst_h): (usize, usize),
+    parallel: usize,
+    stream: bool,
+) -> Result<bool> {
+    let fwd = fwd_lut();
+    let back = back_lut();
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    if stream
+        && let Ok(mut resizer) =
+            crate::resize_kernel::StreamResize::<FuseKernel>::new(src_w, src_h, dst_w, dst_h, 3)
+    {
+        // One mapped row, reused; every element is written per row.
+        let row16 = scratch_u16(s.src16, src_w * 3);
+        let out = scratch_u8(s.out8, dst_w * dst_h * 3);
+        let mut y = 0usize;
+        while let Some(row) = png_reader.next_row().context("decode PNG")? {
+            for (d, &b) in row16.iter_mut().zip(row.data()) {
+                *d = fwd[b as usize];
+            }
+            resizer.push_row(row16, |oy, o| {
+                for (d, &v) in out[oy * dst_w * 3..(oy + 1) * dst_w * 3].iter_mut().zip(o) {
+                    *d = back[v as usize];
+                }
+            });
+            y += 1;
+        }
+        anyhow::ensure!(y == src_h, "PNG row count mismatch");
+        // Every source row arrived, so every window completed.
+        debug_assert_eq!(resizer.rows_emitted(), dst_h);
+        return Ok(true);
+    }
+    // Fully filled row by row; the row-count check below rejects
+    // truncated streams before the buffer is consumed.
+    scratch_u16(s.src16, src_w * src_h * 3);
+    let mut y = 0usize;
+    while let Some(row) = png_reader.next_row().context("decode PNG")? {
+        let dst = &mut s.src16[y * src_w * 3..(y + 1) * src_w * 3];
+        for (d, &b) in dst.iter_mut().zip(row.data()) {
+            *d = fwd[b as usize];
+        }
+        y += 1;
+    }
+    anyhow::ensure!(y == src_h, "PNG row count mismatch");
+    scratch_u16(s.dst16, dst_w * dst_h * 3);
+    resize_bands(
+        u16_as_bytes(&s.src16[..src_w * src_h * 3]),
+        src_w,
+        src_h,
+        u16_as_bytes_mut(&mut s.dst16[..dst_w * dst_h * 3]),
+        dst_w,
+        dst_h,
+        PixelType::U16x3,
+        parallel,
+        s.resizer,
+    )?;
+    let out = scratch_u8(s.out8, dst_w * dst_h * 3);
+    for (d, &v) in out.iter_mut().zip(&s.dst16[..dst_w * dst_h * 3]) {
+        *d = back[v as usize];
+    }
+    Ok(false)
 }
 
 /// The larger of the two fits a source could take once its orientation

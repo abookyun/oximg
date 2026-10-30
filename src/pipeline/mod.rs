@@ -1213,6 +1213,29 @@ fn u16_as_bytes_mut(buf: &mut [u16]) -> &mut [u8] {
     unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast(), buf.len() * 2) }
 }
 
+/// Whether [`resize_bands`] runs these arguments through the in-tree
+/// row-streaming kernel ([`crate::resize_kernel::resize_u16`] over
+/// [`fuse::FuseKernel`]). That driver only pushes source rows into a
+/// [`crate::resize_kernel::StreamResize`], so a caller that can produce
+/// the source row by row may stream it itself — same operations, same
+/// bytes — without staging the whole frame. True on aarch64 only:
+/// x86-64 keeps pic-scale for U16x3 (full-frame), and band-parallel
+/// requests and the fir escape hatch stay full-frame everywhere.
+#[cfg_attr(not(target_arch = "aarch64"), allow(unused_variables))]
+fn bands_use_stream_kernel(px: PixelType, threads: usize, dst_h: usize) -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        (threads <= 1 || dst_h < 2 * threads)
+            && matches!(px, PixelType::U16x3 | PixelType::U16x4)
+            && !crate::config::config().fir_backend
+            && std::arch::is_aarch64_feature_detected!("neon")
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        false
+    }
+}
+
 /// Split dst into row bands; each thread does a coordinate-consistent
 /// partial resize via fir's crop box. The crop only affects coordinate
 /// mapping — kernel taps still sample the full src, so band seams match
@@ -1262,10 +1285,7 @@ fn resize_bands(
             }
         }
         #[cfg(target_arch = "aarch64")]
-        if matches!(px, PixelType::U16x3 | PixelType::U16x4)
-            && !crate::config::config().fir_backend
-            && std::arch::is_aarch64_feature_detected!("neon")
-        {
+        if bands_use_stream_kernel(px, threads, dst_h) {
             return crate::resize_neon::resize_u16_neon(
                 src_bytes,
                 dec_w,
