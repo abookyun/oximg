@@ -499,10 +499,13 @@ pub(super) fn resize_pixels_oriented(
 /// linear-light path as JPEG; alpha images are premultiplied before
 /// resampling and unpremultiplied after.
 ///
-/// `chunk8` is consumed: at exact size its buffer *becomes* `out8`
-/// (and `chunk8` is left holding the old `out8`), and in sRGB mode
-/// alpha is premultiplied in place. A caller that needs the source
-/// afterwards (the animated-GIF canvas) must not route it through here.
+/// `chunk8` does not survive: at exact size its buffer *becomes*
+/// `out8` (and `chunk8` is left holding the old `out8`), and in sRGB
+/// mode alpha is premultiplied in place. The animated-GIF canvas,
+/// which persists across frames, therefore skips this at exact size;
+/// its resized frames still come here, where the in-place premultiply
+/// is an exact no-op: every canvas pixel is either opaque (drawn) or
+/// all zero (never drawn, or cleared).
 pub(super) fn resize_pixels_to(
     s: &mut Scratch,
     channels: usize,
