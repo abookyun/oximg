@@ -12,6 +12,10 @@ HTTP interface without notice.
 
 ### Added
 
+- **`oximg-ctl` probes report a JPEG's frame type.** A JPEG body or
+  file gets `probe.jpeg.{sof,progressive}` (the SOFn number: 0
+  baseline, 1 extended sequential, 2 progressive), so a proof of which
+  scan layout the encoder chose needs no second tool.
 - **`pipeline::probe_reader` reads a header from a reader** ([#134]),
   taking only what the header needs: 64 KiB, doubled while the probe
   fails short of EOF. A JPEG with 131 KB of APP2 ahead of its frame
