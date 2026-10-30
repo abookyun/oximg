@@ -10,6 +10,21 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+### Changed
+
+- **A JPEG re-encoded as JPEG at its own size no longer holds the whole
+  frame** ([#129]). When the box is at least the source's size (and
+  `oximg resize … 0 0`), upright RGB and grayscale JPEGs now stream
+  decoded rows into the encoder in 16-row bands. This used to buffer a
+  3-byte-per-pixel frame. Peak RSS for an 8000 × 8000 JPEG on an M2
+  Max, base → now: 237 → 55 MiB sequential
+  (`OXIMG_JPEG_PROGRESSIVE=0`), 599 → 418 MiB progressive (the
+  default), 561 → 379 MiB with `--preset fast`. The output bytes are
+  unchanged. Oriented and CMYK sources still buffer the frame, because
+  rotation and the CMYK conversion need all of it.
+
+[#129]: https://github.com/oximg/oximg/issues/129
+
 ## [0.17.0] - 2026-10-26
 
 Private S3 buckets as an image source ([#11], [#86], [#88]):

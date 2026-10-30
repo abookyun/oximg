@@ -1269,3 +1269,180 @@ fn truncated_in_memory_source_is_still_too_short() {
         "unexpected error: {e:#}"
     );
 }
+
+/// The exact-size JPEG branch both ways: `jpeg_out` streams decoder
+/// bands into the encoder (`Decoded::Encoded`), while the staged
+/// reference leaves the frame in out8 for the separate encode that
+/// `process_jpeg` used to run on every exact-size JPEG. Returns
+/// (streamed, staged); either side's decode error comes back as Err.
+fn exact_jpeg_both_ways(
+    jpeg: &[u8],
+    encoder: Encoder,
+    orientation: crate::meta::Orientation,
+    icc: Option<&[u8]>,
+) -> (Result<Decoded>, Result<Vec<u8>>) {
+    let p = Resolved::new(&Params {
+        encoder,
+        ..Params::default()
+    });
+    let run = |jpeg_out: bool| -> Result<(Decoded, Scratch)> {
+        crate::panic_guard::catch_unwind_as_error("test decode", || {
+            let mut s = Scratch::default();
+            let dec = Decompress::new_mem(jpeg)?;
+            let d = decode_resize_to(&mut s, dec, &p, orientation, Fuse::Off, icc, jpeg_out)?;
+            Ok((d, s))
+        })?
+    };
+    let staged = run(false).and_then(|(d, s)| match d {
+        Decoded::Pixels { dst_w, dst_h } => {
+            encode_with_icc(&s.out8[..dst_w * dst_h * 3], dst_w, dst_h, &p, icc)
+        }
+        _ => panic!("staged exact decode did not leave pixels"),
+    });
+    (run(true).map(|(d, _)| d), staged)
+}
+
+fn encoded(d: Decoded) -> Vec<u8> {
+    match d {
+        Decoded::Encoded(out) => out,
+        _ => panic!("exact-size JPEG did not stream"),
+    }
+}
+
+/// Streaming the exact-size frame into the encoder writes the bytes
+/// the staged frame encodes to: every preset, sequential jpegli (100 x
+/// 100 is under the default 12k-pixel sequential ceiling) and
+/// progressive (799 x 601), a frame shorter than one band, RGB and
+/// grayscale sources, and a profile spanning two APP2 chunks written
+/// ahead of the first scanline.
+#[test]
+fn exact_size_jpeg_streams_the_staged_bytes() {
+    let icc: Vec<u8> = (0..70_000u32).map(|i| (i % 251) as u8).collect();
+    for (w, h) in [(100, 100), (799, 601), (17, 1)] {
+        for gray in [false, true] {
+            let jpeg = make_test_jpeg(w, h, gray);
+            for encoder in [Encoder::Jpegli, Encoder::MozFast, Encoder::MozSmall] {
+                for icc in [None, Some(&icc[..])] {
+                    let (streamed, staged) = exact_jpeg_both_ways(
+                        &jpeg,
+                        encoder,
+                        crate::meta::Orientation::UPRIGHT,
+                        icc,
+                    );
+                    let out = encoded(streamed.unwrap());
+                    let case = format!("{w}x{h} gray={gray} {encoder:?} icc={}", icc.is_some());
+                    assert!(out == staged.unwrap(), "{case}");
+                    assert_eq!(
+                        crate::meta::scan_jpeg_meta(&mut &out[..], &mut Vec::new(), true)
+                            .icc
+                            .as_deref(),
+                        icc,
+                        "{case}: profile"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// What has work to do between decode and encode keeps the staged
+/// frame: an oriented source (the rotation needs the whole frame) and
+/// CMYK/YCCK (converted in a 4-channel buffer) come back as pixels
+/// even with a JPEG target, and a resize is not the exact branch.
+#[test]
+fn exact_size_jpeg_streams_only_upright_rgb_frames() {
+    let rotated = crate::meta::Orientation::from_rot_mirror(1, None);
+    assert!(!rotated.is_upright());
+    let jpeg = make_test_jpeg(64, 48, false);
+    let (streamed, _) = exact_jpeg_both_ways(&jpeg, Encoder::Jpegli, rotated, None);
+    assert!(matches!(
+        streamed.unwrap(),
+        Decoded::Pixels {
+            dst_w: 64,
+            dst_h: 48
+        }
+    ));
+    for ycck in [false, true] {
+        let cmyk = make_cmyk_jpeg(64, 48, ycck);
+        let (streamed, _) = exact_jpeg_both_ways(
+            &cmyk,
+            Encoder::Jpegli,
+            crate::meta::Orientation::UPRIGHT,
+            None,
+        );
+        assert!(
+            matches!(
+                streamed.unwrap(),
+                Decoded::Pixels {
+                    dst_w: 64,
+                    dst_h: 48
+                }
+            ),
+            "ycck={ycck}"
+        );
+    }
+    let mut s = Scratch::default();
+    let dec = Decompress::new_mem(&jpeg).unwrap();
+    let d = decode_resize_to(
+        &mut s,
+        dec,
+        &rbox(32, 32),
+        crate::meta::Orientation::UPRIGHT,
+        Fuse::Off,
+        None,
+        true,
+    )
+    .unwrap();
+    assert!(matches!(
+        d,
+        Decoded::Pixels {
+            dst_w: 32,
+            dst_h: 24
+        }
+    ));
+}
+
+/// A source cut mid-scan completes with libjpeg's fill data on both
+/// paths, to the same bytes; one whose bytes after the scan hold a
+/// malformed marker (read once the last row is decoded, so after the
+/// streaming encoder has taken every row) fails on both with the
+/// libjpeg message, and the streamed JPEG is discarded.
+#[test]
+fn exact_size_jpeg_streaming_keeps_truncation_and_error_behavior() {
+    let jpeg = make_test_jpeg(799, 601, false);
+    let cut = &jpeg[..jpeg.len() * 3 / 5];
+    let (streamed, staged) = exact_jpeg_both_ways(
+        cut,
+        Encoder::Jpegli,
+        crate::meta::Orientation::UPRIGHT,
+        None,
+    );
+    assert!(encoded(streamed.unwrap()) == staged.unwrap(), "truncated");
+
+    // A single-scan (baseline) source, so libjpeg decodes it lazily as
+    // rows are read, with a DHT of impossible length (3) before EOI.
+    let mut comp = Compress::new(ColorSpace::JCS_RGB);
+    comp.set_fastest_defaults();
+    comp.set_size(64, 48);
+    let mut started = comp.start_compress(Vec::new()).unwrap();
+    started.write_scanlines(&vec![128u8; 64 * 48 * 3]).unwrap();
+    let mut bad = started.finish().unwrap();
+    assert_eq!(bad[bad.len() - 2..], [0xFF, 0xD9]);
+    let eoi = bad.len() - 2;
+    bad.splice(eoi..eoi, [0xFF, 0xC4, 0x00, 0x03, 0x00]);
+    let (streamed, staged) = exact_jpeg_both_ways(
+        &bad,
+        Encoder::Jpegli,
+        crate::meta::Orientation::UPRIGHT,
+        None,
+    );
+    for (side, e) in [
+        ("streamed", streamed.err().expect("streamed must fail")),
+        ("staged", staged.expect_err("staged must fail")),
+    ] {
+        assert!(
+            format!("{e:#}").contains("libjpeg fatal error"),
+            "{side}: {e:#}"
+        );
+    }
+}

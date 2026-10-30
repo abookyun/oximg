@@ -84,6 +84,35 @@ fn decode_and_resize_inner(
     })
 }
 
+/// Rows per band on the exact-size streaming path: libjpeg's own
+/// per-call batch, so each band is one `read_scanlines_into` round.
+const EXACT_BAND_ROWS: usize = 16;
+
+/// Decode the remaining `w` x `h` RGB rows of `started` band by band
+/// into a JPEG encoder for `p` with `icc` written first. Decode errors
+/// keep the decoder's classification; encoder errors are the
+/// server's, as in `encode_output`.
+fn stream_exact_jpeg<R: std::io::BufRead>(
+    started: &mut jpeg_dec::DecompressStarted<R>,
+    w: usize,
+    h: usize,
+    p: &Resolved,
+    icc: Option<&[u8]>,
+) -> Result<Vec<u8>> {
+    let mut sink = JpegSink::start(w, h, p, icc).context(ServerFault)?;
+    let mut band = vec![0u8; w * 3 * EXACT_BAND_ROWS.min(h)];
+    let mut y = 0;
+    while y < h {
+        let rows = EXACT_BAND_ROWS.min(h - y);
+        let rows8 = started
+            .read_scanlines_into(&mut band[..w * 3 * rows])
+            .context("decode failed")?;
+        sink.write_rows(rows8).context(ServerFault)?;
+        y += rows;
+    }
+    sink.finish().context(ServerFault)
+}
+
 /// Result of the JPEG decode stage: either resized pixels left in
 /// `Scratch::out8` for a separate encode, or — on the fused path — the
 /// finished JPEG bytes (decode overlapped with resize+encode).
@@ -153,17 +182,35 @@ fn raw_disabled() -> bool {
     false
 }
 
+/// [`decode_resize_to`] for a caller that takes the pixels: no
+/// exact-size JPEG streaming, since there is no JPEG to stream into.
 pub(super) fn decode_resize<R: std::io::BufRead>(
+    s: &mut Scratch,
+    dec: Decompress<R>,
+    p: &Resolved,
+    orientation: crate::meta::Orientation,
+    fuse: Fuse,
+    icc: Option<&[u8]>,
+) -> Result<Decoded> {
+    decode_resize_to(s, dec, p, orientation, fuse, icc, false)
+}
+
+pub(super) fn decode_resize_to<R: std::io::BufRead>(
     s: &mut Scratch,
     mut dec: Decompress<R>,
     p: &Resolved,
     orientation: crate::meta::Orientation,
     fuse: Fuse,
-    // The source's profile, dual-purpose by path: the fused jpegli
-    // encoder writes it ahead of its scanlines (the other fuse
-    // variants embed via their one-shot encoders), while the CMYK arm
-    // *consumes* it as the color-conversion input and never emits it.
+    // The source's profile, dual-purpose by path: the JPEG encoders
+    // started here (fused jpegli, exact-size streaming) write it ahead
+    // of their scanlines (the other fuse variants embed via their
+    // one-shot encoders), while the CMYK arm *consumes* it as the
+    // color-conversion input and never emits it.
     icc: Option<&[u8]>,
+    // The caller encodes `Decoded::Pixels` as JPEG with `p`'s encoder
+    // and `icc`: an exact-size upright frame may then be encoded here,
+    // streamed from the decoder (see the exact-size branch).
+    jpeg_out: bool,
 ) -> Result<Decoded> {
     let timing = crate::config::config().timing;
     let t0 = crate::clock::Instant::now();
@@ -360,6 +407,26 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
     let (dec_w, dec_h) = (started.width(), started.height());
     let row_bytes = dec_w * 3;
     let linear = p.linear_light && (dec_w, dec_h) != (dst_w, dst_h);
+
+    if (dec_w, dec_h) == (dst_w, dst_h) && jpeg_out && orientation.is_upright() {
+        // Decoded size is already the target size and the encoder is
+        // JPEG with nothing to do between decode and encode (CMYK
+        // returned above; rotation needs the whole frame): stream bands
+        // of rows from the decoder into the encoder instead of staging
+        // the frame in out8 — the frame is 3 B/px (183 MiB at 8000^2)
+        // that neither side needs. Both encoders consume rows one group
+        // at a time whatever the call boundaries, so the bytes are the
+        // ones the staged encode_output would write.
+        let out = stream_exact_jpeg(&mut started, dec_w, dec_h, p, icc)?;
+        started.finish().context("decode finish failed")?;
+        if timing {
+            eprintln!(
+                "timing decode({dec_w}x{dec_h})+encode={:.1}ms resize=0 (exact, streamed)",
+                t0.elapsed().as_secs_f64() * 1e3
+            );
+        }
+        return Ok(Decoded::Encoded(out));
+    }
 
     if (dec_w, dec_h) == (dst_w, dst_h) {
         // Decoded size is already the target size: output directly; a
@@ -784,7 +851,8 @@ pub(super) fn process_jpeg<R: std::io::BufRead>(
         } else {
             cross_fuse()
         };
-        match decode_resize(s, dec, p, orientation, fuse, icc_dec)? {
+        let jpeg_out = target == ImageFormat::Jpeg;
+        match decode_resize_to(s, dec, p, orientation, fuse, icc_dec, jpeg_out)? {
             Decoded::Encoded(out) => out,
             Decoded::Pixels { dst_w, dst_h } => {
                 let (dw, dh) = if orientation.is_upright() {
