@@ -937,7 +937,7 @@ pub(super) fn encode_with_icc(
 /// one row group at a time whatever the call boundaries, so a frame fed
 /// in bands encodes to the same bytes as one fed whole — which is what
 /// lets the exact-size JPEG path stream from the decoder with no frame
-/// buffer (see `decode_resize_to`).
+/// buffer (see `stream_exact_jpeg`).
 pub(super) enum JpegSink {
     Jpegli(JpegliEncoder),
     // Boxed: mozjpeg's cinfo is inline (~540 bytes) against jpegli's
