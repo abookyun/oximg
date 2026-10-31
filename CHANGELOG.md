@@ -119,6 +119,13 @@ HTTP interface without notice.
   the first row and discarded it, which was 85–98% of its time: 1 µs
   instead of 6–83 µs on the fixtures (Apple M2 Max; 5–66 µs on a Ryzen
   7 8745HS). Results are unchanged.
+- **On AWS, `s3://` follows a bucket to its region** ([#11]).
+  `AWS_REGION` now means what it means in the AWS SDKs: the default
+  region. ECS and EKS set it to the region they run in, which can differ
+  from the bucket's. When S3 answers 301 with the bucket's region, oximg
+  sends that bucket's requests there and logs it once at boot. Before,
+  boot stopped and asked to check `AWS_REGION`. STS uses `AWS_REGION`. A
+  custom `OXIMG_S3_ENDPOINT` is not affected.
 
 ### Fixed
 
