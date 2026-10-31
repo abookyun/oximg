@@ -1259,6 +1259,20 @@ pub(crate) fn resize_uses_fir(px: PixelType, threads: usize, dst_h: usize) -> bo
     }
 }
 
+/// Whether [`resize_bands`] runs these arguments through the in-tree
+/// row-streaming kernel ([`crate::resize_kernel::resize_u16`] over
+/// [`fuse::FuseKernel`]). That driver only pushes source rows into a
+/// [`crate::resize_kernel::StreamResize`], so a caller that can produce
+/// the source row by row may stream it itself — same operations, same
+/// bytes — without staging the whole frame. True on aarch64 only, and
+/// read off [`resize_uses_fir`] so the stream and the dispatch cannot
+/// disagree: x86-64 keeps pic-scale for U16x3 (full-frame), and
+/// band-parallel requests and the fir escape hatch stay full-frame
+/// everywhere.
+fn bands_use_stream_kernel(px: PixelType, threads: usize, dst_h: usize) -> bool {
+    cfg!(target_arch = "aarch64") && !resize_uses_fir(px, threads, dst_h)
+}
+
 /// Split dst into row bands; each thread does a coordinate-consistent
 /// partial resize via fir's crop box. The crop only affects coordinate
 /// mapping — kernel taps still sample the full src, so band seams match

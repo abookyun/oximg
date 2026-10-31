@@ -33,6 +33,19 @@ HTTP interface without notice.
   its `compressed` term is now 0 for a local PNG and the fetched
   buffer's size, counted once, for a remote one. A cap tuned against
   the old figure admits correspondingly larger PNGs.
+- **Downscaling a large RGB PNG holds far less memory on arm64**
+  ([#129]). The source is no longer staged as a full 16-bit frame
+  (294 MB for 7000×7000) before the resize: decoded rows stream into
+  the resize, so only a window of rows stays resident. `oximg resize`
+  of a 7000×7000 PNG into a 10×10 box peaks at 57 MiB instead of
+  337 MiB on an M2 Max (244 instead of 524 MiB for a lightly
+  compressed source, whose bytes are still held whole). Output is
+  byte-identical. It applies to opaque RGB sources (8- or 16-bit
+  truecolor, or a palette without transparency), non-interlaced and
+  upright, resized in linear light on one band (`OXIMG_PAR=1`, the
+  default, or outputs under two rows per band). amd64 keeps the
+  staged frame for now: its resize there has no row-by-row form, and
+  switching would change pixels.
 - **JPEG outputs above 16 MP stream through the encoder** ([#133]).
   jpegli held the whole image's coefficients (progressive) or tokens
   (optimized Huffman tables) until the end, so an 8000² re-encode

@@ -1366,6 +1366,27 @@ fn decode_cost_counts_the_frame_a_pixel_caller_keeps() {
     assert_eq!(c.output_bytes, 320 * 240 * 3);
 }
 
+/// A tall source squeezed to one row keeps a whole column in the row
+/// kernel's ring: one 16-float-padded row per source row (issue #129).
+/// A fitted per-side constant priced 40x32000 -> 1x1 at 4.6 MB against
+/// a 6.1 MB ring; the estimate must cover the ring wherever it streams.
+#[test]
+fn decode_cost_covers_the_stream_ring_of_a_tall_source() {
+    let tall = black_white_lines_png(40, 32_000, 3);
+    let c = cost_of(&tall, sized(1, 1));
+    if bands_use_stream_kernel(PixelType::U16x3, sized(1, 1).parallel, 1) {
+        let ring = 32_000 * 16 * 3 * 4;
+        assert!(
+            c.resize_input_bytes > ring,
+            "resize input {} must cover the {ring}-byte ring",
+            c.resize_input_bytes
+        );
+    } else {
+        // Staged: the whole linear-light frame.
+        assert!(c.resize_input_bytes >= 40 * 32_000 * 6);
+    }
+}
+
 /// Issue #130: the PNG arm is chosen from the header before the
 /// estimate runs, so the estimate prices that arm — not a staged frame
 /// the fused arm never allocates, nor a resize an exact-size request
@@ -1374,15 +1395,27 @@ fn decode_cost_counts_the_frame_a_pixel_caller_keeps() {
 fn decode_cost_prices_each_png_arm() {
     let (src, dst) = (320 * 240, 200 * 150);
 
-    // RGB8 with a reduction: the fused arm, rows straight into `src16`.
+    // RGB8 with a reduction: the fused arm. Where the row kernel runs
+    // (aarch64, one band; issue #129) rows stream into it, one mapped
+    // source row at a time, and `out8` is the only frame; elsewhere they
+    // land in `src16` for a full-frame resize into `dst16`.
     let rgb = black_white_lines_png(320, 240, 3);
     let c = cost_of(&rgb, sized(200, 200));
     assert_eq!(c.staged_bytes, 0);
-    assert_eq!(
-        c.resize_input_bytes,
-        src * 6 + fir_bytes(PixelType::U16x3, 150, 200 * 240 * 6)
-    );
-    assert_eq!(c.output_bytes, dst * 9);
+    if bands_use_stream_kernel(PixelType::U16x3, sized(200, 200).parallel, 150) {
+        let kernel =
+            crate::resize_kernel::StreamResize::<FuseKernel>::resident_bytes(320, 240, 200, 150, 3);
+        assert_eq!(
+            (c.resize_input_bytes, c.output_bytes),
+            (320 * 6 + kernel, dst * 3)
+        );
+    } else {
+        assert_eq!(
+            c.resize_input_bytes,
+            src * 6 + fir_bytes(PixelType::U16x3, 150, 200 * 240 * 6)
+        );
+        assert_eq!(c.output_bytes, dst * 9);
+    }
 
     // Exact size: `chunk8` handed to `out8` (issue #129), no resize
     // buffers and no second frame.
@@ -1788,6 +1821,259 @@ fn truncated_in_memory_source_is_still_too_short() {
         format!("{e:#}").contains("source too short"),
         "unexpected error: {e:#}"
     );
+}
+
+// ---- Streamed RGB8 PNG resize (issue #129) ----
+
+/// Deterministic noisy RGB8 frame (gradients + LCG noise), as a PNG.
+fn noisy_rgb_png(w: usize, h: usize) -> Vec<u8> {
+    let mut seed = 0x2545F491u32;
+    let mut px = Vec::with_capacity(w * h * 3);
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..3 {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let g = (x * 255 / w + y * 97 / h + c * 40) % 256;
+                px.push(((g + (seed >> 26) as usize) % 256) as u8);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, w as u32, h as u32);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header().unwrap().write_image_data(&px).unwrap();
+    out
+}
+
+/// PNG chunk CRC (ISO 3309), for hand-patched test streams.
+fn png_crc(bytes: &[u8]) -> u32 {
+    let mut c = 0xFFFF_FFFFu32;
+    for &b in bytes {
+        c ^= b as u32;
+        for _ in 0..8 {
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
+        }
+    }
+    !c
+}
+
+/// A well-formed PNG whose IHDR claims `h` rows while its (complete,
+/// checksummed) image data holds only `h - missing`: the decoder runs
+/// out of rows without a chunk-framing error.
+fn short_rgb_png(w: usize, h: usize, missing: usize) -> Vec<u8> {
+    let mut b = noisy_rgb_png(w, h - missing);
+    // IHDR: length at 8, type at 12, data at 16 (height is its second
+    // u32), CRC over type + 13 data bytes at 29.
+    b[20..24].copy_from_slice(&(h as u32).to_be_bytes());
+    let crc = png_crc(&b[12..29]);
+    b[29..33].copy_from_slice(&crc.to_be_bytes());
+    b
+}
+
+/// Run the hot-path helper on a PNG, from a fresh decoder positioned
+/// the way `process_png` leaves it.
+fn png_linear(
+    png_bytes: &[u8],
+    dst: (usize, usize),
+    parallel: usize,
+    stream: bool,
+) -> Result<(Vec<u8>, bool)> {
+    let mut d = png::Decoder::new(std::io::Cursor::new(png_bytes));
+    d.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut r = d.read_info()?;
+    let src = (r.info().width as usize, r.info().height as usize);
+    let (mut src16, mut dst16, mut out8, mut resizer) = (Vec::new(), Vec::new(), Vec::new(), None);
+    let streamed = super::formats::png_rgb8_linear_resize(
+        super::formats::LinearBufs {
+            src16: &mut src16,
+            dst16: &mut dst16,
+            out8: &mut out8,
+            resizer: &mut resizer,
+        },
+        &mut r,
+        src,
+        dst,
+        parallel,
+        stream,
+    )?;
+    out8.truncate(dst.0 * dst.1 * 3);
+    Ok((out8, streamed))
+}
+
+/// Width, height.
+type Dims = (usize, usize);
+
+/// (src, dst) shapes for the streamed PNG resize: tiny sources, output
+/// heights that do not divide the input, and extreme reductions down
+/// to a single row or column (a 7000-row window into one output row).
+const PNG_STREAM_SHAPES: &[(Dims, Dims)] = &[
+    ((2, 2), (1, 1)),
+    ((1, 3), (1, 2)),
+    ((97, 61), (13, 8)),
+    ((64, 48), (10, 7)),
+    ((33, 33), (32, 31)),
+    ((40, 7000), (3, 1)),
+    ((3000, 2), (7, 1)),
+    ((5, 7000), (1, 1)),
+];
+
+/// The streamed helper must produce exactly what the row kernel's
+/// full-frame driver produces over the staged u16 frame — which is
+/// what `resize_bands` runs for these requests on aarch64 — on every
+/// architecture that has the kernel.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+#[test]
+fn png_streamed_resize_matches_the_full_frame_kernel() {
+    // The arch cfg does not promise the CPU features: an x86-64 host
+    // without AVX2/FMA falls back to the staged path, correctly.
+    if !fuse_kernel_available() {
+        return;
+    }
+    for &((sw, sh), (dw, dh)) in PNG_STREAM_SHAPES {
+        let png_bytes = noisy_rgb_png(sw, sh);
+        let (got, streamed) = png_linear(&png_bytes, (dw, dh), 1, true).unwrap();
+        assert!(streamed, "{sw}x{sh}->{dw}x{dh} did not stream");
+
+        // Reference: stage the whole frame, resize it in one call.
+        let mut d = png::Decoder::new(std::io::Cursor::new(&png_bytes[..]));
+        d.set_transformations(png::Transformations::EXPAND);
+        let mut r = d.read_info().unwrap();
+        let mut px = vec![0u8; r.output_buffer_size().unwrap()];
+        r.next_frame(&mut px).unwrap();
+        let fwd = fwd_lut();
+        let src16: Vec<u16> = px.iter().map(|&b| fwd[b as usize]).collect();
+        let mut dst16 = vec![0u16; dw * dh * 3];
+        crate::resize_kernel::resize_u16::<FuseKernel>(
+            u16_as_bytes(&src16),
+            sw,
+            sh,
+            u16_as_bytes_mut(&mut dst16),
+            dw,
+            dh,
+            3,
+        )
+        .unwrap();
+        let back = back_lut();
+        let want: Vec<u8> = dst16.iter().map(|&v| back[v as usize]).collect();
+        assert!(got == want, "{sw}x{sh}->{dw}x{dh}: streamed bytes differ");
+    }
+}
+
+/// On aarch64 the streamed path replaces exactly the staged path it
+/// skips: same request, same bytes (issue #129's identity contract).
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn png_streamed_resize_matches_the_staged_path() {
+    for &((sw, sh), (dw, dh)) in PNG_STREAM_SHAPES {
+        let png_bytes = noisy_rgb_png(sw, sh);
+        let (staged, streamed) = png_linear(&png_bytes, (dw, dh), 1, false).unwrap();
+        assert!(!streamed);
+        let (got, _) = png_linear(&png_bytes, (dw, dh), 1, true).unwrap();
+        assert!(got == staged, "{sw}x{sh}->{dw}x{dh}: streamed != staged");
+    }
+}
+
+/// The stream gate is resize_bands' own kernel choice: only where it
+/// would run the row kernel (aarch64, one band, no fir override).
+#[test]
+fn bands_stream_kernel_gate() {
+    let streams = cfg!(target_arch = "aarch64") && !crate::config::config().fir_backend;
+    assert_eq!(bands_use_stream_kernel(PixelType::U16x3, 1, 500), streams);
+    // Too few rows to band: still one call.
+    assert_eq!(bands_use_stream_kernel(PixelType::U16x3, 4, 7), streams);
+    assert_eq!(bands_use_stream_kernel(PixelType::U16x4, 0, 10), streams);
+    // Band-parallel requests stay staged (fir bands).
+    assert!(!bands_use_stream_kernel(PixelType::U16x3, 4, 8));
+    assert!(!bands_use_stream_kernel(PixelType::U16x3, 2, 500));
+    // u8 pixels never reach the u16 kernel.
+    assert!(!bands_use_stream_kernel(PixelType::U8x3, 1, 500));
+}
+
+/// Decode a PNG to its raw (expanded) samples.
+fn decode_png_rgb(png_bytes: &[u8]) -> Vec<u8> {
+    let mut d = png::Decoder::new(std::io::Cursor::new(png_bytes));
+    d.set_transformations(png::Transformations::EXPAND);
+    let mut r = d.read_info().unwrap();
+    let mut px = vec![0u8; r.output_buffer_size().unwrap()];
+    let n = r.next_frame(&mut px).unwrap().buffer_size();
+    px.truncate(n);
+    px
+}
+
+/// Band-parallel requests keep the staged path, and their output.
+#[test]
+fn png_band_parallel_stays_staged() {
+    let png_bytes = noisy_rgb_png(97, 61);
+    let params = Params {
+        max_width: 40,
+        max_height: 40,
+        parallel: 2,
+        ..Params::default()
+    };
+    let (dw, dh) = fit_dims(97, 61, 40, 40);
+    let stream = bands_use_stream_kernel(PixelType::U16x3, params.parallel, dh);
+    assert!(!stream, "two bands of {dh} rows must not stream");
+    let (staged, streamed) = png_linear(&png_bytes, (dw, dh), params.parallel, stream).unwrap();
+    assert!(!streamed);
+    let (out, _) = process(&png_bytes, &params).unwrap();
+    assert!(decode_png_rgb(&out) == staged);
+}
+
+/// A stream that ends early fails the request on both paths with the
+/// same error — the streamed path has already emitted output rows by
+/// then, but nothing is encoded. Covers a framing-valid stream short of
+/// rows and a byte-truncated one.
+#[test]
+fn png_truncated_stream_fails_on_both_paths() {
+    let short = short_rgb_png(9, 12, 3);
+    let mut cut = noisy_rgb_png(64, 64);
+    cut.truncate(cut.len() / 2);
+    for (src, dst) in [(&short, (3, 4)), (&cut, (8, 8))] {
+        let staged = png_linear(src, dst, 1, false).unwrap_err();
+        let streamed = png_linear(src, dst, 1, true).unwrap_err();
+        assert_eq!(format!("{staged:#}"), format!("{streamed:#}"));
+        assert!(
+            format!("{streamed:#}").starts_with("decode PNG"),
+            "{streamed:#}"
+        );
+        // Through the pipeline: a client error, never an encoded image.
+        let e = process(
+            src,
+            &Params {
+                max_width: dst.0 as u32,
+                max_height: dst.1 as u32,
+                ..Params::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::Undecodable, "{e:#}");
+    }
+}
+
+/// Tiny PNG sources through `process`: a 1x1 is never resized (the hot
+/// path needs a size change), a 2x2 into a 1x1 box takes it.
+#[test]
+fn png_tiny_sources_resize() {
+    for (w, h, bx) in [(1, 1, 1), (2, 2, 1), (1, 3, 2)] {
+        let src = noisy_rgb_png(w, h);
+        let (out, fmt) = process(
+            &src,
+            &Params {
+                max_width: bx,
+                max_height: bx,
+                ..Params::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(fmt, ImageFormat::Png);
+        let (ew, eh) = fit_dims(w, h, bx, bx);
+        assert_eq!(decode_png_rgb(&out).len(), ew * eh * 3, "{w}x{h} in {bx}");
+    }
 }
 
 /// `ForwardOnly` answers position queries from its byte counter and

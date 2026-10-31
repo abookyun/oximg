@@ -3700,17 +3700,19 @@ fn oversize_413_names_the_limit_on_stderr() {
 fn decoded_bytes_cap_bounds_what_pixels_cannot() {
     let dir = std::env::temp_dir().join(format!("oximg-decbytes-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    // A wide-but-shallow PNG: 4000x800 = 3.2 MP, ~9.6 MB decoded at
-    // RGB8. Cheap to generate, and its estimate is far above the
-    // 1 MiB floor so a cap can straddle it.
+    // A wide-but-shallow PNG: 4000x800 = 3.2 MP, ~9.6 MB once widened
+    // to RGB8. Cheap to generate, and its estimate is far above the
+    // 1 MiB floor so a cap can straddle it. Grayscale, so it is staged
+    // on every architecture: an RGB8 downscale streams its rows on
+    // aarch64 (issue #129) and costs little more than its output there.
     let (w, h) = (4000u32, 800u32);
     let mut png_bytes = Vec::new();
     let mut enc = png::Encoder::new(&mut png_bytes, w, h);
-    enc.set_color(png::ColorType::Rgb);
+    enc.set_color(png::ColorType::Grayscale);
     enc.set_depth(png::BitDepth::Eight);
     let mut writer = enc.write_header().unwrap();
     writer
-        .write_image_data(&vec![96u8; (w * h * 3) as usize])
+        .write_image_data(&vec![96u8; (w * h) as usize])
         .unwrap();
     writer.finish().unwrap();
     std::fs::write(dir.join("wide.png"), &png_bytes).unwrap();
@@ -3734,11 +3736,10 @@ fn decoded_bytes_cap_bounds_what_pixels_cannot() {
         1.0,
         "the estimate is recorded even with no cap set"
     );
-    // 3.2 MP RGB8 takes the fused arm, which decodes rows straight
-    // into the 19.2 MB linear-light u16 resize input and never stages a
-    // u8 frame (issue #130) — the 32 MiB bucket holds it and the 16 MiB
-    // one does not. This histogram is what an operator reads a cap off,
-    // so its placement is the contract.
+    // The 9.6 MB staged frame plus the 19.2 MB linear-light u16 resize
+    // input: the 32 MiB bucket holds it and the 16 MiB one does not.
+    // This histogram is what an operator reads a cap off, so its
+    // placement is the contract.
     assert_eq!(
         metric(
             &body,
@@ -3916,7 +3917,19 @@ fn decoded_bytes_cap_reaches_every_source_path() {
     }
     writer.write_image_data(&rows).unwrap();
     writer.finish().unwrap();
-    std::fs::write(dir.join("big.png"), &png).unwrap();
+    // The PNG case itself as 8-bit grayscale, which is staged (widened
+    // to RGB) on every architecture; the RGB8 one streams on aarch64
+    // and is checked separately below.
+    let mut gray = Vec::new();
+    let mut enc = png::Encoder::new(&mut gray, w as u32, h as u32);
+    enc.set_color(png::ColorType::Grayscale);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut writer = enc.write_header().unwrap();
+    let luma: Vec<u8> = rows.as_chunks::<3>().0.iter().map(|p| p[0]).collect();
+    writer.write_image_data(&luma).unwrap();
+    writer.finish().unwrap();
+    std::fs::write(dir.join("big.png"), &gray).unwrap();
+    std::fs::write(dir.join("big_rgb.png"), &png).unwrap();
 
     let transcode = |target| {
         oximg::pipeline::process(
@@ -3991,6 +4004,15 @@ fn decoded_bytes_cap_reaches_every_source_path() {
         200,
         "a streaming source of identical pixels fits the same cap"
     );
+    // So does the RGB8 PNG where its rows stream into the row kernel
+    // (aarch64, one band; issue #129): one mapped row, the kernel's
+    // window state and the output. Elsewhere it stages `src16`.
+    let rgb_png = if cfg!(target_arch = "aarch64") {
+        200
+    } else {
+        413
+    };
+    assert_eq!(tight.status_of("/resize/100/100/big_rgb.png"), rgb_png);
 }
 
 /// The oriented fit, end to end (issue #130). The PNG estimate runs
@@ -4027,18 +4049,27 @@ fn oriented_sources_are_capped_on_their_own_fit() {
     assert_eq!((ow, oh), (1000, 250));
 
     // The rotated source is an exact-size re-encode: the staged frame,
-    // a copy into `out8` and the PNG encoder (twice the raw frame, its
-    // 256 KiB chunk buffer and three rows), 1.08 + 1.08 + 2.43 MB =
-    // 4.59 MB. The upright one takes the fused resize: `src16` 2.16 MB,
-    // `dst16` + `out8` 2.25 MB and the encoder 1.77 MB = 6.18 MB. A cap
-    // between the two serves the first and refuses the second, which
-    // only an estimate that knows each source's orientation can do.
+    // the frame its rotation grows `chunk8` back to (issue #129) and the
+    // PNG encoder (twice the raw frame, its 256 KiB chunk buffer and
+    // three rows), 1.08 + 1.08 + 2.43 MB = 4.59 MB. The upright one
+    // takes the fused resize: staged, `src16` 2.16 MB, `dst16` + `out8`
+    // 2.25 MB and the encoder 1.77 MB = 6.18 MB; streamed through the
+    // row kernel (aarch64, issue #129), one mapped row and the kernel's
+    // window state 0.22 MB, `out8` 0.75 MB and the encoder = 2.74 MB. A
+    // cap between the two serves one and refuses the other, which only
+    // an estimate that knows each source's orientation can do.
+    let streams = cfg!(target_arch = "aarch64");
+    let (cap, rotated, upright) = if streams {
+        (3_600_000, 413, 200)
+    } else {
+        (5_400_000, 200, 413)
+    };
     let capped = Server::start(&[
         ("IMAGES_DIR", images.clone()),
-        ("OXIMG_MAX_DECODED_BYTES", 5_400_000.to_string()),
+        ("OXIMG_MAX_DECODED_BYTES", cap.to_string()),
     ]);
-    assert_eq!(capped.status_of("/resize/1000/0/rotated.png"), 200);
-    assert_eq!(capped.status_of("/resize/1000/0/upright.png"), 413);
+    assert_eq!(capped.status_of("/resize/1000/0/rotated.png"), rotated);
+    assert_eq!(capped.status_of("/resize/1000/0/upright.png"), upright);
     // Above both, both serve.
     let generous = Server::start(&[
         ("IMAGES_DIR", images),
@@ -4108,15 +4139,17 @@ fn run_once(images: &str, envs: &[(&str, String)], path: &str) -> (u16, Vec<Stri
 fn expensive_requests_are_reported_without_being_refused() {
     let dir = std::env::temp_dir().join(format!("oximg-report-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    // 800x800 RGB: 1.9 MB staged plus 3.8 MB as the linear-light input.
+    // 800x800 grayscale, widened to RGB: 1.9 MB staged plus 3.8 MB as
+    // the linear-light input on every architecture (an RGB8 downscale
+    // streams its rows on aarch64, issue #129, and would cost far less).
     let (w, h) = (800u32, 800u32);
     let mut png = Vec::new();
     let mut enc = png::Encoder::new(&mut png, w, h);
-    enc.set_color(png::ColorType::Rgb);
+    enc.set_color(png::ColorType::Grayscale);
     enc.set_depth(png::BitDepth::Eight);
     let mut writer = enc.write_header().unwrap();
     writer
-        .write_image_data(&vec![55u8; (w * h * 3) as usize])
+        .write_image_data(&vec![55u8; (w * h) as usize])
         .unwrap();
     writer.finish().unwrap();
     std::fs::write(dir.join("costly.png"), &png).unwrap();
