@@ -63,6 +63,7 @@ fn run_jpeg_icc(jpeg: &[u8], fuse_quality: Option<f32>, icc: Option<&[u8]>) -> V
         crate::meta::Orientation::UPRIGHT,
         fuse,
         icc,
+        None,
     )
     .unwrap()
     {
@@ -136,6 +137,7 @@ fn run_jpeg_pixels(jpeg: &[u8], fuse: Fuse) -> Vec<u8> {
         crate::meta::Orientation::UPRIGHT,
         fuse,
         None,
+        None,
     )
     .unwrap()
     {
@@ -183,6 +185,7 @@ fn run_jpeg_avif_icc(jpeg: &[u8], yuv_fuse: bool, icc: Option<&[u8]>) -> Vec<u8>
         crate::meta::Orientation::UPRIGHT,
         fuse,
         None,
+        None,
     )
     .unwrap()
     {
@@ -213,7 +216,7 @@ fn preheated_session_bytes_match_serial_oriented_avif() {
     let run = |fuse: Fuse| -> Vec<u8> {
         let mut s = Scratch::default();
         let dec = Decompress::new_mem(&jpeg).unwrap();
-        match decode_resize(&mut s, dec, &rbox(320, 320), orientation, fuse, None).unwrap() {
+        match decode_resize(&mut s, dec, &rbox(320, 320), orientation, fuse, None, None).unwrap() {
             Decoded::PixelsSession {
                 dst_w,
                 dst_h,
@@ -306,6 +309,7 @@ fn fused_yuv_survives_truncated_sources() {
             Fuse::Yuv {
                 params: test_avif_params(),
             },
+            None,
             None,
         );
     }
@@ -502,6 +506,7 @@ fn fused_pixels_survive_truncated_sources() {
             crate::meta::Orientation::UPRIGHT,
             Fuse::Pixels,
             None,
+            None,
         );
     }
 }
@@ -530,6 +535,7 @@ fn fused_path_survives_truncated_sources() {
             crate::meta::Orientation::UPRIGHT,
             Fuse::Jpegli { quality: p.quality },
             None,
+            None,
         );
     }
 }
@@ -555,6 +561,207 @@ fn probe_display_matches_probe_on_unrotated_jpeg() {
     let a = probe(&bytes).unwrap();
     let b = probe_display(&bytes).unwrap();
     assert_eq!(a, b);
+}
+
+/// Counts what `probe_reader` pulled from its source.
+struct CountingReader<R> {
+    inner: R,
+    read: usize,
+}
+
+impl<R: std::io::Read> std::io::Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.read += n;
+        Ok(n)
+    }
+}
+
+fn probe_counting(bytes: &[u8]) -> (Result<(ImageFormat, usize, usize), Error>, usize) {
+    let mut r = CountingReader {
+        inner: bytes,
+        read: 0,
+    };
+    let got = probe_reader(&mut r);
+    (got, r.read)
+}
+
+/// Both probes' answers, comparable: an error by kind and full message.
+fn probe_outcome(
+    r: Result<(ImageFormat, usize, usize), Error>,
+) -> Result<(ImageFormat, usize, usize), String> {
+    r.map_err(|e| format!("{:?}: {:#}", e.kind(), e))
+}
+
+#[test]
+fn probe_reader_agrees_with_probe_on_every_fixture() {
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+    let mut seen = 0;
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !matches!(ext, "jpg" | "png" | "webp" | "gif" | "avif") {
+            continue;
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        let (got, read) = probe_counting(&bytes);
+        assert_eq!(
+            probe_outcome(got),
+            probe_outcome(probe(&bytes)),
+            "{}",
+            path.display()
+        );
+        // A header that fits the first read is all that gets read,
+        // except an AVIF's, which is read through EOF.
+        if bytes.len() > PROBE_FIRST_READ && probe(&bytes[..PROBE_FIRST_READ]).is_ok() {
+            let want = if ext == "avif" {
+                bytes.len()
+            } else {
+                PROBE_FIRST_READ
+            };
+            assert_eq!(read, want, "{}", path.display());
+        }
+        seen += 1;
+    }
+    assert!(seen >= 30, "only {seen} fixtures probed");
+}
+
+/// photo.jpg with `segments` maximum-size APP2 segments ahead of its
+/// frame header and `trailing` bytes after its EOI.
+fn jpeg_with_padding(segments: usize, trailing: usize) -> Vec<u8> {
+    let src = read_fixture("photo.jpg");
+    let mut out = src[..2].to_vec();
+    for _ in 0..segments {
+        out.extend_from_slice(&[0xFF, 0xE2, 0xFF, 0xFF]);
+        out.resize(out.len() + 0xFFFF - 2, 0);
+    }
+    out.extend_from_slice(&src[2..]);
+    out.resize(out.len() + trailing, 0);
+    out
+}
+
+#[test]
+fn probe_reader_stops_at_the_first_read_that_holds_the_header() {
+    let bytes = jpeg_with_padding(0, 4 << 20);
+    let (got, read) = probe_counting(&bytes);
+    assert_eq!(got.unwrap(), (ImageFormat::Jpeg, 200, 150));
+    assert_eq!(read, PROBE_FIRST_READ);
+}
+
+#[test]
+fn probe_reader_reads_past_metadata_larger_than_the_first_read() {
+    // ~131 KB of APP2 ahead of the frame header: 64 and 128 KiB fall
+    // short, 256 KiB holds it, and the 4 MiB behind it stay unread.
+    let bytes = jpeg_with_padding(2, 4 << 20);
+    let (got, read) = probe_counting(&bytes);
+    assert_eq!(got.unwrap(), (ImageFormat::Jpeg, 200, 150));
+    assert_eq!(read, 4 * PROBE_FIRST_READ);
+}
+
+#[test]
+fn probe_reader_reports_the_error_of_the_whole_source() {
+    // A short prefix of a good JPEG and a corrupt one fail alike, so a
+    // failure is final only at EOF, and then it is the full file's.
+    let mut bytes = jpeg_with_padding(0, 1 << 20);
+    bytes[2..200].fill(0x55);
+    let (got, read) = probe_counting(&bytes);
+    assert_eq!(read, bytes.len());
+    assert_eq!(probe_outcome(got), probe_outcome(probe(&bytes)));
+    assert!(probe(&bytes).is_err());
+}
+
+/// An animated AVIF whose `ispe` answers on the first 64 KiB, while a
+/// malformed box after them makes `probe` fail on the whole file: the
+/// size-0 `ipco` runs to EOF, so on a prefix its walk ends cleanly at
+/// the prefix's end, and on the full bytes it reaches the bad box.
+#[cfg(feature = "avif")]
+#[test]
+fn probe_reader_reads_an_avif_through_eof() {
+    fn bx(typ: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+        let size = u32::try_from(8 + payload.len()).unwrap();
+        [&size.to_be_bytes()[..], typ, payload].concat()
+    }
+    // Header of a box that extends to the end of its parent.
+    fn to_end(typ: &[u8; 4]) -> Vec<u8> {
+        [&[0u8; 4][..], typ].concat()
+    }
+    let mut bytes = [
+        bx(b"ftyp", b"avis\0\0\0\0avis"),
+        to_end(b"meta"),
+        vec![0; 4], // FullBox version/flags
+        bx(b"pitm", &[0, 0, 0, 0, 0, 1]),
+        to_end(b"iprp"),
+        // Item 1 → property 1 (the `ispe`), ahead of the size-0 `ipco`.
+        bx(b"ipma", &[0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1]),
+        to_end(b"ipco"),
+        bx(b"ispe", &[0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 48]),
+    ]
+    .concat();
+    let pad = (64 << 10) - bytes.len();
+    bytes.extend(bx(b"free", &vec![0; pad - 8]));
+    // A box declaring 4 bytes cannot frame its own 8-byte header.
+    bytes.extend([&4u32.to_be_bytes()[..], b"free"].concat());
+
+    assert_eq!(
+        probe(&bytes[..64 << 10]).unwrap(),
+        (ImageFormat::Avif, 64, 48)
+    );
+    let whole = probe(&bytes);
+    assert!(whole.is_err(), "{whole:?}");
+    let (got, read) = probe_counting(&bytes);
+    assert_eq!(probe_outcome(got), probe_outcome(whole));
+    assert_eq!(read, bytes.len());
+}
+
+#[test]
+fn probe_reader_classifies_a_read_failure() {
+    use std::io::ErrorKind as Io;
+    /// Serves `ok` bytes of a valid JPEG prefix, then fails, so the
+    /// failure lands both on the first read and on a later one.
+    struct Failing {
+        bytes: Vec<u8>,
+        ok: usize,
+        kind: Io,
+    }
+    impl std::io::Read for Failing {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            if self.ok == 0 {
+                return Err(std::io::Error::new(self.kind, "reader detail"));
+            }
+            let n = out.len().min(self.ok);
+            let start = self.bytes.len() - self.ok;
+            out[..n].copy_from_slice(&self.bytes[start..start + n]);
+            self.ok -= n;
+            Ok(n)
+        }
+    }
+    // Header behind 131 KB of APP2, so the first 64 KiB parse fails and
+    // the reader is asked again.
+    let bytes = jpeg_with_padding(2, 0);
+    for (kind, want) in [
+        (Io::PermissionDenied, ErrorKind::SourceUnreadable),
+        (Io::Other, ErrorKind::SourceUnreadable),
+        (Io::TimedOut, ErrorKind::SourceUnreadable),
+        (Io::ConnectionReset, ErrorKind::SourceUnreadable),
+        (Io::UnexpectedEof, ErrorKind::SourceUnreadable),
+        (Io::NotFound, ErrorKind::SourceNotFound),
+        (Io::FileTooLarge, ErrorKind::SourceTooLarge),
+    ] {
+        for ok in [0, 64 << 10] {
+            let err = probe_reader(Failing {
+                bytes: bytes.clone(),
+                ok,
+                kind,
+            })
+            .unwrap_err();
+            assert_eq!(err.kind(), want, "{kind:?} after {ok} bytes");
+            // The reader's own error survives as the cause.
+            let cause = std::error::Error::source(&err)
+                .and_then(|c| c.downcast_ref::<std::io::Error>())
+                .unwrap_or_else(|| panic!("{kind:?}: no io cause in {err:#}"));
+            assert_eq!(cause.kind(), kind);
+        }
+    }
 }
 
 #[test]
@@ -892,6 +1099,28 @@ fn webp_output_is_clamped_to_the_format_ceiling() {
     }
 }
 
+/// At exact size the full-frame paths hand the decoded frame to `out8`
+/// (issue #129): the staged frame is the only one, until a rotation
+/// grows the swapped-in `chunk8` back to a second. A resize keeps its
+/// own output frame and rotates into the frame-sized `chunk8`.
+#[test]
+fn decode_cost_prices_the_exact_size_hand_off() {
+    let p = &Resolved::new(&Params::default());
+    let rot = crate::meta::Orientation::from_rot_mirror(1, None);
+    let up = crate::meta::Orientation::UPRIGHT;
+    let frame = 400 * 300 * 3;
+    let cost = |dst: (usize, usize), o| {
+        DecodeCost::staged(400, 300, 3)
+            .with_full_frame_resize((400, 300), dst, 3, p)
+            .with_exact_size_rotation((400, 300), dst, 3, o)
+    };
+    assert_eq!(cost((400, 300), up).bytes(), frame);
+    assert_eq!(cost((400, 300), rot).bytes(), 2 * frame);
+    let resized = cost((200, 150), up).bytes();
+    assert!(resized > frame, "a resize holds its own output");
+    assert_eq!(cost((200, 150), rot).bytes(), resized);
+}
+
 /// Issue #17's core claim in arithmetic: at equal pixel counts the
 /// decode cost varies by more than an order of magnitude, so a pixel
 /// cap cannot bound memory while a byte estimate can. The shapes and
@@ -903,8 +1132,11 @@ fn decode_cost_separates_what_pixel_counts_cannot() {
 
     // Baseline JPEG, 3980x59828 (238 MP) at width=1920, whose WebP
     // output clamps to 16383 tall: streaming, so only the output side
-    // is resident. Measured peak 92 MiB.
-    let baseline = DecodeCost::streaming().with_output(1090, 16383, 3);
+    // is resident — `out8` and the WebP encoder. Measured peak 92 MiB.
+    let webp = Some(ImageFormat::Webp);
+    let baseline = DecodeCost::streaming()
+        .with_streamed_output(1090, 16383, 3)
+        .with_encode(webp, 1090, 16383, 3, p);
     let ratio = mib(baseline.bytes()) / 92.0;
     assert!(
         (1.0..3.0).contains(&ratio),
@@ -916,8 +1148,9 @@ fn decode_cost_separates_what_pixel_counts_cannot() {
     // 16383 tall): full frame, plus the linear-light u16 copy, plus the
     // output side. Measured peak 592 MiB — the case the first attempt
     // under-estimated 3.5x, which is the dangerous direction.
-    let png = DecodeCost::full_frame(2250, 26115, 3, p)
-        .with_output(1411, 16383, 3)
+    let png = DecodeCost::staged(2250, 26115, 3)
+        .with_full_frame_resize((2250, 26115), (1411, 16383), 3, p)
+        .with_encode(webp, 1411, 16383, 3, p)
         .with_compressed(12 << 20);
     let ratio = mib(png.bytes()) / 592.0;
     assert!(
@@ -935,8 +1168,8 @@ fn decode_cost_separates_what_pixel_counts_cannot() {
     // checked here, not the default.
     let num = dct_scale_num(12247, 12247, 1920, 1920, Some(1.7)) as usize;
     let (dw, dh) = ((12247 * num).div_ceil(8), (12247 * num).div_ceil(8));
-    let prog = DecodeCost::full_frame(dw, dh, 4, p)
-        .with_output(1920, 1920, 4)
+    let prog = DecodeCost::staged(dw, dh, 4)
+        .with_full_frame_resize((dw, dh), (1920, 1920), 3, p)
         .with_progressive_coefficients(12247, 12247, 4);
     let ratio = mib(prog.bytes()) / 1231.0;
     assert!(
@@ -959,8 +1192,8 @@ fn decode_cost_separates_what_pixel_counts_cannot() {
     // The progressive term is output-independent: a smaller output
     // barely helps, which is why pixel- and output-based reasoning
     // both fail on those sources.
-    let smaller = DecodeCost::full_frame(dw / 2, dh / 2, 4, p)
-        .with_output(480, 480, 4)
+    let smaller = DecodeCost::staged(dw / 2, dh / 2, 4)
+        .with_full_frame_resize((dw / 2, dh / 2), (480, 480), 3, p)
         .with_progressive_coefficients(12247, 12247, 4);
     assert!(
         smaller.bytes() > prog.bytes() / 2,
@@ -976,6 +1209,546 @@ fn decode_cost_separates_what_pixel_counts_cannot() {
         dear / cheap > 10.0,
         "spread across shapes: {cheap:.3} vs {dear:.3} B per source pixel"
     );
+}
+
+/// Issue #130: the encoder's buffers count, priced by what decides
+/// them — progressive vs sequential JPEG, quantized PNG, alpha WebP —
+/// and nothing for a caller that keeps the pixels.
+#[test]
+fn encode_cost_follows_what_the_encoder_holds() {
+    let p = |params: Params| Resolved::new(&params);
+    let def = p(Params::default());
+    let px = 4000 * 3000;
+
+    // Below 16 MP jpegli holds every token (q80: 10 B/px); progressive
+    // above OXIMG_JPEG_SEQUENTIAL_PIXELS (default 12000) adds the
+    // coefficients, sequential below it does not.
+    assert_eq!(encode_cost(ImageFormat::Jpeg, 4000, 3000, 3, &def), px * 17);
+    assert_eq!(
+        encode_cost(ImageFormat::Jpeg, 100, 100, 3, &def),
+        100 * 100 * 10
+    );
+    // Tokens follow quality.
+    let q = |quality| {
+        p(Params {
+            quality,
+            ..Params::default()
+        })
+    };
+    assert_eq!(
+        encode_cost(ImageFormat::Jpeg, 100, 100, 3, &q(30.0)),
+        100 * 100 * 4
+    );
+    assert_eq!(
+        encode_cost(ImageFormat::Jpeg, 100, 100, 3, &q(100.0)),
+        100 * 100 * 18
+    );
+    assert_eq!(
+        encode_cost(ImageFormat::Jpeg, 4000, 3000, 3, &q(100.0)),
+        px * 25
+    );
+    // Above OXIMG_JPEG_STREAMING_PIXELS (default 16 MP) the encoder
+    // holds its output (up to twice it, by quality) and a few rows.
+    let big = 5000 * 4000;
+    for (quality, tenths) in [(30.0, 11), (50.0, 15), (80.0, 30), (90.0, 42), (100.0, 95)] {
+        assert_eq!(
+            encode_cost(ImageFormat::Jpeg, 5000, 4000, 3, &q(quality)),
+            big * tenths / 10 + 5000 * 1024,
+            "q{quality}"
+        );
+    }
+    assert_eq!(
+        encode_cost(ImageFormat::Jpeg, 4000, 4000, 3, &def),
+        4000 * 4000 * 17,
+        "16 MP exactly is not streamed"
+    );
+    // mozjpeg: the fastest profile flat, trellis by quality.
+    for (encoder, per_px) in [(Encoder::MozFast, 10), (Encoder::MozSmall, 14)] {
+        let moz = p(Params {
+            encoder,
+            ..Params::default()
+        });
+        assert_eq!(
+            encode_cost(ImageFormat::Jpeg, 100, 100, 3, &moz),
+            100 * 100 * per_px
+        );
+    }
+
+    // PNG holds up to twice the raw frame plus its chunk buffer and three
+    // rows; quantization (RGB only) adds quantette's working set.
+    let rows = |ch: u64| 256 * 1024 + 3 * 4000 * ch;
+    assert_eq!(
+        encode_cost(ImageFormat::Png, 4000, 3000, 3, &def),
+        px * 6 + rows(3)
+    );
+    assert_eq!(
+        encode_cost(ImageFormat::Png, 4000, 3000, 4, &def),
+        px * 8 + rows(4)
+    );
+    let quant = p(Params {
+        png_quantize: Some(true),
+        ..Params::default()
+    });
+    assert_eq!(
+        encode_cost(ImageFormat::Png, 4000, 3000, 3, &quant),
+        px * 20 + rows(3)
+    );
+    assert_eq!(
+        encode_cost(ImageFormat::Png, 4000, 3000, 4, &quant),
+        px * 8 + rows(4)
+    );
+
+    // WebP alpha is VP8L-coded, several times the RGB cost at any
+    // quality; RGB follows quality (default 75). Both carry ~4 MiB that
+    // does not scale.
+    let fixed = 4u64 << 20;
+    assert_eq!(
+        encode_cost(ImageFormat::Webp, 4000, 3000, 3, &def),
+        px * 8 + fixed
+    );
+    assert_eq!(
+        encode_cost(ImageFormat::Webp, 4000, 3000, 4, &def),
+        px * 44 + fixed
+    );
+    let webp = |webp_quality| {
+        p(Params {
+            webp_quality: Some(webp_quality),
+            ..Params::default()
+        })
+    };
+    assert_eq!(
+        encode_cost(ImageFormat::Webp, 4000, 3000, 3, &webp(90.0)),
+        px * 10 + fixed
+    );
+    assert_eq!(
+        encode_cost(ImageFormat::Webp, 4000, 3000, 3, &webp(100.0)),
+        px * 15 + fixed
+    );
+    assert_eq!(
+        encode_cost(ImageFormat::Webp, 4000, 3000, 4, &webp(100.0)),
+        px * 44 + fixed
+    );
+
+    // Nothing encodes GIF.
+    assert_eq!(encode_cost(ImageFormat::Gif, 4000, 3000, 4, &def), 0);
+
+    // `None` is a caller that returns pixels: no encoder runs.
+    let cost = DecodeCost::streaming().with_encode(None, 4000, 3000, 3, &def);
+    assert_eq!(cost.encode_bytes, 0);
+    let cost = DecodeCost::streaming().with_encode(Some(ImageFormat::Webp), 4000, 3000, 3, &def);
+    assert_eq!(cost.bytes(), px * 8 + fixed);
+    assert!(
+        cost.report("JPEG")
+            .contains(&format!("encode {}", px * 8 + fixed))
+    );
+}
+
+/// OXIMG_WEBP_EFFORT moves libwebp's working set more than quality
+/// does: from method 3 RGB holds three times as much, and method 6's
+/// lossless alpha search twice the rest.
+#[test]
+fn webp_cost_follows_the_method() {
+    for method in 0..=2 {
+        assert_eq!(webp_cost_per_px(3, 75.0, method), 8);
+        assert_eq!(webp_cost_per_px(3, 90.0, method), 10);
+        assert_eq!(webp_cost_per_px(3, 100.0, method), 15);
+        assert_eq!(webp_cost_per_px(4, 100.0, method), 44);
+    }
+    for method in 3..=6 {
+        assert_eq!(webp_cost_per_px(3, 50.0, method), 22);
+        assert_eq!(webp_cost_per_px(3, 90.0, method), 29);
+        assert_eq!(webp_cost_per_px(3, 100.0, method), 38);
+    }
+    for method in 3..=5 {
+        assert_eq!(webp_cost_per_px(4, 75.0, method), 44);
+        assert_eq!(webp_cost_per_px(4, 90.0, method), 50);
+        assert_eq!(webp_cost_per_px(4, 100.0, method), 56);
+    }
+    assert_eq!(webp_cost_per_px(4, 75.0, 6), 110);
+    assert_eq!(webp_fixed_cost(4, 6), 32 << 20);
+    for method in 0..=5 {
+        assert_eq!(webp_fixed_cost(4, method), 4 << 20);
+    }
+    for method in 0..=6 {
+        assert_eq!(webp_fixed_cost(3, method), 4 << 20);
+    }
+}
+
+/// SVT-AV1's working set grows as the preset slows and above quality
+/// 90, and the alpha session adds half again; the fixed part does not
+/// scale.
+#[cfg(feature = "avif")]
+#[test]
+fn avif_encode_cost_follows_the_preset_and_quality() {
+    let px = 2000 * 2000;
+    let fixed = 16u64 << 20;
+    let at = |speed, quality, alpha_quality| crate::avif::AvifParams {
+        speed,
+        quality,
+        alpha_quality,
+        ..Default::default()
+    };
+    assert_eq!(avif_encode_cost(px, 3, &at(8, 60, 60)), px * 32 + fixed);
+    assert_eq!(avif_encode_cost(px, 3, &at(13, 60, 60)), px * 32 + fixed);
+    assert_eq!(avif_encode_cost(px, 3, &at(4, 60, 60)), px * 44 + fixed);
+    assert_eq!(avif_encode_cost(px, 3, &at(2, 60, 60)), px * 56 + fixed);
+    assert_eq!(avif_encode_cost(px, 3, &at(0, 60, 60)), px * 56 + fixed);
+    assert_eq!(avif_encode_cost(px, 4, &at(8, 60, 60)), px * 48 + fixed);
+    // Above quality 90, a third more; for alpha, either quality counts.
+    assert_eq!(avif_encode_cost(px, 3, &at(8, 100, 60)), px * 42 + fixed);
+    assert_eq!(avif_encode_cost(px, 3, &at(8, 60, 100)), px * 32 + fixed);
+    assert_eq!(avif_encode_cost(px, 4, &at(8, 60, 100)), px * 63 + fixed);
+    // The resolved knobs, through the generic entry point.
+    let def = Resolved::new(&Params::default());
+    assert_eq!(
+        encode_cost(ImageFormat::Avif, 2000, 2000, 3, &def),
+        avif_encode_cost(px, 3, &def.avif_params())
+    );
+}
+
+/// A GIF's one-bit alpha is priced on its own, but the RGB encode under
+/// it follows the WebP quality like any other lossy encode.
+#[test]
+fn gif_webp_encode_follows_quality() {
+    let at = |webp_quality| {
+        Resolved::new(&Params {
+            webp_quality: Some(webp_quality),
+            ..Params::default()
+        })
+    };
+    let px = 1000 * 1000;
+    let fixed = 4 << 20;
+    let same = ((1000, 1000), (1000, 1000));
+    assert_eq!(
+        gif_webp_encode_bytes(same.0, same.1, &at(75.0)),
+        px * 12 + fixed
+    );
+    assert_eq!(
+        gif_webp_encode_bytes(same.0, same.1, &at(100.0)),
+        px * 19 + fixed
+    );
+    // A resize filters the one-bit alpha into 8-bit values: the general
+    // RGBA price.
+    assert_eq!(
+        gif_webp_encode_bytes((2000, 2000), (1000, 1000), &at(75.0)),
+        px * 44 + fixed
+    );
+}
+
+/// The estimate the last `process` call on this thread recorded.
+fn cost_of(src: &[u8], p: Params) -> DecodeCost {
+    process(src, &p).unwrap();
+    LAST_COST.get().expect("a decode just ran").0
+}
+
+fn sized(max_width: u32, max_height: u32) -> Params {
+    Params {
+        max_width,
+        max_height,
+        ..Params::default()
+    }
+}
+
+/// fir's intermediate for a full-frame resize, when the dispatch takes
+/// fir on this machine (it depends on the CPU and the knobs).
+fn fir_bytes(px: PixelType, dst_h: usize, intermediate: u64) -> u64 {
+    if resize_uses_fir(px, 1, dst_h) {
+        intermediate
+    } else {
+        0
+    }
+}
+
+/// Issue #130: every JPEG arm is priced by the buffers it holds. A
+/// 320x240 source into a 200x200 box decodes at full size (a 1.6x
+/// reduction engages no shrink-on-load) and resizes to 200x150.
+#[test]
+fn decode_cost_prices_each_jpeg_arm() {
+    let jpeg = make_test_jpeg(320, 240, false);
+    let (src, dst) = (320 * 240, 200 * 150);
+
+    // Exact size to JPEG: one band of rows goes from the decoder to the
+    // encoder at a time.
+    let c = cost_of(&jpeg, sized(320, 240));
+    assert_eq!(
+        (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
+        (0, 0, 320 * 16 * 3)
+    );
+    // Exact size to anything else: libjpeg writes straight into `out8`.
+    let png = Params {
+        output: Some(ImageFormat::Png),
+        ..sized(320, 240)
+    };
+    let c = cost_of(&jpeg, png);
+    assert_eq!(
+        (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
+        (0, 0, src * 3)
+    );
+
+    // The row kernel streams into `out8`: nothing full-frame on the
+    // source side.
+    if kernel_streams(&rbox(200, 200)) {
+        let c = cost_of(&jpeg, sized(200, 200));
+        assert_eq!(
+            (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
+            (0, 0, dst * 3)
+        );
+    }
+
+    // sRGB mode decodes the whole frame to u8 and resizes it there.
+    let c = cost_of(
+        &jpeg,
+        Params {
+            linear_light: Some(false),
+            ..sized(200, 200)
+        },
+    );
+    assert_eq!(c.staged_bytes, src * 3);
+    assert_eq!(
+        c.resize_input_bytes,
+        fir_bytes(PixelType::U8x3, 150, 320 * 150 * 3)
+    );
+    assert_eq!(c.output_bytes, dst * 3);
+
+    // Band-parallel takes the full-frame fallback: `src16` filled from
+    // row chunks, every band's fir intermediate, `dst16` + `out8`.
+    let c = cost_of(
+        &jpeg,
+        Params {
+            parallel: 4,
+            ..sized(200, 200)
+        },
+    );
+    assert_eq!(c.staged_bytes, 0);
+    assert_eq!(c.resize_input_bytes, src * 6 + 200 * 240 * 6);
+    assert_eq!(c.output_bytes, dst * 9);
+
+    // Rotated output: the kernel arm's `chunk8` held row chunks, so the
+    // rotation lands in a second output frame. (Orientation 6 displays
+    // 320x240 as 240x320; the box fits it to 150x200, stored 200x150.)
+    let rotated = {
+        let mut exif = b"Exif\0\0".to_vec();
+        exif.extend_from_slice(&tiff_orientation(6));
+        let mut comp = Compress::new(ColorSpace::JCS_RGB);
+        comp.set_size(320, 240);
+        comp.set_quality(90.0);
+        let mut started = comp.start_compress(Vec::new()).unwrap();
+        started.write_marker(mozjpeg::Marker::APP(1), &exif);
+        started
+            .write_scanlines(&vec![128u8; 320 * 240 * 3])
+            .unwrap();
+        started.finish().unwrap()
+    };
+    if kernel_streams(&rbox(200, 200)) {
+        let c = cost_of(&rotated, sized(150, 200));
+        assert_eq!(
+            (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
+            (0, 0, dst * 3 * 2)
+        );
+    }
+
+    // CMYK stages four channels (at its shrink-on-load size), compacts
+    // to RGB in place, and resizes like the buffered formats.
+    let cmyk = make_cmyk_jpeg(320, 240, false);
+    let num = dct_scale_num(320, 240, 200, 150, Some(BUFFERED_DCT_MARGIN)) as usize;
+    let (dw, dh) = ((320 * num).div_ceil(8), (240 * num).div_ceil(8));
+    let c = cost_of(&cmyk, sized(200, 200));
+    assert_eq!(c.staged_bytes, (dw * dh * 4) as u64);
+    if (dw, dh) != (200, 150) {
+        assert_eq!(
+            c.resize_input_bytes,
+            (dw * dh * 6) as u64 + fir_bytes(PixelType::U16x3, 150, (200 * dh * 6) as u64)
+        );
+        assert_eq!(c.output_bytes, dst * 9);
+    }
+}
+
+/// `decode_and_resize` hands back its pixels in a Vec of their own, a
+/// second output frame next to `out8`; an encoding caller does not.
+#[test]
+fn decode_cost_counts_the_frame_a_pixel_caller_keeps() {
+    let jpeg = make_test_jpeg(320, 240, false);
+    let (px, w, h) = decode_and_resize(&jpeg, 320, 240, 1).unwrap();
+    assert_eq!((px.len(), w, h), (320 * 240 * 3, 320, 240));
+    let (c, _) = LAST_COST.get().expect("a decode just ran");
+    assert_eq!(c.output_bytes, 320 * 240 * 3 * 2);
+    assert_eq!(c.encode_bytes, 0, "nothing is encoded");
+    // The same request encoding to PNG keeps `out8` alone (to JPEG it
+    // streams; see `decode_cost_prices_each_jpeg_arm`).
+    let png = Params {
+        output: Some(ImageFormat::Png),
+        ..sized(320, 240)
+    };
+    let c = cost_of(&jpeg, png);
+    assert_eq!(c.output_bytes, 320 * 240 * 3);
+}
+
+/// A tall source squeezed to one row keeps a whole column in the row
+/// kernel's ring: one 16-float-padded row per source row (issue #129).
+/// A fitted per-side constant priced 40x32000 -> 1x1 at 4.6 MB against
+/// a 6.1 MB ring; the estimate must cover the ring wherever it streams.
+#[test]
+fn decode_cost_covers_the_stream_ring_of_a_tall_source() {
+    let tall = black_white_lines_png(40, 32_000, 3);
+    let c = cost_of(&tall, sized(1, 1));
+    if bands_use_stream_kernel(PixelType::U16x3, sized(1, 1).parallel, 1) {
+        let ring = 32_000 * 16 * 3 * 4;
+        assert!(
+            c.resize_input_bytes > ring,
+            "resize input {} must cover the {ring}-byte ring",
+            c.resize_input_bytes
+        );
+    } else {
+        // Staged: the whole linear-light frame.
+        assert!(c.resize_input_bytes >= 40 * 32_000 * 6);
+    }
+}
+
+/// Issue #130: the PNG arm is chosen from the header before the
+/// estimate runs, so the estimate prices that arm — not a staged frame
+/// the fused arm never allocates, nor a resize an exact-size request
+/// never runs.
+#[test]
+fn decode_cost_prices_each_png_arm() {
+    let (src, dst) = (320 * 240, 200 * 150);
+
+    // RGB8 with a reduction: the fused arm. Where the row kernel runs
+    // (aarch64, one band; issue #129) rows stream into it, one mapped
+    // source row at a time, and `out8` is the only frame; elsewhere they
+    // land in `src16` for a full-frame resize into `dst16`.
+    let rgb = black_white_lines_png(320, 240, 3);
+    let c = cost_of(&rgb, sized(200, 200));
+    assert_eq!(c.staged_bytes, 0);
+    if bands_use_stream_kernel(PixelType::U16x3, sized(200, 200).parallel, 150) {
+        let kernel =
+            crate::resize_kernel::StreamResize::<FuseKernel>::resident_bytes(320, 240, 200, 150, 3);
+        assert_eq!(
+            (c.resize_input_bytes, c.output_bytes),
+            (320 * 6 + kernel, dst * 3)
+        );
+    } else {
+        assert_eq!(
+            c.resize_input_bytes,
+            src * 6 + fir_bytes(PixelType::U16x3, 150, 200 * 240 * 6)
+        );
+        assert_eq!(c.output_bytes, dst * 9);
+    }
+
+    // Exact size: `chunk8` handed to `out8` (issue #129), no resize
+    // buffers and no second frame.
+    let c = cost_of(&rgb, sized(320, 240));
+    assert_eq!(
+        (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
+        (src * 3, 0, 0)
+    );
+
+    // RGBA takes the general arm: staged, premultiplied into `src16`.
+    let rgba = black_white_lines_png(320, 240, 4);
+    let c = cost_of(&rgba, sized(200, 200));
+    assert_eq!(c.staged_bytes, src * 4);
+    assert_eq!(
+        c.resize_input_bytes,
+        src * 8 + fir_bytes(PixelType::U16x4, 150, 200 * 240 * 8)
+    );
+    assert_eq!(c.output_bytes, dst * 12);
+
+    // eXIf orientation 6 is read before the estimate: a 400x100 source
+    // displays as 100x400, which fits a 120-wide box as it is. The
+    // unoriented fit (120x30) would have priced a resize.
+    let mut oriented = Vec::new();
+    {
+        let mut info = png::Info::with_size(400, 100);
+        info.exif_metadata = Some(std::borrow::Cow::Owned(tiff_orientation(6)));
+        info.color_type = png::ColorType::Rgb;
+        info.bit_depth = png::BitDepth::Eight;
+        let enc = png::Encoder::with_info(&mut oriented, info).unwrap();
+        enc.write_header()
+            .unwrap()
+            .write_image_data(&vec![128u8; 400 * 100 * 3])
+            .unwrap();
+    }
+    let c = cost_of(&oriented, sized(120, 10_000));
+    assert_eq!(
+        (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
+        (400 * 100 * 3, 0, 400 * 100 * 3)
+    );
+    // The encoder sees the rotated frame: its row allowance is three
+    // rows of the displayed width (100), not the stored one (400).
+    assert_eq!(c.encode_bytes, 400 * 100 * 6 + 256 * 1024 + 3 * 100 * 3);
+}
+
+/// A little-endian TIFF carrying only an Orientation tag.
+fn tiff_orientation(o: u16) -> Vec<u8> {
+    let mut t = b"II*\0\x08\0\0\0".to_vec();
+    t.extend_from_slice(&1u16.to_le_bytes()); // one entry
+    t.extend_from_slice(&0x0112u16.to_le_bytes()); // Orientation
+    t.extend_from_slice(&3u16.to_le_bytes()); // SHORT
+    t.extend_from_slice(&1u32.to_le_bytes()); // count
+    t.extend_from_slice(&o.to_le_bytes());
+    t.extend_from_slice(&[0, 0]); // value padding
+    t.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
+    t
+}
+
+/// Issue #130: libwebp's VP8L decoder holds the whole image as ARGB
+/// words — lossless sources and the alpha plane of lossy ones — so
+/// those are priced above an opaque lossy source at the same size.
+#[test]
+fn decode_cost_prices_webp_alpha_decoding() {
+    let webp_of = |channels: usize| {
+        // A real alpha ramp: libwebp drops an all-opaque alpha plane.
+        let mut px = black_white_lines(320, 240, channels);
+        if channels == 4 {
+            for (i, a) in px.iter_mut().skip(3).step_by(4).enumerate() {
+                *a = (i % 256) as u8;
+            }
+        }
+        let mut png = Vec::new();
+        let mut enc = png::Encoder::new(&mut png, 320, 240);
+        enc.set_color(if channels == 4 {
+            png::ColorType::Rgba
+        } else {
+            png::ColorType::Rgb
+        });
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header().unwrap().write_image_data(&px).unwrap();
+        process(
+            &png,
+            &Params {
+                output: Some(ImageFormat::Webp),
+                ..sized(320, 240)
+            },
+        )
+        .unwrap()
+        .0
+    };
+    let src = 320 * 240;
+    let c = cost_of(&webp_of(3), sized(320, 240));
+    assert_eq!(c.staged_bytes, src * 3, "lossy RGB streams rows");
+    let c = cost_of(&webp_of(4), sized(320, 240));
+    assert_eq!(c.staged_bytes, src * 4 + src * 4, "the alpha plane is VP8L");
+}
+
+/// Issue #130: dav1d's pictures and frame state sit next to `chunk8`
+/// (and stay resident through the resize), so an AVIF source is priced
+/// above its RGBA frame alone.
+#[cfg(feature = "avif")]
+#[test]
+fn decode_cost_prices_dav1d_next_to_the_frame() {
+    let png = black_white_lines_png(320, 240, 3);
+    let (avif, _) = process(
+        &png,
+        &Params {
+            output: Some(ImageFormat::Avif),
+            ..sized(320, 240)
+        },
+    )
+    .unwrap();
+    let c = cost_of(&avif, sized(320, 240));
+    let src = 320 * 240;
+    assert_eq!(c.staged_bytes, src * 4 + src * 12);
+    // Exact size: the frame is handed to `out8` (issue #129).
+    assert_eq!((c.resize_input_bytes, c.output_bytes), (0, 0));
 }
 
 /// Issue #22: a caller-held source buffer is resident for the whole
@@ -1011,59 +1784,48 @@ fn caller_held_source_counts_in_the_decode_estimate() {
         cost.compressed_bytes, 0,
         "the streaming path holds no source buffer"
     );
-    let _ = std::fs::remove_dir_all(&dir);
-
-    // A buffered format counts both copies: srcbuf and the caller's.
-    let png = {
-        let (out, fmt) = process(
+    let transcode = |fmt: ImageFormat| {
+        let (out, got) = process(
             &jpeg,
             &Params {
-                output: Some(ImageFormat::Png),
+                output: Some(fmt),
                 ..Params::default()
             },
         )
         .unwrap();
-        assert_eq!(fmt, ImageFormat::Png);
+        assert_eq!(got, fmt);
         out
     };
+
+    // PNG streams too (issue #129): the in-memory entry counts only the
+    // caller's copy, and the file entry holds no source buffer at all.
+    let png = transcode(ImageFormat::Png);
     process(&png, &p).unwrap();
     let (cost, _) = LAST_COST.get().expect("a decode just ran");
     assert_eq!(
         cost.compressed_bytes,
-        2 * png.len() as u64,
-        "a buffered format holds the source twice: srcbuf + the caller's copy"
+        png.len() as u64,
+        "PNG decodes from the caller's slice: one copy, not two"
     );
-}
+    let path = dir.join("held.png");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(&path, &png).unwrap();
+    process_path(&path, &p).unwrap();
+    let (cost, _) = LAST_COST.get().expect("a decode just ran");
+    assert_eq!(
+        cost.compressed_bytes, 0,
+        "a streamed PNG file holds no source buffer"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 
-/// `larger_fit` is what keeps the output-side estimate conservative
-/// before a source's orientation is known (issue #17 review): it must
-/// return whichever of the two candidate fits covers more pixels, with
-/// the axes back in stored order.
-#[test]
-fn larger_fit_covers_the_swapped_orientation() {
-    let box_ = |w: u32, h: u32| rbox(w, h);
-    // The review's shape: 4000x1000 under a width-only box. Upright it
-    // fits to 1920x480; presented as 1000x4000 by orientation 6 it fits
-    // to 1000x4000 — four times the pixels, and what must be counted.
+    // A buffered format counts both copies: srcbuf and the caller's.
+    let webp = transcode(ImageFormat::Webp);
+    process(&webp, &p).unwrap();
+    let (cost, _) = LAST_COST.get().expect("a decode just ran");
     assert_eq!(
-        super::formats::larger_fit(4000, 1000, &box_(1920, u32::MAX)),
-        (4000, 1000)
-    );
-    // The mirror case: the unoriented fit is already the larger one.
-    assert_eq!(
-        super::formats::larger_fit(1000, 4000, &box_(1920, u32::MAX)),
-        (1000, 4000)
-    );
-    // A symmetric box makes both candidates equal, so the stored
-    // orientation is returned unchanged.
-    assert_eq!(
-        super::formats::larger_fit(4000, 1000, &box_(500, 500)),
-        (500, 125)
-    );
-    // Sources inside the box are never enlarged either way.
-    assert_eq!(
-        super::formats::larger_fit(300, 200, &box_(1920, u32::MAX)),
-        (300, 200)
+        cost.compressed_bytes,
+        2 * webp.len() as u64,
+        "a buffered format holds the source twice: srcbuf + the caller's copy"
     );
 }
 
@@ -1195,6 +1957,14 @@ const SOURCE_FIXTURES: &[&str] = &[
     "cmyk_icc.jpg",
     "rgb.png",
     "interlaced.png",
+    // PNG decodes straight from the reader (issue #129): every color
+    // type and depth must come out the same through either entry.
+    "rgba.png",
+    "gray.png",
+    "gray16.png",
+    "graya.png",
+    "palette.png",
+    "rgb16.png",
     "photo.webp",
     "still.gif",
     "anim.gif",
@@ -1270,7 +2040,7 @@ fn truncated_in_memory_source_is_still_too_short() {
     );
 }
 
-/// The exact-size JPEG branch both ways: `jpeg_out` streams decoder
+/// The exact-size JPEG branch both ways: a JPEG target streams decoder
 /// bands into the encoder (`Decoded::Encoded`), while the staged
 /// reference leaves the frame in out8 for the separate encode that
 /// `process_jpeg` used to run on every exact-size JPEG. Returns
@@ -1285,21 +2055,21 @@ fn exact_jpeg_both_ways(
         encoder,
         ..Params::default()
     });
-    let run = |jpeg_out: bool| -> Result<(Decoded, Scratch)> {
+    let run = |target: Option<ImageFormat>| -> Result<(Decoded, Scratch)> {
         crate::panic_guard::catch_unwind_as_error("test decode", || {
             let mut s = Scratch::default();
             let dec = Decompress::new_mem(jpeg)?;
-            let d = decode_resize_to(&mut s, dec, &p, orientation, Fuse::Off, icc, jpeg_out)?;
+            let d = decode_resize(&mut s, dec, &p, orientation, Fuse::Off, icc, target)?;
             Ok((d, s))
         })?
     };
-    let staged = run(false).and_then(|(d, s)| match d {
+    let staged = run(None).and_then(|(d, s)| match d {
         Decoded::Pixels { dst_w, dst_h } => {
             encode_with_icc(&s.out8[..dst_w * dst_h * 3], dst_w, dst_h, &p, icc)
         }
         _ => panic!("staged exact decode did not leave pixels"),
     });
-    (run(true).map(|(d, _)| d), staged)
+    (run(Some(ImageFormat::Jpeg)).map(|(d, _)| d), staged)
 }
 
 fn encoded(d: Decoded) -> Vec<u8> {
@@ -1383,14 +2153,14 @@ fn exact_size_jpeg_streams_only_upright_rgb_frames() {
     }
     let mut s = Scratch::default();
     let dec = Decompress::new_mem(&jpeg).unwrap();
-    let d = decode_resize_to(
+    let d = decode_resize(
         &mut s,
         dec,
         &rbox(32, 32),
         crate::meta::Orientation::UPRIGHT,
         Fuse::Off,
         None,
-        true,
+        Some(ImageFormat::Jpeg),
     )
     .unwrap();
     assert!(matches!(
@@ -1445,4 +2215,767 @@ fn exact_size_jpeg_streaming_keeps_truncation_and_error_behavior() {
             "{side}: {e:#}"
         );
     }
+}
+
+// ---- Streamed RGB8 PNG resize (issue #129) ----
+
+/// Deterministic noisy RGB8 frame (gradients + LCG noise), as a PNG.
+fn noisy_rgb_png(w: usize, h: usize) -> Vec<u8> {
+    let mut seed = 0x2545F491u32;
+    let mut px = Vec::with_capacity(w * h * 3);
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..3 {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let g = (x * 255 / w + y * 97 / h + c * 40) % 256;
+                px.push(((g + (seed >> 26) as usize) % 256) as u8);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::new(&mut out, w as u32, h as u32);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header().unwrap().write_image_data(&px).unwrap();
+    out
+}
+
+/// PNG chunk CRC (ISO 3309), for hand-patched test streams.
+fn png_crc(bytes: &[u8]) -> u32 {
+    let mut c = 0xFFFF_FFFFu32;
+    for &b in bytes {
+        c ^= b as u32;
+        for _ in 0..8 {
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
+        }
+    }
+    !c
+}
+
+/// A well-formed PNG whose IHDR claims `h` rows while its (complete,
+/// checksummed) image data holds only `h - missing`: the decoder runs
+/// out of rows without a chunk-framing error.
+fn short_rgb_png(w: usize, h: usize, missing: usize) -> Vec<u8> {
+    let mut b = noisy_rgb_png(w, h - missing);
+    // IHDR: length at 8, type at 12, data at 16 (height is its second
+    // u32), CRC over type + 13 data bytes at 29.
+    b[20..24].copy_from_slice(&(h as u32).to_be_bytes());
+    let crc = png_crc(&b[12..29]);
+    b[29..33].copy_from_slice(&crc.to_be_bytes());
+    b
+}
+
+/// Run the hot-path helper on a PNG, from a fresh decoder positioned
+/// the way `process_png` leaves it.
+fn png_linear(
+    png_bytes: &[u8],
+    dst: (usize, usize),
+    parallel: usize,
+    stream: bool,
+) -> Result<(Vec<u8>, bool)> {
+    let mut d = png::Decoder::new(std::io::Cursor::new(png_bytes));
+    d.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut r = d.read_info()?;
+    let src = (r.info().width as usize, r.info().height as usize);
+    let (mut src16, mut dst16, mut out8, mut resizer) = (Vec::new(), Vec::new(), Vec::new(), None);
+    let streamed = super::formats::png_rgb8_linear_resize(
+        super::formats::LinearBufs {
+            src16: &mut src16,
+            dst16: &mut dst16,
+            out8: &mut out8,
+            resizer: &mut resizer,
+        },
+        &mut r,
+        src,
+        dst,
+        parallel,
+        stream,
+    )?;
+    out8.truncate(dst.0 * dst.1 * 3);
+    Ok((out8, streamed))
+}
+
+/// Width, height.
+type Dims = (usize, usize);
+
+/// (src, dst) shapes for the streamed PNG resize: tiny sources, output
+/// heights that do not divide the input, and extreme reductions down
+/// to a single row or column (a 7000-row window into one output row).
+const PNG_STREAM_SHAPES: &[(Dims, Dims)] = &[
+    ((2, 2), (1, 1)),
+    ((1, 3), (1, 2)),
+    ((97, 61), (13, 8)),
+    ((64, 48), (10, 7)),
+    ((33, 33), (32, 31)),
+    ((40, 7000), (3, 1)),
+    ((3000, 2), (7, 1)),
+    ((5, 7000), (1, 1)),
+];
+
+/// The streamed helper must produce exactly what the row kernel's
+/// full-frame driver produces over the staged u16 frame — which is
+/// what `resize_bands` runs for these requests on aarch64 — on every
+/// architecture that has the kernel.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+#[test]
+fn png_streamed_resize_matches_the_full_frame_kernel() {
+    // The arch cfg does not promise the CPU features: an x86-64 host
+    // without AVX2/FMA falls back to the staged path, correctly.
+    if !fuse_kernel_available() {
+        return;
+    }
+    for &((sw, sh), (dw, dh)) in PNG_STREAM_SHAPES {
+        let png_bytes = noisy_rgb_png(sw, sh);
+        let (got, streamed) = png_linear(&png_bytes, (dw, dh), 1, true).unwrap();
+        assert!(streamed, "{sw}x{sh}->{dw}x{dh} did not stream");
+
+        // Reference: stage the whole frame, resize it in one call.
+        let mut d = png::Decoder::new(std::io::Cursor::new(&png_bytes[..]));
+        d.set_transformations(png::Transformations::EXPAND);
+        let mut r = d.read_info().unwrap();
+        let mut px = vec![0u8; r.output_buffer_size().unwrap()];
+        r.next_frame(&mut px).unwrap();
+        let fwd = fwd_lut();
+        let src16: Vec<u16> = px.iter().map(|&b| fwd[b as usize]).collect();
+        let mut dst16 = vec![0u16; dw * dh * 3];
+        crate::resize_kernel::resize_u16::<FuseKernel>(
+            u16_as_bytes(&src16),
+            sw,
+            sh,
+            u16_as_bytes_mut(&mut dst16),
+            dw,
+            dh,
+            3,
+        )
+        .unwrap();
+        let back = back_lut();
+        let want: Vec<u8> = dst16.iter().map(|&v| back[v as usize]).collect();
+        assert!(got == want, "{sw}x{sh}->{dw}x{dh}: streamed bytes differ");
+    }
+}
+
+/// On aarch64 the streamed path replaces exactly the staged path it
+/// skips: same request, same bytes (issue #129's identity contract).
+#[cfg(target_arch = "aarch64")]
+#[test]
+fn png_streamed_resize_matches_the_staged_path() {
+    for &((sw, sh), (dw, dh)) in PNG_STREAM_SHAPES {
+        let png_bytes = noisy_rgb_png(sw, sh);
+        let (staged, streamed) = png_linear(&png_bytes, (dw, dh), 1, false).unwrap();
+        assert!(!streamed);
+        let (got, _) = png_linear(&png_bytes, (dw, dh), 1, true).unwrap();
+        assert!(got == staged, "{sw}x{sh}->{dw}x{dh}: streamed != staged");
+    }
+}
+
+/// The stream gate is resize_bands' own kernel choice: only where it
+/// would run the row kernel (aarch64, one band, no fir override).
+#[test]
+fn bands_stream_kernel_gate() {
+    let streams = cfg!(target_arch = "aarch64") && !crate::config::config().fir_backend;
+    assert_eq!(bands_use_stream_kernel(PixelType::U16x3, 1, 500), streams);
+    // Too few rows to band: still one call.
+    assert_eq!(bands_use_stream_kernel(PixelType::U16x3, 4, 7), streams);
+    assert_eq!(bands_use_stream_kernel(PixelType::U16x4, 0, 10), streams);
+    // Band-parallel requests stay staged (fir bands).
+    assert!(!bands_use_stream_kernel(PixelType::U16x3, 4, 8));
+    assert!(!bands_use_stream_kernel(PixelType::U16x3, 2, 500));
+    // u8 pixels never reach the u16 kernel.
+    assert!(!bands_use_stream_kernel(PixelType::U8x3, 1, 500));
+}
+
+/// Decode a PNG to its raw (expanded) samples.
+fn decode_png_rgb(png_bytes: &[u8]) -> Vec<u8> {
+    let mut d = png::Decoder::new(std::io::Cursor::new(png_bytes));
+    d.set_transformations(png::Transformations::EXPAND);
+    let mut r = d.read_info().unwrap();
+    let mut px = vec![0u8; r.output_buffer_size().unwrap()];
+    let n = r.next_frame(&mut px).unwrap().buffer_size();
+    px.truncate(n);
+    px
+}
+
+/// Band-parallel requests keep the staged path, and their output.
+#[test]
+fn png_band_parallel_stays_staged() {
+    let png_bytes = noisy_rgb_png(97, 61);
+    let params = Params {
+        max_width: 40,
+        max_height: 40,
+        parallel: 2,
+        ..Params::default()
+    };
+    let (dw, dh) = fit_dims(97, 61, 40, 40);
+    let stream = bands_use_stream_kernel(PixelType::U16x3, params.parallel, dh);
+    assert!(!stream, "two bands of {dh} rows must not stream");
+    let (staged, streamed) = png_linear(&png_bytes, (dw, dh), params.parallel, stream).unwrap();
+    assert!(!streamed);
+    let (out, _) = process(&png_bytes, &params).unwrap();
+    assert!(decode_png_rgb(&out) == staged);
+}
+
+/// A stream that ends early fails the request on both paths with the
+/// same error — the streamed path has already emitted output rows by
+/// then, but nothing is encoded. Covers a framing-valid stream short of
+/// rows and a byte-truncated one.
+#[test]
+fn png_truncated_stream_fails_on_both_paths() {
+    let short = short_rgb_png(9, 12, 3);
+    let mut cut = noisy_rgb_png(64, 64);
+    cut.truncate(cut.len() / 2);
+    for (src, dst) in [(&short, (3, 4)), (&cut, (8, 8))] {
+        let staged = png_linear(src, dst, 1, false).unwrap_err();
+        let streamed = png_linear(src, dst, 1, true).unwrap_err();
+        assert_eq!(format!("{staged:#}"), format!("{streamed:#}"));
+        assert!(
+            format!("{streamed:#}").starts_with("decode PNG"),
+            "{streamed:#}"
+        );
+        // Through the pipeline: a client error, never an encoded image.
+        let e = process(
+            src,
+            &Params {
+                max_width: dst.0 as u32,
+                max_height: dst.1 as u32,
+                ..Params::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::Undecodable, "{e:#}");
+    }
+}
+
+/// Tiny PNG sources through `process`: a 1x1 is never resized (the hot
+/// path needs a size change), a 2x2 into a 1x1 box takes it.
+#[test]
+fn png_tiny_sources_resize() {
+    for (w, h, bx) in [(1, 1, 1), (2, 2, 1), (1, 3, 2)] {
+        let src = noisy_rgb_png(w, h);
+        let (out, fmt) = process(
+            &src,
+            &Params {
+                max_width: bx,
+                max_height: bx,
+                ..Params::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(fmt, ImageFormat::Png);
+        let (ew, eh) = fit_dims(w, h, bx, bx);
+        assert_eq!(decode_png_rgb(&out).len(), ew * eh * 3, "{w}x{h} in {bx}");
+    }
+}
+
+/// `ForwardOnly` answers position queries from its byte counter and
+/// refuses every seek that would move the stream (issue #129).
+#[test]
+fn forward_only_answers_position_and_refuses_moving_seeks() {
+    use super::formats::ForwardOnly;
+    use std::io::{BufRead, Read, Seek, SeekFrom};
+    let data: Vec<u8> = (0u8..64).collect();
+    let mut r = ForwardOnly::new(std::io::BufReader::with_capacity(16, &data[..]));
+    assert_eq!(r.stream_position().unwrap(), 0);
+
+    // Both read paths advance the counter.
+    let mut four = [0u8; 4];
+    r.read_exact(&mut four).unwrap();
+    assert_eq!(four, [0, 1, 2, 3]);
+    let avail = r.fill_buf().unwrap().len();
+    assert!(avail >= 3, "the BufReader still holds bytes");
+    r.consume(3);
+    assert_eq!(r.stream_position().unwrap(), 7);
+    let mut next = [0u8; 1];
+    r.read_exact(&mut next).unwrap();
+    assert_eq!(next, [7], "consume moved the inner reader too");
+
+    // Seeks that stay put are answered; everything else is refused.
+    // The literal Current(0) is the point: it is the call a decoder
+    // makes when it does not use `stream_position`.
+    #[allow(clippy::seek_from_current)]
+    let here = r.seek(SeekFrom::Current(0)).unwrap();
+    assert_eq!(here, 8);
+    assert_eq!(r.seek(SeekFrom::Start(8)).unwrap(), 8);
+    for to in [
+        SeekFrom::Start(0),
+        SeekFrom::Start(9),
+        SeekFrom::Current(-1),
+        SeekFrom::Current(1),
+        SeekFrom::End(0),
+    ] {
+        let e = r.seek(to).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::Unsupported, "{to:?}");
+        assert!(e.to_string().contains("forward-only"), "{e}");
+    }
+    assert_eq!(
+        r.stream_position().unwrap(),
+        8,
+        "a refused seek moves nothing"
+    );
+}
+
+/// Every PNG shape the pipeline decodes, including the ones carrying
+/// the ancillary chunks it reads (`eXIf`, `iCCP`).
+fn png_shapes() -> Vec<(String, Vec<u8>)> {
+    let mut shapes: Vec<(String, Vec<u8>)> = [
+        "rgb.png",
+        "rgba.png",
+        "gray.png",
+        "gray16.png",
+        "graya.png",
+        "palette.png",
+        "interlaced.png",
+        "rgb16.png",
+    ]
+    .iter()
+    .map(|n| (n.to_string(), read_fixture(n)))
+    .collect();
+    let (w, h) = (40u32, 30u32);
+    let px: Vec<u8> = (0..w * h * 3).map(|i| (i * 7 % 251) as u8).collect();
+    let mut info = png::Info::with_size(w, h);
+    // Raw little-endian TIFF, one IFD entry: orientation 6.
+    info.exif_metadata = Some(std::borrow::Cow::Owned(vec![
+        b'I', b'I', 42, 0, 8, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
+    ]));
+    info.icc_profile = Some(std::borrow::Cow::Owned(vec![0x5a; 600]));
+    let mut out = Vec::new();
+    let mut enc = png::Encoder::with_info(&mut out, info).unwrap();
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut writer = enc.write_header().unwrap();
+    writer.write_image_data(&px).unwrap();
+    writer.finish().unwrap();
+    shapes.push(("exif_iccp (generated)".into(), out));
+    shapes
+}
+
+/// Everything the pipeline reads out of a PNG: header facts, the
+/// ancillary chunks, the frame (once whole, once row by row, the two
+/// decode arms of `process_png`), then the trailing chunks to IEND.
+fn decode_png_fully<R: std::io::BufRead + std::io::Seek>(
+    open: impl Fn() -> R,
+) -> Result<(String, Vec<u8>, Vec<u8>), png::DecodingError> {
+    let decoder = || {
+        let mut d = png::Decoder::new(open());
+        d.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+        d
+    };
+    let mut r = decoder().read_info()?;
+    let info = r.info();
+    let meta = format!(
+        "{}x{} {:?} interlaced={} exif={:?} icc={:?}",
+        info.width,
+        info.height,
+        info.color_type,
+        info.interlaced,
+        info.exif_metadata,
+        info.icc_profile.as_ref().map(|c| c.len()),
+    );
+    let mut frame = vec![0u8; r.output_buffer_size().unwrap()];
+    r.next_frame(&mut frame)?;
+    r.finish()?;
+    let mut r = decoder().read_info()?;
+    let mut rows = Vec::new();
+    while let Some(row) = r.next_row()? {
+        rows.extend_from_slice(row.data());
+    }
+    r.finish()?;
+    Ok((meta, frame, rows))
+}
+
+/// Pins the assumption `ForwardOnly` rests on (issue #129): png 0.18
+/// bounds its decoder on `Seek` but never seeks. Should a png upgrade
+/// start seeking, the refused seek surfaces here as a decode error —
+/// at every buffer granularity, so a seek that only fires on a short
+/// read cannot hide.
+#[test]
+fn png_never_seeks_through_forward_only() {
+    use super::formats::ForwardOnly;
+    for (name, bytes) in png_shapes() {
+        let want = decode_png_fully(|| std::io::Cursor::new(&bytes[..]))
+            .unwrap_or_else(|e| panic!("{name}: Cursor decode: {e}"));
+        for cap in [1, 7, 8192] {
+            let got = decode_png_fully(|| {
+                ForwardOnly::new(std::io::BufReader::with_capacity(cap, &bytes[..]))
+            })
+            .unwrap_or_else(|e| panic!("{name} at {cap}-byte reads: png tried to seek? {e}"));
+            assert!(
+                got == want,
+                "{name} at {cap}-byte reads decoded differently"
+            );
+        }
+    }
+}
+
+/// Streaming the PNG must not change how a truncated or corrupt source
+/// fails: the in-memory and file entry points agree, cut for cut, and
+/// every failure is still a client-side `Undecodable`. Covers both
+/// decode arms: the row-streamed RGB8 resize (rgb.png into a smaller
+/// box) and the whole-frame arm (everything else).
+#[test]
+fn truncated_png_fails_alike_in_memory_and_from_a_file() {
+    let dir = std::env::temp_dir().join(format!("oximg-pngcut-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = Params {
+        max_width: 64,
+        max_height: 64,
+        ..Params::default()
+    };
+    let mut failures = 0;
+    for (name, bytes) in png_shapes() {
+        let n = bytes.len();
+        // Just past IHDR's length (a cut inside the 8-byte signature
+        // never reaches the decoder: the 12-byte sniff fails first),
+        // inside IHDR's CRC, mid-IDAT, and the IEND chunk dropped; plus
+        // one flipped byte mid-stream.
+        let mut cuts: Vec<Vec<u8>> = [12, 30, n / 2, n - 12]
+            .iter()
+            .map(|&c| bytes[..c].to_vec())
+            .collect();
+        let mut flipped = bytes.clone();
+        flipped[n / 2] ^= 0xff;
+        cuts.push(flipped);
+        for (i, src) in cuts.iter().enumerate() {
+            let path = dir.join(format!("cut{i}.png"));
+            std::fs::write(&path, src).unwrap();
+            let mem = process(src, &p);
+            let file = process_path(&path, &p);
+            match (mem, file) {
+                (Ok(a), Ok(b)) => assert!(a.0 == b.0, "{name} cut {i}: bytes differ"),
+                (Err(a), Err(b)) => {
+                    failures += 1;
+                    assert_eq!(a.kind(), ErrorKind::Undecodable, "{name} cut {i}: {a:#}");
+                    assert_eq!(b.kind(), ErrorKind::Undecodable, "{name} cut {i}: {b:#}");
+                    assert_eq!(format!("{a:#}"), format!("{b:#}"), "{name} cut {i}");
+                }
+                (a, b) => panic!(
+                    "{name} cut {i}: in-memory {:?} vs file {:?}",
+                    a.map(|x| x.1),
+                    b.map(|x| x.1)
+                ),
+            }
+        }
+    }
+    assert!(failures > 0, "the cuts must exercise the error path");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Deterministic noise frame: no two neighbors alike, so a dropped,
+/// shifted or stale pixel cannot pass a byte-for-byte comparison.
+fn noise_px(w: usize, h: usize, channels: usize, seed: u32) -> Vec<u8> {
+    let mut x = seed;
+    (0..w * h * channels)
+        .map(|_| {
+            x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+/// Lossless PNG of `px`, optionally carrying an eXIf orientation.
+fn png_of(px: &[u8], w: usize, h: usize, channels: usize, orientation: Option<u16>) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut info = png::Info::with_size(w as u32, h as u32);
+    if let Some(o) = orientation {
+        // Big-endian TIFF with a single Orientation (0x0112) entry.
+        let mut tiff = b"MM\0\x2a\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01".to_vec();
+        tiff.extend_from_slice(&o.to_be_bytes());
+        tiff.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        info.exif_metadata = Some(std::borrow::Cow::Owned(tiff));
+    }
+    let mut enc = png::Encoder::with_info(&mut out, info).unwrap();
+    enc.set_color(if channels == 4 {
+        png::ColorType::Rgba
+    } else {
+        png::ColorType::Rgb
+    });
+    enc.set_depth(png::BitDepth::Eight);
+    let mut wr = enc.write_header().unwrap();
+    wr.write_image_data(px).unwrap();
+    wr.finish().unwrap();
+    out
+}
+
+/// (width, height, 8-bit samples) of a PNG the pipeline wrote.
+fn png_pixels(bytes: &[u8]) -> (usize, usize, Vec<u8>) {
+    let mut r = png::Decoder::new(std::io::Cursor::new(bytes))
+        .read_info()
+        .unwrap();
+    let mut buf = vec![0u8; r.output_buffer_size().unwrap()];
+    let info = r.next_frame(&mut buf).unwrap();
+    buf.truncate(info.buffer_size());
+    (info.width as usize, info.height as usize, buf)
+}
+
+/// PNG source through the full-frame path into a lossless PNG target.
+fn png_to_png(s: &mut Scratch, src: &[u8], max: u32) -> (usize, usize, Vec<u8>) {
+    let out = formats::process_png(s, src, ImageFormat::Png, &rbox(max, max)).unwrap();
+    png_pixels(&out)
+}
+
+/// At exact size the decoded frame is handed to `out8` rather than
+/// copied (issue #129): the pixels must come through untouched — alpha
+/// included, colors under transparent pixels included, since nothing
+/// premultiplies without a resize — and only one frame-sized buffer
+/// may stay resident in scratch.
+#[test]
+fn exact_size_png_passes_pixels_through_without_a_second_frame() {
+    let (w, h) = (97, 61);
+    for channels in [3, 4] {
+        let px = noise_px(w, h, channels, 7 + channels as u32);
+        let mut s = Scratch::default();
+        let (ow, oh, got) = png_to_png(&mut s, &png_of(&px, w, h, channels, None), 4096);
+        assert_eq!((ow, oh), (w, h), "ch={channels}");
+        assert!(got == px, "ch={channels}: exact size must be lossless");
+        let frame = w * h * channels;
+        assert!(s.out8.len() >= frame, "ch={channels}: out8 holds the frame");
+        assert!(
+            s.chunk8.len() < frame,
+            "ch={channels}: chunk8 must not keep a second copy ({} bytes)",
+            s.chunk8.len()
+        );
+    }
+}
+
+/// Exact size with an eXIf rotation: the handed-over frame rotates
+/// into the short buffer swapped back into `chunk8`, which must grow
+/// to fit. Orientation 6 displays stored (x, y) at (sh-1-y, x).
+#[test]
+fn exact_size_oriented_png_rotates_the_handed_over_frame() {
+    let (sw, sh) = (53, 31);
+    for channels in [3, 4] {
+        let px = noise_px(sw, sh, channels, 11 + channels as u32);
+        let mut s = Scratch::default();
+        let (ow, oh, got) = png_to_png(&mut s, &png_of(&px, sw, sh, channels, Some(6)), 4096);
+        assert_eq!((ow, oh), (sh, sw), "ch={channels}: axes swap");
+        let mut want = vec![0u8; px.len()];
+        for y in 0..sh {
+            for x in 0..sw {
+                let d = (x * ow + (sh - 1 - y)) * channels;
+                let o = (y * sw + x) * channels;
+                want[d..d + channels].copy_from_slice(&px[o..o + channels]);
+            }
+        }
+        assert!(got == want, "ch={channels}: rotated pixels");
+    }
+}
+
+/// Consecutive exact-size requests on one worker must not settle at
+/// two frames: scratch is grow-only and kept per thread, so without
+/// the request-start reclaim the second decode allocates a new frame
+/// into `chunk8` while `out8` still holds the first one.
+#[test]
+fn consecutive_exact_size_requests_keep_one_frame() {
+    let (w, h) = (300, 200);
+    let frame = w * h * 3;
+    let png = png_of(&noise_px(w, h, 3, 11), w, h, 3, None);
+    let exact = Params {
+        output: Some(ImageFormat::Png),
+        ..sized(4096, 4096)
+    };
+    for i in 0..3 {
+        process(&png, &exact).unwrap();
+        SCRATCH.with(|s| {
+            let s = s.borrow();
+            let (c, o) = (s.chunk8.capacity(), s.out8.capacity());
+            assert!(
+                c.min(o) < frame,
+                "request {i}: chunk8 {c} and out8 {o} both hold a {frame}-byte frame"
+            );
+        });
+    }
+}
+
+/// The same for `decode_and_resize`, the other entry point that borrows
+/// `SCRATCH`: a CMYK JPEG stages the whole frame and hands it over at
+/// exact size.
+#[test]
+fn consecutive_exact_size_decode_and_resize_keeps_one_frame() {
+    let jpeg = read_fixture("cmyk_icc.jpg");
+    for i in 0..3 {
+        let (_, w, h) = decode_and_resize(&jpeg, 4096, 4096, 1).unwrap();
+        SCRATCH.with(|s| {
+            let s = s.borrow();
+            let (c, o) = (s.chunk8.capacity(), s.out8.capacity());
+            assert!(
+                c.min(o) < w * h * 3,
+                "request {i}: chunk8 {c} and out8 {o} both hold a {w}x{h} frame"
+            );
+        });
+    }
+}
+
+/// Scratch survives across requests on a worker thread, and after an
+/// exact-size request `chunk8` is whatever `out8` held before — often
+/// far shorter than the frame. Every later request must size it again
+/// rather than trust its length: interleave exact, resized and
+/// oriented requests on one scratch and compare each against a fresh
+/// one.
+#[test]
+fn exact_size_handoff_leaves_scratch_reusable() {
+    let rgb = png_of(&noise_px(120, 80, 3, 1), 120, 80, 3, None);
+    let rgba = png_of(&noise_px(64, 90, 4, 2), 64, 90, 4, None);
+    let oriented = png_of(&noise_px(70, 40, 3, 3), 70, 40, 3, Some(8));
+    let requests: [(&[u8], u32); 6] = [
+        (&rgb, 4096),
+        (&rgba, 32),
+        (&oriented, 4096),
+        (&rgba, 4096),
+        (&rgb, 50),
+        (&rgb, 4096),
+    ];
+    let mut shared = Scratch::default();
+    for (i, (src, max)) in requests.iter().enumerate() {
+        let got = png_to_png(&mut shared, src, *max);
+        let want = png_to_png(&mut Scratch::default(), src, *max);
+        assert!(
+            got == want,
+            "request {i} (max {max}) differs on reused scratch"
+        );
+    }
+}
+
+/// Decode a PNG to its 8-bit pixels and list its IDAT chunk lengths.
+fn png_pixels_and_idats(b: &[u8]) -> (Vec<u8>, Vec<usize>) {
+    let mut r = png::Decoder::new(std::io::Cursor::new(b))
+        .read_info()
+        .unwrap();
+    let mut px = vec![0; r.output_buffer_size().unwrap()];
+    let n = r.next_frame(&mut px).unwrap().buffer_size();
+    px.truncate(n);
+    let (mut i, mut idats) = (8, Vec::new());
+    while i + 8 <= b.len() {
+        let len = u32::from_be_bytes(b[i..i + 4].try_into().unwrap()) as usize;
+        if &b[i + 4..i + 8] == b"IDAT" {
+            idats.push(len);
+        }
+        i += 12 + len;
+    }
+    (px, idats)
+}
+
+/// The PNG encoder streams deflate output into 256 KiB IDAT chunks
+/// (issue #133) instead of one IDAT built in a second buffer: the same
+/// pixels, and the same deflate stream `write_image_data` produced, so
+/// the file differs only by the extra chunk framing.
+#[test]
+fn png_streams_its_idat_chunks() {
+    let def = Resolved::new(&Params::default());
+    let (w, h) = (900, 700);
+    for channels in [3, 4] {
+        // A gradient under four bits of noise: compressible, but to
+        // more than one chunk.
+        let mut seed = 0x9E3779B9u32;
+        let px: Vec<u8> = (0..w * h * channels)
+            .map(|i| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                ((i % (w * channels)) * 255 / (w * channels)) as u8 ^ (seed >> 28) as u8
+            })
+            .collect();
+        let out = encode_png(&px, w, h, channels, None, &def).unwrap();
+        let (decoded, idats) = png_pixels_and_idats(&out);
+        assert!(decoded == px, "{channels} channels: pixels changed");
+        assert!(idats.len() > 1, "{channels} channels: {idats:?}");
+        let (last, full) = idats.split_last().unwrap();
+        assert!(full.iter().all(|&n| n == 256 * 1024), "{idats:?}");
+        assert!(*last <= 256 * 1024);
+
+        let mut whole = Vec::new();
+        let mut enc = png::Encoder::new(&mut whole, w as u32, h as u32);
+        enc.set_color(if channels == 4 {
+            png::ColorType::Rgba
+        } else {
+            png::ColorType::Rgb
+        });
+        enc.set_depth(png::BitDepth::Eight);
+        enc.set_compression(png::Compression::Fast);
+        let mut writer = enc.write_header().unwrap();
+        writer.write_image_data(&px).unwrap();
+        writer.finish().unwrap();
+        let framing = 12 * (idats.len() - 1);
+        assert_eq!(out.len(), whole.len() + framing, "{channels} channels");
+    }
+}
+
+/// fdeflate expands noise; like `write_image_data`, the encoder then
+/// falls back to stored blocks rather than ship the expansion, and
+/// zlib's levels hold to the stored size by themselves.
+#[test]
+fn incompressible_png_falls_back_to_stored_blocks() {
+    let (w, h): (usize, usize) = (600, 400);
+    let mut seed = 0x2545F491u32;
+    let px: Vec<u8> = (0..w * h * 3)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed >> 24) as u8
+        })
+        .collect();
+    let raw = (w * 3 + 1) * h;
+    let stored = 2 + raw + 5 * raw.div_ceil(65535) + 4;
+    for effort in [PngEffort::Fastest, PngEffort::Fast, PngEffort::Balanced] {
+        let p = Resolved::new(&Params {
+            png_effort: Some(effort),
+            ..Params::default()
+        });
+        let out = encode_png(&px, w, h, 3, None, &p).unwrap();
+        let (decoded, idats) = png_pixels_and_idats(&out);
+        assert!(decoded == px, "{effort:?}: pixels changed");
+        let idat: usize = idats.iter().sum();
+        // flate2's stored blocks run ~0.01% over the 65535-byte ideal.
+        assert!(
+            idat <= stored + stored / 1000,
+            "{effort:?}: {idat} > stored {stored}"
+        );
+    }
+}
+
+/// A capped attempt reports itself wherever the cap falls, including in
+/// the last bytes fdeflate writes from its `finish`, which unwraps them:
+/// the writer must drop past the cap, not fail.
+#[test]
+fn a_capped_png_attempt_never_panics() {
+    // The 256 KiB chunk buffer flushes into the capped writer only when
+    // it fills, so the crossing lands in `finish` when the deflate stream
+    // ends 1-12 bytes past a chunk boundary. Search noise sizes for one.
+    let fast = png::Compression::Fast;
+    let rgb = png::ColorType::Rgb;
+    let mut seed = 0x2545F491u32;
+    let noise: Vec<u8> = (0..400 * 400 * 3)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed >> 24) as u8
+        })
+        .collect();
+    let (w, h, full) = (200usize..400)
+        .flat_map(|w| (1..=400).map(move |h| (w, h)))
+        .filter(|&(w, h)| {
+            // fdeflate expands noise: ~1.36 B per filtered raw byte.
+            let est = (w * 3 + 1) * h * 136 / 100;
+            est.abs_diff(256 * 1024) < 4096
+        })
+        .find_map(|(w, h)| {
+            let mut full = Vec::new();
+            let px = &noise[..w * h * 3];
+            write_png(&mut full, usize::MAX, w, h, None, rgb, None, px, fast).unwrap();
+            let (_, idats) = png_pixels_and_idats(&full);
+            (idats.len() == 2 && (1..=12).contains(&idats[1])).then_some((w, h, full))
+        })
+        .expect("a size whose stream ends just past a chunk");
+    let px = &noise[..w * h * 3];
+    for cap in full.len() - 40..full.len() {
+        let mut out = Vec::new();
+        let fits = write_png(&mut out, cap, w, h, None, rgb, None, px, fast).unwrap();
+        assert!(!fits, "cap {cap} of {}", full.len());
+        assert!(out.len() <= cap);
+    }
+    let mut out = Vec::new();
+    assert!(write_png(&mut out, full.len(), w, h, None, rgb, None, px, fast).unwrap());
+    assert!(out == full);
 }

@@ -4,48 +4,94 @@
 
 use super::*;
 
-pub(super) fn process_png<R: std::io::Read>(
+/// A forward-only `Seek` over a `BufRead`, so the png crate can decode
+/// straight from the caller's reader instead of a whole-source copy.
+///
+/// png 0.18 bounds `Decoder<R>` on `BufRead + Seek`, yet its decoder
+/// never seeks (only its own tests do): the bound is what forced the
+/// old `read_to_end` + `Cursor`, which kept the whole compressed PNG
+/// resident on top of the decoded frame — 54 MB for a 7000^2 photo,
+/// 246 MB for an unfiltered one (issue #129). This adapter answers
+/// position queries from a byte counter and refuses any seek that
+/// would move, as an `io::Error` the decoder surfaces as a decode
+/// failure. `png_never_seeks_through_forward_only` pins the
+/// assumption across every PNG shape, so a png upgrade that starts
+/// seeking fails a test instead of silently mis-decoding.
+pub(super) struct ForwardOnly<R> {
+    inner: R,
+    pos: u64,
+}
+
+impl<R> ForwardOnly<R> {
+    pub(super) fn new(inner: R) -> Self {
+        ForwardOnly { inner, pos: 0 }
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for ForwardOnly<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl<R: std::io::BufRead> std::io::BufRead for ForwardOnly<R> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        self.inner.fill_buf()
+    }
+
+    fn consume(&mut self, amt: usize) {
+        self.inner.consume(amt);
+        self.pos += amt as u64;
+    }
+}
+
+impl<R> std::io::Seek for ForwardOnly<R> {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        // Only a "seek" that lands where the stream already is can be
+        // honored; the end is unknown and the past is gone.
+        let stays = match to {
+            std::io::SeekFrom::Start(n) => n == self.pos,
+            std::io::SeekFrom::Current(d) => d == 0,
+            std::io::SeekFrom::End(_) => false,
+        };
+        if stays {
+            Ok(self.pos)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!(
+                    "PNG source is forward-only: refused {to:?} at byte {}",
+                    self.pos
+                ),
+            ))
+        }
+    }
+
+    fn stream_position(&mut self) -> std::io::Result<u64> {
+        Ok(self.pos)
+    }
+}
+
+pub(super) fn process_png<R: std::io::BufRead>(
     s: &mut Scratch,
-    mut reader: R,
+    reader: R,
     target: ImageFormat,
     p: &Resolved,
 ) -> Result<Vec<u8>> {
     let timing = crate::config::config().timing;
     let t0 = crate::clock::Instant::now();
-    s.srcbuf.clear();
-    reader
-        .read_to_end(&mut s.srcbuf)
-        .context("read PNG source")?;
-    let mut decoder = png::Decoder::new(std::io::Cursor::new(&s.srcbuf[..]));
+    // Decode straight from the reader: the compressed source is never
+    // copied, so only the caller's own buffer (if any) stays resident.
+    let mut decoder = png::Decoder::new(ForwardOnly::new(reader));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut png_reader = decoder.read_info().context("parse PNG")?;
-    {
+    let (src_w, src_h) = {
         let hdr = png_reader.info();
-        check_src_pixels(hdr.width as usize, hdr.height as usize)?;
-        // PNG has no shrink-on-load: the whole frame materializes,
-        // normalized to RGB8 or RGBA8 (EXPAND|STRIP_16 upstream).
-        let channels = match hdr.color_type {
-            png::ColorType::Rgba | png::ColorType::GrayscaleAlpha => 4,
-            // Palette sources can carry tRNS, which EXPAND resolves to
-            // RGBA; assume the wider staging rather than under-count.
-            png::ColorType::Indexed => 4,
-            _ => 3,
-        };
-        let (sw, sh) = (hdr.width as usize, hdr.height as usize);
-        // The eXIf orientation is parsed below this block, so which way
-        // the fit runs is not known yet — and an axis-swapping
-        // orientation with an asymmetric box can make the real output
-        // several times larger than the unoriented fit. Take the larger
-        // of the two candidates: over-counting the output side is the
-        // safe direction for a limit.
-        let (ow, oh) = larger_fit(sw, sh, p);
-        check_decoded_bytes(
-            DecodeCost::full_frame(sw, sh, channels, p)
-                .with_output(ow, oh, channels)
-                .with_compressed(s.srcbuf.len() + s.held_source_bytes),
-            "PNG",
-        )?;
-    }
+        (hdr.width as usize, hdr.height as usize)
+    };
+    check_src_pixels(src_w, src_h)?;
     // eXIf orientation (raw TIFF per the PNG spec; a stray JPEG-style
     // prefix is tolerated like browsers do). Only chunks ahead of the
     // image data are seen — the orientation must steer the resize box,
@@ -79,65 +125,105 @@ pub(super) fn process_png<R: std::io::Read>(
     // Hot path: plain RGB8, non-interlaced, linear-light mode. Rows are
     // sRGB->linear LUT-mapped as they are decoded, so the pixels never
     // take a second full-image pass (and never exist as a full u8 copy).
-    {
-        let (ct, bits) = png_reader.output_color_type();
-        let hdr = png_reader.info();
-        let (src_w, src_h) = (hdr.width as usize, hdr.height as usize);
+    // Everything that picks it is in the header, so it is decided
+    // before the estimate, which then prices the arm that will run.
+    let (ct, bits) = png_reader.output_color_type();
+    let fused = {
         let (dst_w, dst_h) = fit_dims(src_w, src_h, p.max_width, p.max_height);
-        if ct == png::ColorType::Rgb
+        ct == png::ColorType::Rgb
             && bits == png::BitDepth::Eight
-            && !hdr.interlaced
+            && !png_reader.info().interlaced
             && (src_w, src_h) != (dst_w, dst_h)
             && p.linear_light
             // Oriented PNGs are rare; they take the general arm below
             // rather than teaching the row-streaming path to rotate.
             && orientation.is_upright()
-        {
-            let fwd = fwd_lut();
-            // Fully filled row by row; the row-count check below rejects
-            // truncated streams before the buffer is consumed.
-            scratch_u16(&mut s.src16, src_w * src_h * 3);
-            let mut y = 0usize;
-            while let Some(row) = png_reader.next_row().context("decode PNG")? {
-                let dst = &mut s.src16[y * src_w * 3..(y + 1) * src_w * 3];
-                for (d, &b) in dst.iter_mut().zip(row.data()) {
-                    *d = fwd[b as usize];
-                }
-                y += 1;
-            }
-            anyhow::ensure!(y == src_h, "PNG row count mismatch");
-            let t_decode = t0.elapsed();
-            let t1 = crate::clock::Instant::now();
-            scratch_u16(&mut s.dst16, dst_w * dst_h * 3);
-            resize_bands(
-                u16_as_bytes(&s.src16[..src_w * src_h * 3]),
-                src_w,
-                src_h,
-                u16_as_bytes_mut(&mut s.dst16[..dst_w * dst_h * 3]),
-                dst_w,
-                dst_h,
-                PixelType::U16x3,
-                p.parallel,
-                &mut s.resizer,
-            )?;
-            let back = back_lut();
-            let out = scratch_u8(&mut s.out8, dst_w * dst_h * 3);
-            for (d, &v) in out.iter_mut().zip(&s.dst16[..dst_w * dst_h * 3]) {
-                *d = back[v as usize];
-            }
-            let t_resize = t1.elapsed();
-            let t2 = crate::clock::Instant::now();
-            let out = encode_output(s, dst_w, dst_h, 3, target, p, icc.as_deref());
-            if timing {
-                eprintln!(
-                    "timing png(fused) decode+fwd({src_w}x{src_h})={:.1}ms resize+back={:.1}ms encode={:.1}ms",
-                    t_decode.as_secs_f64() * 1e3,
-                    t_resize.as_secs_f64() * 1e3,
-                    t2.elapsed().as_secs_f64() * 1e3
-                );
-            }
-            return out;
+    };
+    // Whether the fused arm streams rows into the row kernel instead of
+    // staging `src16`: decided once, for the estimate and the decode.
+    let stream = fused && {
+        let (_, dst_h) = fit_dims(src_w, src_h, p.max_width, p.max_height);
+        bands_use_stream_kernel(PixelType::U16x3, p.parallel, dst_h)
+    };
+    {
+        // EXPAND|STRIP_16 normalize to 8 bits, and resolve palettes to
+        // RGB or RGBA by tRNS; grayscale is widened to RGB(A) in place.
+        let channels = match ct {
+            png::ColorType::Rgba | png::ColorType::GrayscaleAlpha => 4,
+            _ => 3,
+        };
+        let (dst_w, dst_h) = oriented_fit(src_w, src_h, orientation, p);
+        // The encoder sees the frame after rotation.
+        let (enc_w, enc_h) = orientation.display_dims(dst_w, dst_h);
+        // PNG has no shrink-on-load: the general arm stages the whole
+        // frame in `chunk8`; the fused arm never does. Streamed, it does
+        // not stage `src16` either: one mapped source row, the kernel's
+        // own buffers (window tables, staging batch, ring — sized from
+        // the shape the way the kernel sizes them; a tall source squeezed
+        // to a few rows keeps a padded ring row per source row), and
+        // `out8` written straight from the kernel.
+        let cost = if stream {
+            let mut row = DecodeCost::streaming().with_streamed_output(dst_w, dst_h, 3);
+            #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+            let kernel = crate::resize_kernel::StreamResize::<FuseKernel>::resident_bytes(
+                src_w, src_h, dst_w, dst_h, 3,
+            );
+            #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+            let kernel = 0;
+            row.resize_input_bytes = (src_w as u64).saturating_mul(3 * 2).saturating_add(kernel);
+            row
+        } else if fused {
+            DecodeCost::streaming().with_full_frame_resize(
+                (src_w, src_h),
+                (dst_w, dst_h),
+                channels,
+                p,
+            )
+        } else {
+            DecodeCost::staged(src_w, src_h, channels).with_full_frame_resize(
+                (src_w, src_h),
+                (dst_w, dst_h),
+                channels,
+                p,
+            )
+        };
+        check_decoded_bytes(
+            cost.with_exact_size_rotation((src_w, src_h), (dst_w, dst_h), channels, orientation)
+                .with_encode(Some(target), enc_w, enc_h, channels, p)
+                // Decoded straight from the reader: no `srcbuf` copy, and
+                // its length may be a previous request's.
+                .with_compressed(s.held_source_bytes),
+            "PNG",
+        )?;
+    }
+    if fused {
+        let (dst_w, dst_h) = fit_dims(src_w, src_h, p.max_width, p.max_height);
+        let bufs = LinearBufs {
+            src16: &mut s.src16,
+            dst16: &mut s.dst16,
+            out8: &mut s.out8,
+            resizer: &mut s.resizer,
+        };
+        let streamed = png_rgb8_linear_resize(
+            bufs,
+            &mut png_reader,
+            (src_w, src_h),
+            (dst_w, dst_h),
+            p.parallel,
+            stream,
+        )?;
+        let t_resize = t0.elapsed();
+        let t2 = crate::clock::Instant::now();
+        let out = encode_output(s, dst_w, dst_h, 3, target, p, icc.as_deref());
+        if timing {
+            let how = if streamed { "streamed" } else { "fused" };
+            eprintln!(
+                "timing png({how}) decode+fwd+resize+back({src_w}x{src_h})={:.1}ms encode={:.1}ms",
+                t_resize.as_secs_f64() * 1e3,
+                t2.elapsed().as_secs_f64() * 1e3
+            );
         }
+        return out;
     }
 
     let buf_len = png_reader.output_buffer_size().context("PNG too large")?;
@@ -180,18 +266,112 @@ pub(super) fn process_png<R: std::io::Read>(
     out
 }
 
-/// The larger of the two fits a source could take once its orientation
-/// is known: axis-swapping orientations fit the *displayed* frame, and
-/// with an asymmetric box that can be several times the unoriented
-/// result. Used where the estimate runs before the orientation is
-/// parsed — over-counting the output side keeps a limit safe.
-pub(super) fn larger_fit(w: usize, h: usize, p: &Resolved) -> (usize, usize) {
-    let a = fit_dims(w, h, p.max_width, p.max_height);
-    let b = fit_dims(h, w, p.max_width, p.max_height);
-    if a.0 * a.1 >= b.0 * b.1 {
-        a
+/// The [`Scratch`] buffers [`png_rgb8_linear_resize`] writes, borrowed
+/// field by field.
+pub(super) struct LinearBufs<'a> {
+    pub(super) src16: &'a mut Vec<u16>,
+    pub(super) dst16: &'a mut Vec<u16>,
+    pub(super) out8: &'a mut Vec<u8>,
+    pub(super) resizer: &'a mut Option<Resizer>,
+}
+
+/// The linear-light resize of a plain RGB8, non-interlaced PNG into
+/// `out8[..dst_w * dst_h * 3]`, reading the decoder's remaining rows.
+/// Each row is sRGB->linear LUT-mapped as it is decoded.
+///
+/// With `stream` (see [`bands_use_stream_kernel`]) the mapped rows go
+/// straight into the row-push kernel that `resize_bands` would have run
+/// over the staged frame, so only one source row plus the kernel's
+/// window ring is resident: bounded by the output and the filter
+/// support, not the source (issue #129: 294 MB of u16 staging for a
+/// 7000x7000 source, even for a thumbnail). The kernel's full-frame
+/// driver pushes exactly these rows in this order, so the bytes match.
+/// Otherwise the frame is staged as u16 in `src16` and resized by
+/// `resize_bands` (band-parallel, pic-scale on x86-64, fir).
+///
+/// Every row is decoded either way: a truncated or corrupt tail fails
+/// the request before anything is encoded. Returns whether it streamed.
+pub(super) fn png_rgb8_linear_resize<R: std::io::BufRead + std::io::Seek>(
+    s: LinearBufs<'_>,
+    png_reader: &mut png::Reader<R>,
+    (src_w, src_h): (usize, usize),
+    (dst_w, dst_h): (usize, usize),
+    parallel: usize,
+    stream: bool,
+) -> Result<bool> {
+    let fwd = fwd_lut();
+    let back = back_lut();
+    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    if stream
+        && let Ok(mut resizer) =
+            crate::resize_kernel::StreamResize::<FuseKernel>::new(src_w, src_h, dst_w, dst_h, 3)
+    {
+        // One mapped row, reused; every element is written per row.
+        let row16 = scratch_u16(s.src16, src_w * 3);
+        let out = scratch_u8(s.out8, dst_w * dst_h * 3);
+        let mut y = 0usize;
+        while let Some(row) = png_reader.next_row().context("decode PNG")? {
+            for (d, &b) in row16.iter_mut().zip(row.data()) {
+                *d = fwd[b as usize];
+            }
+            resizer.push_row(row16, |oy, o| {
+                for (d, &v) in out[oy * dst_w * 3..(oy + 1) * dst_w * 3].iter_mut().zip(o) {
+                    *d = back[v as usize];
+                }
+            });
+            y += 1;
+        }
+        anyhow::ensure!(y == src_h, "PNG row count mismatch");
+        // Every source row arrived, so every window completed.
+        debug_assert_eq!(resizer.rows_emitted(), dst_h);
+        return Ok(true);
+    }
+    // Fully filled row by row; the row-count check below rejects
+    // truncated streams before the buffer is consumed.
+    scratch_u16(s.src16, src_w * src_h * 3);
+    let mut y = 0usize;
+    while let Some(row) = png_reader.next_row().context("decode PNG")? {
+        let dst = &mut s.src16[y * src_w * 3..(y + 1) * src_w * 3];
+        for (d, &b) in dst.iter_mut().zip(row.data()) {
+            *d = fwd[b as usize];
+        }
+        y += 1;
+    }
+    anyhow::ensure!(y == src_h, "PNG row count mismatch");
+    scratch_u16(s.dst16, dst_w * dst_h * 3);
+    resize_bands(
+        u16_as_bytes(&s.src16[..src_w * src_h * 3]),
+        src_w,
+        src_h,
+        u16_as_bytes_mut(&mut s.dst16[..dst_w * dst_h * 3]),
+        dst_w,
+        dst_h,
+        PixelType::U16x3,
+        parallel,
+        s.resizer,
+    )?;
+    let out = scratch_u8(s.out8, dst_w * dst_h * 3);
+    for (d, &v) in out.iter_mut().zip(&s.dst16[..dst_w * dst_h * 3]) {
+        *d = back[v as usize];
+    }
+    Ok(false)
+}
+
+/// The stored-orientation resize target: fit the *displayed* frame,
+/// then swap the axes back for axis-swapping orientations (the rotation
+/// runs on the resized frame).
+pub(super) fn oriented_fit(
+    src_w: usize,
+    src_h: usize,
+    orientation: crate::meta::Orientation,
+    p: &Resolved,
+) -> (usize, usize) {
+    let (disp_w, disp_h) = orientation.display_dims(src_w, src_h);
+    let (fit_w, fit_h) = fit_dims(disp_w, disp_h, p.max_width, p.max_height);
+    if orientation.swaps_axes() {
+        (fit_h, fit_w)
     } else {
-        (b.1, b.0)
+        (fit_w, fit_h)
     }
 }
 
@@ -256,7 +436,8 @@ pub(super) fn process_webp<R: std::io::Read>(
         s.srcbuf.clear();
         s.srcbuf.extend_from_slice(&frame);
     }
-    let (src_w, src_h, channels, dec_w, dec_h) = webp_decode_into_chunk8(s, orientation, p)?;
+    let (src_w, src_h, channels, dec_w, dec_h) =
+        webp_decode_into_chunk8(s, orientation, target, p)?;
     let _ = (src_w, src_h);
     let t_dec = t0.elapsed();
 
@@ -310,14 +491,24 @@ pub(super) fn process_avif<R: std::io::Read>(
         // Before the decode allocates: dav1d has no shrink-on-load, so
         // the whole frame materializes. Dimensions come from the
         // container probe; four channels covers the alpha auxiliary
-        // item, and 10/12-bit sources stage two bytes per sample, which
-        // the linear-light term already accounts for.
+        // item.
         let (pw, ph) = crate::avif::probe_avif(&s.srcbuf)?;
         check_src_pixels(pw, ph)?;
-        let (ow, oh) = larger_fit(pw, ph, p);
+        let (ow, oh) = oriented_fit(pw, ph, orientation, p);
+        let (enc_w, enc_h) = orientation.display_dims(ow, oh);
+        let mut cost = DecodeCost::staged(pw, ph, 4);
+        // dav1d's pictures and frame state next to `chunk8`, still
+        // resident when the resize allocates (freed memory the
+        // allocator keeps): 2.1 B/px for 8-bit 4:2:0, 6.8 for 12-bit
+        // 4:4:4, 10.5 for 10-bit 4:4:4 with noise alpha (decode alone,
+        // 4000², M2 Max).
+        cost.staged_bytes = cost
+            .staged_bytes
+            .saturating_add((pw as u64).saturating_mul(ph as u64).saturating_mul(12));
         check_decoded_bytes(
-            DecodeCost::full_frame(pw, ph, 4, p)
-                .with_output(ow, oh, 4)
+            cost.with_full_frame_resize((pw, ph), (ow, oh), 4, p)
+                .with_exact_size_rotation((pw, ph), (ow, oh), 4, orientation)
+                .with_encode(Some(target), enc_w, enc_h, 4, p)
                 .with_compressed(s.srcbuf.len() + s.held_source_bytes),
             "AVIF",
         )?;
@@ -348,6 +539,7 @@ pub(super) fn process_avif<R: std::io::Read>(
 pub(super) fn webp_decode_into_chunk8(
     s: &mut Scratch,
     orientation: crate::meta::Orientation,
+    target: ImageFormat,
     p: &Resolved,
 ) -> Result<(usize, usize, usize, usize, usize)> {
     use libwebp_sys as w;
@@ -377,10 +569,24 @@ pub(super) fn webp_decode_into_chunk8(
         // Conservative for WebP: libwebp's decode scaler may shrink
         // this below the source (decided a few lines down), so the
         // full frame is an upper bound, not the exact figure.
-        let (ow, oh) = larger_fit(src_w, src_h, p);
+        let (ow, oh) = oriented_fit(src_w, src_h, orientation, p);
+        let (enc_w, enc_h) = orientation.display_dims(ow, oh);
+        let mut cost = DecodeCost::staged(src_w, src_h, channels as u64);
+        // VP8L keeps the whole image as ARGB words while it decodes,
+        // even when the output is scaled: lossless sources, and the
+        // alpha plane of lossy ones. Measured 4.0-4.1 B/px lossless and
+        // 2.1 for lossy alpha (4000², M2 Max); lossy RGB streams rows.
+        if config.input.format != 1 || config.input.has_alpha != 0 {
+            cost.staged_bytes = cost.staged_bytes.saturating_add(
+                (src_w as u64)
+                    .saturating_mul(src_h as u64)
+                    .saturating_mul(4),
+            );
+        }
         check_decoded_bytes(
-            DecodeCost::full_frame(src_w, src_h, channels as u64, p)
-                .with_output(ow, oh, channels as u64)
+            cost.with_full_frame_resize((src_w, src_h), (ow, oh), channels as u64, p)
+                .with_exact_size_rotation((src_w, src_h), (ow, oh), channels as u64, orientation)
+                .with_encode(Some(target), enc_w, enc_h, channels as u64, p)
                 .with_compressed(s.srcbuf.len() + s.held_source_bytes),
             "WebP",
         )?;
@@ -389,13 +595,7 @@ pub(super) fn webp_decode_into_chunk8(
         // swap back for axis-swapping orientations. Deciding the decode
         // scale from the unoriented fit would under-decode sources
         // whose displayed aspect fits the box differently.
-        let (disp_w, disp_h) = orientation.display_dims(src_w, src_h);
-        let (fit_w, fit_h) = fit_dims(disp_w, disp_h, p.max_width, p.max_height);
-        let (dst_w, dst_h) = if orientation.swaps_axes() {
-            (fit_h, fit_w)
-        } else {
-            (fit_w, fit_h)
-        };
+        let (dst_w, dst_h) = (ow, oh);
         // Unlike the streaming JPEG arm, this one keeps its shrink by
         // default: libwebp stages the whole frame, so the decode size
         // is the resident set. Full decode does score better — 69.27
@@ -469,13 +669,7 @@ pub(super) fn resize_pixels_oriented(
     orientation: crate::meta::Orientation,
     p: &Resolved,
 ) -> Result<(usize, usize)> {
-    let (disp_w, disp_h) = orientation.display_dims(src_w, src_h);
-    let (fit_w, fit_h) = fit_dims(disp_w, disp_h, p.max_width, p.max_height);
-    let (dst_w, dst_h) = if orientation.swaps_axes() {
-        (fit_h, fit_w)
-    } else {
-        (fit_w, fit_h)
-    };
+    let (dst_w, dst_h) = oriented_fit(src_w, src_h, orientation, p);
     resize_pixels_to(s, channels, src_w, src_h, dst_w, dst_h, p)?;
     if orientation.is_upright() {
         return Ok((dst_w, dst_h));
@@ -498,6 +692,14 @@ pub(super) fn resize_pixels_oriented(
 /// `out8` at exactly `dst_w`x`dst_h`. RGB follows the same
 /// linear-light path as JPEG; alpha images are premultiplied before
 /// resampling and unpremultiplied after.
+///
+/// `chunk8` does not survive: at exact size its buffer *becomes*
+/// `out8` (and `chunk8` is left holding the old `out8`), and in sRGB
+/// mode alpha is premultiplied in place. The animated-GIF canvas,
+/// which persists across frames, therefore skips this at exact size;
+/// its resized frames still come here, where the in-place premultiply
+/// is an exact no-op: every canvas pixel is either opaque (drawn) or
+/// all zero (never drawn, or cleared).
 pub(super) fn resize_pixels_to(
     s: &mut Scratch,
     channels: usize,
@@ -509,9 +711,13 @@ pub(super) fn resize_pixels_to(
 ) -> Result<(usize, usize)> {
     let src_len = src_w * src_h * channels;
     if (src_w, src_h) == (dst_w, dst_h) {
-        scratch_u8(&mut s.out8, src_len);
-        let (chunk8, out8) = (&s.chunk8, &mut s.out8);
-        out8[..src_len].copy_from_slice(&chunk8[..src_len]);
+        // No resize: hand the decoded frame over instead of copying it.
+        // A copy kept two full frames resident (147 MB each at 7000^2
+        // RGB, issue #129). Every decoder sizes chunk8 to at least the
+        // frame, and every later chunk8 user re-sizes it through
+        // scratch_u8 or `resize`, so the shorter buffer swapped in is safe.
+        debug_assert!(s.chunk8.len() >= src_len);
+        std::mem::swap(&mut s.out8, &mut s.chunk8);
         return Ok((dst_w, dst_h));
     }
 

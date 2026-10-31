@@ -104,6 +104,23 @@ impl Error {
         };
         Error { kind, inner }
     }
+
+    /// Classify a failure reading a caller's reader. No bytes have
+    /// reached a parser yet, so unlike [`Error::classify`] none of it
+    /// is bad input: whatever the kind (`TimedOut`, `ConnectionReset`,
+    /// an `Other` from a wrapper), the source could not be read.
+    /// Not-found and size limits keep their own kinds.
+    pub(crate) fn source_read(io: std::io::Error) -> Error {
+        let kind = match io.kind() {
+            IoKind::NotFound => ErrorKind::SourceNotFound,
+            IoKind::FileTooLarge => ErrorKind::SourceTooLarge,
+            _ => ErrorKind::SourceUnreadable,
+        };
+        Error {
+            kind,
+            inner: anyhow::Error::new(io).context("read source"),
+        }
+    }
 }
 
 /// Walk the full source chain for timeout evidence: an `io::Error`

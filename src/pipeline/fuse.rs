@@ -383,7 +383,7 @@ pub(super) fn fused_resize_encode<R: std::io::BufRead>(
             let back = back_lut();
             let mut row8 = vec![0u8; dst_w * 3];
 
-            // The serial encoder's own start (progressive knob, profile
+            // The serial encoder's own start (scan-layout knobs, profile
             // chunks ahead of the scanlines), so fused output stays
             // byte-identical to it.
             let mut enc = start_jpegli(dst_w, dst_h, quality, icc);

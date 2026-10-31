@@ -4,11 +4,19 @@ Sources are sniffed by magic bytes. Extensions are never trusted.
 
 | Format | Decode | Encode | Default output |
 |---|---|---|---|
-| JPEG | baseline, extended sequential (SOF1) & progressive, grayscale, CMYK/YCCK | jpegli progressive (default; sequential up to `OXIMG_JPEG_SEQUENTIAL_PIXELS`, 12k) or sequential (SOF1, `OXIMG_JPEG_PROGRESSIVE=0`); `PRESET=fast\|small` → mozjpeg | itself |
+| JPEG | baseline, extended sequential (SOF1) & progressive, grayscale, CMYK/YCCK | jpegli progressive (default; sequential up to `OXIMG_JPEG_SEQUENTIAL_PIXELS`, 12k) or sequential (SOF1, `OXIMG_JPEG_PROGRESSIVE=0`); above `OXIMG_JPEG_STREAMING_PIXELS` (16 MP) sequential on standard Huffman tables, encoded row by row; `PRESET=fast\|small` → mozjpeg | itself |
 | PNG | palette / gray / 16-bit → RGB(A)8 | lossless RGB(A); opt-in quantize | itself |
 | WebP | lossy & lossless, alpha | lossy + alpha; canvas ≤ 16383 px | itself |
 | AVIF (`--features avif`) | dav1d 8/10/12-bit, all subsamplings, alpha | SVT-AV1 10-bit 4:2:0, tune=ssim, alpha auxiliary | itself |
 | GIF | GIF87a/89a, frames composited onto the logical screen | **none** | WebP (animated GIF → animated WebP) |
+
+PNG has no shrink-on-load. On arm64, an opaque RGB source (8- or
+16-bit truecolor, or a palette without transparency — all decoded to
+8-bit RGB), non-interlaced, upright and resized in linear light as one
+band (`OXIMG_PAR=1`, or under two output rows per band) streams its
+rows into the resize, so only a window of rows is resident; every
+other PNG, and every PNG on amd64, decodes to a full frame first.
+Bytes are the same either way.
 
 Accepted `@{fmt}` tokens: `jpg` / `jpeg` / `png` / `webp` / `avif`.
 `@gif` / `@jxl` / `format=gif` / CLI `.gif` without `-f` are refused

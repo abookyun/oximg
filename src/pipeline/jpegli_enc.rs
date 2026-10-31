@@ -119,6 +119,25 @@ extern "C-unwind" fn unwind_error_exit(cinfo: &mut ffi::jpegli_common_struct) {
     std::panic::resume_unwind(Box::new(format!("jpegli fatal error: code {code}")));
 }
 
+/// How the encoder lays out the scans.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum JpegMode {
+    /// [`SCAN_SCRIPT`]. Holds the whole image's coefficients and tokens
+    /// until `finish`.
+    Progressive,
+    /// One scan with Huffman tables built for the image, so the whole
+    /// image's tokens are held until the tables are.
+    Sequential,
+    /// One scan on the standard (Annex K) tables: jpegli entropy-codes
+    /// rows as they arrive and holds only a few (its streaming path,
+    /// `IsStreamingSupported` in jpegli's encode.cc). Measured on 8000²
+    /// re-encodes at q80 (M2 Max), the encoder then holds its output and
+    /// nothing else: 213 MB peak on a photo and 287 MB on noise, against
+    /// 284 / 661 MB sequential and 663 / 1048 MB progressive, for photos
+    /// 5% larger than [`Self::Sequential`] (issue #133).
+    Streaming,
+}
+
 /// A started RGB encoder: markers and scanlines, then [`Self::finish`].
 pub(super) struct JpegliEncoder {
     cinfo: Box<ffi::jpegli_compress_struct>,
@@ -129,9 +148,8 @@ pub(super) struct JpegliEncoder {
 }
 
 impl JpegliEncoder {
-    /// Start a `w` x `h` RGB encode at jpegli `quality`, progressive with
-    /// [`SCAN_SCRIPT`] or baseline.
-    pub(super) fn new(w: usize, h: usize, quality: f32, progressive: bool) -> JpegliEncoder {
+    /// Start a `w` x `h` RGB encode at jpegli `quality` in `mode`.
+    pub(super) fn new(w: usize, h: usize, quality: f32, mode: JpegMode) -> JpegliEncoder {
         // SAFETY: zeroed structs are the libjpeg idiom before
         // jpegli_std_error / jpegli_CreateCompress initialize them; every
         // pointer handed to jpegli targets a Box owned by the returned
@@ -164,18 +182,20 @@ impl JpegliEncoder {
             enc.cinfo.image_width = w as ffi::JDIMENSION;
             enc.cinfo.image_height = h as ffi::JDIMENSION;
             ffi::jpegli_set_quality(&mut enc.cinfo, quality as c_int, 0);
-            if progressive {
-                debug_assert_eq!(enc.cinfo.num_components, 3);
-                enc.cinfo.scan_info = SCAN_SCRIPT.as_ptr();
-                enc.cinfo.num_scans = SCAN_SCRIPT.len() as c_int;
-            } else {
+            match mode {
+                JpegMode::Progressive => {
+                    debug_assert_eq!(enc.cinfo.num_components, 3);
+                    enc.cinfo.scan_info = SCAN_SCRIPT.as_ptr();
+                    enc.cinfo.num_scans = SCAN_SCRIPT.len() as c_int;
+                }
                 // jpegli_set_defaults leaves sequential output on the
                 // standard Huffman tables (progressive always optimizes).
                 // Those cost 30-100% in bytes on small and graphic
                 // outputs (issue #61); optimized tables cost a second
                 // pass over the buffered coefficients, which is still
                 // cheaper than the scan script.
-                enc.cinfo.optimize_coding = 1;
+                JpegMode::Sequential => enc.cinfo.optimize_coding = 1,
+                JpegMode::Streaming => {}
             }
             enc.cinfo.dest = &mut enc.dest.iface;
             ffi::jpegli_start_compress(&mut enc.cinfo, 1);
@@ -250,8 +270,8 @@ impl Drop for JpegliEncoder {
 mod tests {
     use super::*;
 
-    fn encode(px: &[u8], w: usize, h: usize, progressive: bool) -> Vec<u8> {
-        let mut enc = JpegliEncoder::new(w, h, 85.0, progressive);
+    fn encode(px: &[u8], w: usize, h: usize, mode: JpegMode) -> Vec<u8> {
+        let mut enc = JpegliEncoder::new(w, h, 85.0, mode);
         enc.write_marker(JPEG_APP2, b"not an icc profile");
         enc.write_scanlines(px).unwrap();
         enc.finish()
@@ -309,8 +329,8 @@ mod tests {
     #[test]
     fn scan_script_decodes_to_the_baseline_pixels() {
         let (px, w, h) = frame();
-        let prog = encode(&px, w, h, true);
-        let base = encode(&px, w, h, false);
+        let prog = encode(&px, w, h, JpegMode::Progressive);
+        let base = encode(&px, w, h, JpegMode::Sequential);
         assert!(prog.len() > 64 * 1024, "{} bytes", prog.len());
         assert_ne!(prog, base);
         assert!(decode(&prog) == decode(&base), "scan script changed pixels");
@@ -354,20 +374,25 @@ mod tests {
         assert_eq!(seg.iter().filter(|s| s.0 == 0xDA).count(), 1);
     }
 
+    /// JPEG Annex K.3: the standard luminance DC table's code counts.
+    const STD_DC_LUMA: [u8; 17] = [0x00, 0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0];
+
+    fn dht(jpeg: &[u8]) -> Vec<&[u8]> {
+        segments(jpeg)
+            .into_iter()
+            .filter(|s| s.0 == 0xC4)
+            .map(|s| s.1)
+            .collect()
+    }
+
     /// Sequential output carries tables built for the image, not the
     /// standard ones jpegli_set_defaults leaves in place.
     #[test]
     fn sequential_output_optimizes_huffman_tables() {
-        // JPEG Annex K.3: the standard luminance DC table's code counts.
-        const STD_DC_LUMA: [u8; 17] = [0x00, 0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0];
         let (px, w, h) = frame();
         for (w, h) in [(w, h), (40, 30)] {
-            let base = encode(&px[..w * h * 3], w, h, false);
-            let dht: Vec<&[u8]> = segments(&base)
-                .into_iter()
-                .filter(|s| s.0 == 0xC4)
-                .map(|s| s.1)
-                .collect();
+            let base = encode(&px[..w * h * 3], w, h, JpegMode::Sequential);
+            let dht = dht(&base);
             assert!(!dht.is_empty(), "{w}x{h}: no DHT");
             assert!(
                 dht.iter().all(|t| !t.starts_with(&STD_DC_LUMA)),
@@ -376,27 +401,57 @@ mod tests {
         }
     }
 
+    /// Streaming output is the sequential layout on the standard tables:
+    /// the same quantized coefficients, so the same pixels, in more bytes.
+    #[test]
+    fn streaming_output_is_sequential_on_the_standard_tables() {
+        let (px, w, h) = frame();
+        let seq = encode(&px, w, h, JpegMode::Sequential);
+        let stream = encode(&px, w, h, JpegMode::Streaming);
+        assert!(
+            decode(&stream) == decode(&seq),
+            "table choice changed pixels"
+        );
+        assert!(
+            stream.len() > seq.len(),
+            "{} <= {}",
+            stream.len(),
+            seq.len()
+        );
+        let seg = segments(&stream);
+        assert!(seg.iter().any(|s| s.0 == 0xC1), "not sequential");
+        assert_eq!(seg.iter().filter(|s| s.0 == 0xDA).count(), 1);
+        assert!(
+            dht(&stream).iter().any(|t| t.starts_with(&STD_DC_LUMA)),
+            "no standard luminance DC table"
+        );
+    }
+
     /// Batching must not depend on how the caller slices the rows: the
     /// whole frame at once (serial path) and one row at a time (fused
     /// path) produce the same file.
     #[test]
     fn write_granularity_does_not_change_bytes() {
         let (px, w, h) = frame();
-        for progressive in [true, false] {
-            let whole = encode(&px, w, h, progressive);
-            let mut enc = JpegliEncoder::new(w, h, 85.0, progressive);
+        for mode in [
+            JpegMode::Progressive,
+            JpegMode::Sequential,
+            JpegMode::Streaming,
+        ] {
+            let whole = encode(&px, w, h, mode);
+            let mut enc = JpegliEncoder::new(w, h, 85.0, mode);
             enc.write_marker(JPEG_APP2, b"not an icc profile");
             for row in px.chunks_exact(w * 3) {
                 enc.write_scanlines(row).unwrap();
             }
-            assert!(enc.finish() == whole, "progressive={progressive}");
+            assert!(enc.finish() == whole, "{mode:?}");
         }
     }
 
     #[test]
     fn fatal_errors_unwind() {
         let (px, w, h) = frame();
-        let mut enc = JpegliEncoder::new(w, h, 85.0, true);
+        let mut enc = JpegliEncoder::new(w, h, 85.0, JpegMode::Progressive);
         enc.write_scanlines(&px[..w * 3 * 10]).unwrap();
         // Finishing with rows missing is a libjpeg fatal error.
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| enc.finish()));

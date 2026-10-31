@@ -65,11 +65,32 @@ pub(crate) struct Windows {
 }
 
 impl Windows {
+    /// Taps per window for an `in_size -> out_size` Lanczos3 pass,
+    /// before zero-trimming: the size every table and ring is built at.
+    pub(crate) fn window_size(in_size: usize, out_size: usize) -> usize {
+        let filter_scale = (in_size as f64 / out_size as f64).max(1.0);
+        (3.0 * filter_scale).ceil() as usize * 2 + 1
+    }
+
+    /// Bytes [`Windows::new`] holds for this pass (positions, sizes, f32
+    /// coefficients, and with `f16` the half-precision copy the
+    /// horizontal pass builds on first use) plus its f64 working window,
+    /// from the sizes alone: pricing a table must not build it.
+    pub(crate) fn resident_bytes(in_size: usize, out_size: usize, f16: bool) -> u64 {
+        let window_size = Self::window_size(in_size, out_size) as u64;
+        let stride = window_size.next_multiple_of(8);
+        let out = out_size as u64;
+        let per_coeff = if f16 { 4 + 2 } else { 4 };
+        out.saturating_mul(16)
+            .saturating_add(out.saturating_mul(stride).saturating_mul(per_coeff))
+            .saturating_add(window_size.saturating_mul(8))
+    }
+
     pub(crate) fn new(in_size: usize, out_size: usize) -> Windows {
         let scale = in_size as f64 / out_size as f64;
         let filter_scale = scale.max(1.0);
         let filter_radius = 3.0 * filter_scale;
-        let window_size = filter_radius.ceil() as usize * 2 + 1;
+        let window_size = Self::window_size(in_size, out_size);
         let stride = window_size.next_multiple_of(8);
         let recip = 1.0 / filter_scale;
 
@@ -654,6 +675,53 @@ pub(crate) struct StreamResize<K: RowKernel> {
 }
 
 impl<K: RowKernel> StreamResize<K> {
+    /// Bytes a stream of this shape allocates at the strip-mined
+    /// capacity: both window tables, the staging batch, the ring, the
+    /// accumulator, the window offsets and the output row — sized as
+    /// [`Self::with_capacity`] sizes them, without building anything,
+    /// so the decoded-bytes estimate can price a stream before it runs
+    /// (issue #129). The ring dominates a tall source squeezed to few
+    /// rows: one padded row per source row of the window.
+    pub(crate) fn resident_bytes(
+        src_w: usize,
+        src_h: usize,
+        dst_w: usize,
+        dst_h: usize,
+        channels: usize,
+    ) -> u64 {
+        let (src_w, src_h, dst_w) = (src_w as u64, src_h as u64, dst_w as u64);
+        let ch = channels as u64;
+        let wh_stride =
+            (Windows::window_size(src_w as usize, dst_w as usize) as u64).next_multiple_of(8);
+        let wv_size = Windows::window_size(src_h as usize, dst_h) as u64;
+        let cap = wv_size.min(src_h).max(1);
+        let line = LINE_F32 as u64;
+        let ring_stride = dst_w.next_multiple_of(line);
+        let stage_px = if channels == 3 {
+            K::STAGE3_FLOATS_PER_PIXEL as u64
+        } else {
+            ch
+        };
+        let stage_row_stride = src_w
+            .saturating_add(wh_stride)
+            .saturating_mul(stage_px)
+            .next_multiple_of(line);
+        let floats = stage_row_stride
+            .saturating_mul(K::HORIZ_BATCH as u64)
+            .saturating_add(cap.saturating_mul(ring_stride).saturating_mul(ch))
+            .saturating_add(dst_w.saturating_mul(ch));
+        floats
+            .saturating_mul(4)
+            .saturating_add(wv_size.saturating_mul(8))
+            .saturating_add(dst_w.saturating_mul(ch).saturating_mul(2))
+            .saturating_add(Windows::resident_bytes(
+                src_w as usize,
+                dst_w as usize,
+                true,
+            ))
+            .saturating_add(Windows::resident_bytes(src_h as usize, dst_h, false))
+    }
+
     /// `cap_override` shrinks/expands the ring (tests use `src_h` to run
     /// the full-intermediate reference schedule); `None` picks the
     /// strip-mined capacity.
@@ -1233,6 +1301,54 @@ pub(crate) mod testkit {
                 let full = reference_resize::<K>(&src, sw, sh, dw, dh, ch);
                 assert_eq!(strip, full, "{sw}x{sh}->{dw}x{dh} x{ch}");
             }
+        }
+    }
+
+    /// [`StreamResize::resident_bytes`] against what `with_capacity`
+    /// actually allocates, on a fresh thread so no pooled scratch is
+    /// reused: never below it (the estimate must not under-count), and
+    /// within a page plus 25% above it. The shapes include the tall
+    /// source squeezed to one row, where the ring holds a padded row per
+    /// source row.
+    pub(crate) fn assert_resident_bytes_cover_allocation<K: RowKernel>() {
+        let shapes = [
+            (40, 32_000, 1, 1, 3),
+            (7_000, 7_000, 10, 200, 3),
+            (32_000, 2_000, 100, 6, 3),
+            (320, 240, 200, 150, 3),
+            (97, 61, 13, 8, 4),
+        ];
+        for (sw, sh, dw, dh, ch) in shapes {
+            let (priced, held) = std::thread::spawn(move || {
+                let sr = StreamResize::<K>::with_capacity(sw, sh, dw, dh, ch, None).unwrap();
+                let s = &sr.scratch;
+                let tables = |w: &Windows| {
+                    (w.starts.len() * 8 + w.sizes.len() * 8 + w.coeffs.len() * 4) as u64
+                };
+                // The horizontal f16 copy is built on the first pushed
+                // row, not at construction; it is a real allocation of a
+                // running stream, so count it.
+                let f16 = (sr.wh.coeffs.len() * 2) as u64;
+                let held = (s.stage.0.len() * 64
+                    + s.ring.0.len() * 64
+                    + s.acc.len() * 4
+                    + s.offs.len() * 8
+                    + s.outrow.len() * 2) as u64
+                    + tables(&sr.wh)
+                    + f16
+                    + tables(&sr.wv);
+                (StreamResize::<K>::resident_bytes(sw, sh, dw, dh, ch), held)
+            })
+            .join()
+            .unwrap();
+            assert!(
+                priced >= held,
+                "{sw}x{sh}->{dw}x{dh}x{ch}: priced {priced} under the {held} allocated"
+            );
+            assert!(
+                priced <= held + held / 4 + 4096,
+                "{sw}x{sh}->{dw}x{dh}x{ch}: priced {priced}, far over the {held} allocated"
+            );
         }
     }
 

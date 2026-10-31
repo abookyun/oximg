@@ -15,7 +15,10 @@ cargo build --release
 
 Auto-spawns `oximg` on `PORT=0` with `IMAGES_DIR=tests/fixtures`
 unless `--base URL` points at an already-running server. Proof is
-`status`, `content_type`, `probe.{width,height}`, `sha256`.
+`status`, `content_type`, `probe.{width,height}`, `sha256`. A JPEG body
+also gets `probe.jpeg.{sof,progressive}`: the SOFn frame number (0
+baseline, 1 extended sequential, 2 progressive), which is how a knob
+that picks the scan layout is proved.
 
 ## CLI (one-shot, no HTTP)
 
@@ -28,7 +31,10 @@ oximg-ctl resize tests/fixtures/anim.gif 100 100 -f webp --out /tmp/out.webp
 `resize` shells out to `oximg resize` (same argv a user types). Usage
 errors exit 2; processing failures exit 1. `0` on an axis is
 unconstrained; `0 0` re-encodes at native size (CLI only — the server
-refuses `0/0`).
+refuses `0/0`). Its JSON carries `peak_rss_bytes` (the child's peak
+RSS) and, under `--env OXIMG_LOG_DECODED_BYTES_ABOVE=1`,
+`decoded_bytes.{format,total,terms}` — the estimate beside what the
+process held.
 
 ## Library (`oximg::pipeline`)
 
@@ -38,10 +44,13 @@ cargo run --release --example probe -- tests/fixtures/photo.webp
 ```
 
 `process` / `process_path` take `Params` and return `(bytes, ImageFormat)`.
-`probe` is header-only stored size; `probe_animation` reports frames
-for GIF/WebP. Embedders set `default-features = false` to drop the
-HTTP stack. Failures are `pipeline::Error`; match `kind()`, wildcard
-arm required (`ErrorKind` is `#[non_exhaustive]`).
+`probe` is header-only stored size; `probe_reader` is the same answer
+from a reader, read 64 KiB at a time, doubling, until the header
+parses (errors only at EOF; AVIF reads through EOF);
+`probe_animation` reports frames for GIF/WebP. Embedders set
+`default-features = false` to drop the HTTP stack. Failures are
+`pipeline::Error`; match `kind()`, wildcard arm required (`ErrorKind`
+is `#[non_exhaustive]`).
 
 A library-only change still needs a binary-level cell if the HTTP or
 CLI contract can see it (status, content-type, CLI exit code).

@@ -10,8 +10,69 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+### Added
+
+- **`oximg-ctl` probes report a JPEG's frame type.** A JPEG body or
+  file gets `probe.jpeg.{sof,progressive}` (the SOFn number: 0
+  baseline, 1 extended sequential, 2 progressive), so a proof of which
+  scan layout the encoder chose needs no second tool.
+- **`pipeline::probe_reader` reads a header from a reader** ([#134]),
+  taking only what the header needs: 64 KiB, doubled while the probe
+  fails short of EOF. A JPEG with 131 KB of APP2 ahead of its frame
+  header reads 256 KiB of a 4 MiB file. A failure is reported once the
+  whole source is read, so the answer is always `probe`'s on the full
+  bytes; an AVIF is read through EOF, since a size-0 box can make a
+  prefix parse where the whole file does not. A failing reader is
+  `SourceUnreadable` (or `SourceNotFound` / `SourceTooLarge`), never
+  `Undecodable`.
+
 ### Changed
 
+- **Unscaled PNG, WebP, AVIF and GIF requests hold one decoded frame,
+  not two** ([#129]). When the box is at or above the source size,
+  the decoded frame now goes to the encoder without a full-frame
+  copy. A 7000×7000 PNG served at full size peaks about 140 MiB lower
+  (453 → 313 MiB to PNG, 658 → 516 MiB to JPEG, 415 → 274 MiB to WebP;
+  `bench/peak-rss.sh` on an M2 Max). Output is byte-identical. The
+  decoded-bytes estimate drops by the same frame on these paths, so a
+  cap admits correspondingly larger unscaled requests; an oriented
+  source still counts a second frame, which its rotation needs.
+- **PNG sources decode straight from the file or the caller's buffer**
+  ([#129]): the whole compressed PNG is no longer copied onto the heap
+  before decoding. Peak RSS for a 7000x7000 source drops by about the
+  file size — 337 → 285 MiB for a photo thumbnail, 522 → 285 MiB for
+  an unfiltered (246 MB) one, 254 → 202 MiB at full size (M2 Max,
+  `bench/peak-rss.sh`, 3 rounds), on every request a server worker
+  serves; output is byte-identical. The
+  decoded-bytes estimate (`OXIMG_MAX_DECODED_BYTES`, the
+  `oximg_decoded_bytes_estimate` histogram) drops by the same amount:
+  its `compressed` term is now 0 for a local PNG and the fetched
+  buffer's size, counted once, for a remote one. A cap tuned against
+  the old figure admits correspondingly larger PNGs.
+- **Downscaling a large RGB PNG holds far less memory on arm64**
+  ([#129]). The source is no longer staged as a full 16-bit frame
+  (294 MB for 7000×7000) before the resize: decoded rows stream into
+  the resize, so only a window of rows stays resident. `oximg resize`
+  of a 7000×7000 PNG into a 10×10 box peaks at 57 MiB instead of
+  337 MiB on an M2 Max (244 instead of 524 MiB for a lightly
+  compressed source, whose bytes are still held whole). Output is
+  byte-identical. It applies to opaque RGB sources (8- or 16-bit
+  truecolor, or a palette without transparency), non-interlaced and
+  upright, resized in linear light on one band (`OXIMG_PAR=1`, the
+  default, or outputs under two rows per band). amd64 keeps the
+  staged frame for now: its resize there has no row-by-row form, and
+  switching would change pixels.
+- **JPEG outputs above 16 MP stream through the encoder** ([#133]).
+  jpegli held the whole image's coefficients (progressive) or tokens
+  (optimized Huffman tables) until the end, so an 8000² re-encode
+  peaked at 663 MB on a photo and 1048 MB on noise. Outputs above
+  `OXIMG_JPEG_STREAMING_PIXELS` (new, default 16,000,000) are now
+  written sequential on the standard Huffman tables, which jpegli
+  codes row by row: 213 MB and 287 MB, and the decoded-bytes estimate
+  prices the encoder at its output size instead of the whole image.
+  Same pixels; photos come out ~6% larger than progressive (+5% over
+  optimized sequential), noise ~30%. `OXIMG_JPEG_STREAMING_PIXELS`
+  set very high restores the previous layouts at every size.
 - **A JPEG re-encoded as JPEG at its own size no longer holds the whole
   frame** ([#129]). When the box is at least the source's size (and
   `oximg resize … 0 0`), upright RGB and grayscale JPEGs now stream
@@ -26,8 +87,65 @@ HTTP interface without notice.
   the frame saving. The output bytes are unchanged. Oriented and CMYK
   sources still buffer the frame, because rotation and the CMYK
   conversion need all of it.
+- **PNG output streams into IDAT chunks** ([#133]). The encoder
+  deflated the whole image into one buffer and then copied it into the
+  output as a single IDAT, so it held up to 3.6 B per raw byte on
+  incompressible content. It now writes 256 KiB IDAT chunks as it
+  deflates: peak RSS -22 to -27% on photos and -49 to -50% on noise
+  (2000² and 4000² re-encodes, M2 Max), and the decoded-bytes estimate
+  prices the PNG encoder at half what it did. At the default effort
+  the deflate stream is unchanged (the zlib levels add a few bytes), so
+  files differ only by the extra chunk framing (+0.01%) and decode to
+  the same pixels; output that fdeflate would expand still falls back
+  to stored blocks.
+- **A PNG probe no longer inflates pixel data** ([#134]). It decoded
+  the first row and discarded it, which was 85–98% of its time: 1 µs
+  instead of 6–83 µs on the fixtures (Apple M2 Max; 5–66 µs on a Ryzen
+  7 8745HS). Results are unchanged.
+
+### Fixed
+
+- **The decoded-bytes estimate follows `OXIMG_WEBP_EFFORT`** ([#133]).
+  The WebP encoder was priced at the default method 2 whatever the
+  knob said, but from method 3 libwebp holds ~3x as much on RGB and at
+  6 twice as much on alpha: 2000² noise held 18.9 B/px against an 8
+  B/px price (RGB, method 3) and 80 against 44 (alpha, method 6). The
+  price now follows the method, plus the 4 MiB the encoder holds that
+  does not scale with the image (32 MiB for method 6 with alpha), which
+  small outputs were under-counted by.
+- **The decoded-bytes estimate counts the output encoder** ([#130]).
+  `OXIMG_MAX_DECODED_BYTES` and `OXIMG_LOG_DECODED_BYTES_ABOVE` left
+  the encoder out, and on AVIF output, alpha WebP and quantized PNG the
+  real peak was up to 1.8x the estimate (4000² RGBA to AVIF: 406 MB
+  estimated, 722 MB measured). The estimate now adds an `encode` term,
+  priced per output pixel from the format, the progressive decision,
+  the requested quality, `OXIMG_AVIF_SPEED`, PNG quantization, and
+  alpha, at the worst case content can reach (noise: a 2048² noise
+  re-encode to JPEG held 98 MB against a 71 MB estimate priced from
+  photos). Estimates rise, so a cap that was calibrated on the old
+  figures may now refuse requests it used to admit.
+- **The decoded-bytes estimate prices the path that runs** ([#130]).
+  It used to assume every request held a staged frame, a u16 resize
+  input and a u16 output, so it over-counted the common paths: 2.4x on
+  a sequential full-size JPEG re-encode, 1.5x on large PNG thumbnails,
+  2.1x on PNG re-encodes at the source size. The path is now chosen
+  from the header first (fused vs staged PNG, exact size vs resize,
+  the JPEG row kernel vs its full-frame fallback, sRGB mode), and only
+  that path's buffers count. It also stopped under-counting three
+  shapes: `OXIMG_RESIZE=srgb` and `OXIMG_RESIZE_BACKEND=fir` on JPEG
+  sources (fir's whole-image intermediate; 835 MB measured against a
+  272 MB estimate), alpha AVIF sources (dav1d's pictures), and lossless
+  WebP (VP8L's ARGB image).
+- **Animated GIF estimates count libwebp's animation encoder** ([#130]):
+  its canvases, and the frames it retains at 6 B per encoded pixel
+  rather than 1 (4.5 measured on noise frames). Six 1024² noise frames
+  held 74 MB against a 40 MB estimate. Over `OXIMG_MAX_DECODED_BYTES`
+  an animation still degrades to a still rather than answering 413.
 
 [#129]: https://github.com/oximg/oximg/issues/129
+[#130]: https://github.com/oximg/oximg/issues/130
+[#133]: https://github.com/oximg/oximg/issues/133
+[#134]: https://github.com/oximg/oximg/issues/134
 
 ## [0.17.0] - 2026-10-26
 
