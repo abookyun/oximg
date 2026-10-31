@@ -442,6 +442,69 @@ pub fn probe(bytes: &[u8]) -> Result<(ImageFormat, usize, usize), Error> {
     probe_inner(bytes).map_err(|e| Error::classify(e, false))
 }
 
+/// First read [`probe_reader`] makes. Every fixture's header fits in
+/// under 400 bytes, and 64 KiB also covers a camera's EXIF block.
+const PROBE_FIRST_READ: usize = 64 << 10;
+
+/// Like [`probe`], but reads only as much of `reader` as the header
+/// needs, so a caller holding a file or a socket does not have to load
+/// the whole source to learn its size.
+///
+/// How much that is cannot be known up front: a JPEG's frame header
+/// sits behind every APP segment (one fixture carries 108 KB of ICC
+/// profile before it), and a PNG's or GIF's behind every chunk or
+/// extension before the image data. So the probe runs on the first
+/// 64 KiB and, while it fails short of EOF, on twice as much. An error
+/// is reported only once the whole source has been read, because a
+/// short prefix fails with the same messages as a corrupt file (libjpeg
+/// says `Bogus Huffman table definition` for both). The result is
+/// therefore [`probe`]'s on the full bytes; on every prefix of every
+/// fixture, a probe either failed or returned the full file's answer.
+/// AVIF is the exception to bounded reads: a size-0 box can make a
+/// prefix answer where the whole file fails, so an AVIF is read through
+/// EOF before its answer counts.
+///
+/// # Examples
+///
+/// ```
+/// use oximg::pipeline::{self, ImageFormat};
+///
+/// let file = std::fs::File::open(concat!(
+///     env!("CARGO_MANIFEST_DIR"),
+///     "/tests/fixtures/photo.jpg"
+/// ))?;
+/// let (format, w, h) = pipeline::probe_reader(file)?;
+/// assert_eq!(format, ImageFormat::Jpeg);
+/// assert_eq!((w, h), (200, 150));
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn probe_reader<R: std::io::Read>(mut reader: R) -> Result<(ImageFormat, usize, usize), Error> {
+    use std::io::Read as _;
+    let mut buf = Vec::new();
+    let mut want = PROBE_FIRST_READ;
+    loop {
+        let missing = (want - buf.len()) as u64;
+        // A read failure is the source's, never bad image data, so it is
+        // classified apart from the parser's errors.
+        reader
+            .by_ref()
+            .take(missing)
+            .read_to_end(&mut buf)
+            .map_err(Error::source_read)?;
+        let eof = buf.len() < want;
+        match probe_inner(&buf) {
+            Err(_) if !eof => want *= 2,
+            // A prefix's AVIF answer is not final: an ISOBMFF box of
+            // size 0 runs to EOF, so bytes past the prefix can still
+            // break the walk `probe` makes over the whole file. The
+            // dimensions sit in item data `iloc` points at, usually
+            // the bulk of the file, so reading the rest costs little.
+            Ok((ImageFormat::Avif, ..)) if !eof => want = usize::MAX,
+            result => return result.map_err(|e| Error::classify(e, false)),
+        }
+    }
+}
+
 /// Like [`probe`], but width/height are the **displayed** frame after
 /// auto-rotate (EXIF/PNG eXIf/WebP EXIF/AVIF irot). Orientations 5–8
 /// swap the axes relative to [`probe`]. When `OXIMG_AUTO_ROTATE=0`,
@@ -526,13 +589,16 @@ fn probe_inner(bytes: &[u8]) -> Result<(ImageFormat, usize, usize)> {
             Ok((format, w, h))
         }
         ImageFormat::Png => {
-            let mut r = png::Decoder::new(std::io::Cursor::new(bytes))
+            // `read_info` stops at the first IDAT, which is all a
+            // header read needs. Pulling a row on top of it inflated
+            // pixel data for nothing: 85–98% of a PNG probe's time
+            // (1 µs → 6–83 µs on the fixtures on an Apple M2 Max,
+            // 0.9 → 5–66 µs on a Ryzen 7 8745HS).
+            let r = png::Decoder::new(std::io::Cursor::new(bytes))
                 .read_info()
                 .context("parse PNG")?;
             let info = r.info();
-            let dims = (info.width as usize, info.height as usize);
-            let _ = r.next_row();
-            Ok((format, dims.0, dims.1))
+            Ok((format, info.width as usize, info.height as usize))
         }
         // SAFETY: a zeroed WebPBitstreamFeatures is a valid out-param (plain C data);
         // WebPGetFeatures reads at most `bytes.len()` bytes from the live slice and

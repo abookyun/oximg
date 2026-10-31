@@ -10,6 +10,18 @@ HTTP interface without notice.
 
 ## [Unreleased]
 
+### Added
+
+- **`pipeline::probe_reader` reads a header from a reader** ([#134]),
+  taking only what the header needs: 64 KiB, doubled while the probe
+  fails short of EOF. A JPEG with 131 KB of APP2 ahead of its frame
+  header reads 256 KiB of a 4 MiB file. A failure is reported once the
+  whole source is read, so the answer is always `probe`'s on the full
+  bytes; an AVIF is read through EOF, since a size-0 box can make a
+  prefix parse where the whole file does not. A failing reader is
+  `SourceUnreadable` (or `SourceNotFound` / `SourceTooLarge`), never
+  `Undecodable`.
+
 ### Changed
 
 - **Unscaled PNG, WebP, AVIF and GIF requests hold one decoded frame,
@@ -68,6 +80,10 @@ HTTP interface without notice.
   files differ only by the extra chunk framing (+0.01%) and decode to
   the same pixels; output that fdeflate would expand still falls back
   to stored blocks.
+- **A PNG probe no longer inflates pixel data** ([#134]). It decoded
+  the first row and discarded it, which was 85–98% of its time: 1 µs
+  instead of 6–83 µs on the fixtures (Apple M2 Max; 5–66 µs on a Ryzen
+  7 8745HS). Results are unchanged.
 
 ### Fixed
 
@@ -111,6 +127,7 @@ HTTP interface without notice.
 [#129]: https://github.com/oximg/oximg/issues/129
 [#130]: https://github.com/oximg/oximg/issues/130
 [#133]: https://github.com/oximg/oximg/issues/133
+[#134]: https://github.com/oximg/oximg/issues/134
 
 ## [0.17.0] - 2026-10-26
 
