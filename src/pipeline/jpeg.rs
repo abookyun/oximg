@@ -45,7 +45,7 @@ fn decode_and_resize_inner(
         // OXIMG_ICC=0 downgrades CMYK sources to the naive composite
         // here exactly like the server path.
         let want_icc = p.icc_passthrough;
-        let meta = if p.auto_rotate || want_icc || decoded_bytes_cap_set() {
+        let meta = if p.auto_rotate || want_icc {
             let mut prefix = Vec::new();
             let mut r = jpeg;
             crate::meta::scan_jpeg_meta(&mut r, &mut prefix, want_icc)
@@ -57,7 +57,6 @@ fn decode_and_resize_inner(
         } else {
             crate::meta::Orientation::UPRIGHT
         };
-        s.jpeg_progressive = meta.progressive;
         let dec = Decompress::new_mem(jpeg).context("invalid JPEG")?;
         match decode_resize(
             s,
@@ -283,6 +282,10 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
         ColorSpace::JCS_CMYK | ColorSpace::JCS_YCCK
     );
     let stream_exact = streams_exact_jpeg(&dec, target, orientation, p, (dst_w, dst_h));
+    // libjpeg's own answer, from the headers it has read: the header
+    // pre-scan is skipped when no knob needs it, and stops at its byte
+    // cap.
+    let multi_scan = dec.has_multiple_scans();
     let margin = dct_margin().or_else(|| buffered.then_some(BUFFERED_DCT_MARGIN));
     // With no margin asked for, a large enough reduction still decodes
     // luma at 1/2 scale, but through the linear-light average of the
@@ -368,7 +371,7 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
         }
         let (enc_w, enc_h) = orientation.display_dims(dst_w, dst_h);
         cost = cost.with_encode(target, enc_w, enc_h, 3, p);
-        if s.jpeg_progressive {
+        if multi_scan {
             cost = cost.with_progressive_coefficients(src_w, src_h, comps);
         }
         // The decoder streams, so the only compressed-source residency
@@ -825,7 +828,7 @@ pub(super) fn process_jpeg<R: std::io::BufRead>(
         // this scan. (OXIMG_ICC=0 therefore also downgrades CMYK
         // sources to the naive conversion.)
         let want_icc = p.icc_passthrough;
-        let meta = if p.auto_rotate || want_icc || decoded_bytes_cap_set() {
+        let meta = if p.auto_rotate || want_icc {
             crate::meta::scan_jpeg_meta(&mut reader, &mut scan_prefix, want_icc)
         } else {
             crate::meta::JpegMeta::NONE
@@ -835,7 +838,6 @@ pub(super) fn process_jpeg<R: std::io::BufRead>(
         } else {
             crate::meta::Orientation::UPRIGHT
         };
-        s.jpeg_progressive = meta.progressive;
         let icc = meta.icc;
         let reader = std::io::Read::chain(&scan_prefix[..], reader);
         let dec = Decompress::new_reader(reader).context("parse JPEG")?;

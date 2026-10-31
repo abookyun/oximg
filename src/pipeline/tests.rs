@@ -1583,6 +1583,29 @@ fn decode_cost_prices_each_jpeg_arm() {
     }
 }
 
+/// A multi-scan source's coefficient arrays are priced from libjpeg's
+/// own header read, so they are counted even where the header pre-scan
+/// does not run (no rotation, no profile wanted): the term must not
+/// depend on which knobs are on.
+#[test]
+fn decode_cost_prices_coefficients_without_the_header_scan() {
+    let bare = |p: Params| Params {
+        auto_rotate: Some(false),
+        icc: Some(false),
+        ..p
+    };
+    for (jpeg, multi) in [
+        (make_test_jpeg(320, 240, false), true),
+        (make_baseline_jpeg(320, 240, false), false),
+    ] {
+        for p in [sized(320, 240), sized(200, 200)] {
+            let c = cost_of(&jpeg, bare(p));
+            let want = if multi { 320 * 240 * 3 * 2 } else { 0 };
+            assert_eq!(c.whole_source_bytes, want, "multi={multi}");
+        }
+    }
+}
+
 /// `decode_and_resize` hands back its pixels in a Vec of their own, a
 /// second output frame next to `out8`; an encoding caller does not.
 #[test]
