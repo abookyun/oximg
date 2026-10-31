@@ -73,6 +73,22 @@ HTTP interface without notice.
   Same pixels; photos come out ~6% larger than progressive (+5% over
   optimized sequential), noise ~30%. `OXIMG_JPEG_STREAMING_PIXELS`
   set very high restores the previous layouts at every size.
+- **A JPEG re-encoded as JPEG at its own size no longer holds the whole
+  frame** ([#129]). When the box is at least the source's size (and
+  `oximg resize … 0 0`), an upright RGB or grayscale JPEG now streams
+  decoded rows into the encoder in 16-row bands instead of buffering a
+  3-byte-per-pixel frame. Peak RSS on an M2 Max, before → after, for a
+  baseline source: 8000 × 8000 197 → 14 MiB (the default, which streams
+  the encode too), 561 → 379 MiB with `--preset fast`; 4000 × 4000
+  154 → 108 MiB, 63 → 18 MiB with `OXIMG_JPEG_PROGRESSIVE=0`. A
+  progressive source streams only into the streaming layout above
+  `OXIMG_JPEG_STREAMING_PIXELS` (563 → 381 MiB at 8000 × 8000): the
+  decoder holds its coefficients until the last row, and next to an
+  encoder that keeps the whole image too they would cost more than the
+  frame, so those requests keep the frame and their old peak. The
+  decoded-bytes estimate drops by the frame wherever it streams. Output
+  bytes are unchanged. Oriented and CMYK sources still buffer the
+  frame, because rotation and the CMYK conversion need all of it.
 - **PNG output streams into IDAT chunks** ([#133]). The encoder
   deflated the whole image into one buffer and then copied it into the
   output as a single IDAT, so it held up to 3.6 B per raw byte on
