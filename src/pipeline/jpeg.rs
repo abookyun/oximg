@@ -97,13 +97,30 @@ fn decode_and_resize_inner(
 /// per-call batch, so each band is one `read_scanlines_into` round.
 const EXACT_BAND_ROWS: usize = 16;
 
-/// Whether an exact-size frame is encoded inside `decode_resize`,
-/// streamed from the decoder: the caller wants JPEG (which it would
-/// encode with the same encoder and profile), and the frame is upright,
-/// since a rotation needs all of it. CMYK sources return before that
-/// branch.
-fn streams_exact_jpeg(target: Option<ImageFormat>, orientation: crate::meta::Orientation) -> bool {
-    target == Some(ImageFormat::Jpeg) && orientation.is_upright()
+/// Whether an exact-size `w` x `h` frame is encoded inside
+/// `decode_resize`, streamed from the decoder: the caller wants JPEG
+/// (which it would encode with the same encoder and profile), and the
+/// frame is upright, since a rotation needs all of it. CMYK sources
+/// return before that branch.
+///
+/// A multi-scan source holds its whole-image coefficients until the
+/// last row is read. Staged, they are freed before the encoder starts;
+/// streamed, they overlap whatever whole-image state the encoder keeps
+/// (progressive coefficients, optimized-table tokens), which outweighs
+/// the frame saved: 153 -> 200 MiB for a progressive 4000² re-encoded
+/// progressive, 681 -> 743 MiB at 8000² with mozjpeg (M2 Max). Such a
+/// source streams only into jpegli's streaming layout, which keeps rows.
+fn streams_exact_jpeg<R>(
+    dec: &Decompress<R>,
+    target: Option<ImageFormat>,
+    orientation: crate::meta::Orientation,
+    p: &Resolved,
+    (w, h): (usize, usize),
+) -> bool {
+    target == Some(ImageFormat::Jpeg)
+        && orientation.is_upright()
+        && (!dec.has_multiple_scans()
+            || (p.encoder == Encoder::Jpegli && jpegli_mode(w, h) == JpegMode::Streaming))
 }
 
 /// Decode the remaining `w` x `h` RGB rows of `started` band by band
@@ -265,6 +282,7 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
         dec.color_space(),
         ColorSpace::JCS_CMYK | ColorSpace::JCS_YCCK
     );
+    let stream_exact = streams_exact_jpeg(&dec, target, orientation, p, (dst_w, dst_h));
     let margin = dct_margin().or_else(|| buffered.then_some(BUFFERED_DCT_MARGIN));
     // With no margin asked for, a large enough reduction still decodes
     // luma at 1/2 scale, but through the linear-light average of the
@@ -327,7 +345,7 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
             DecodeCost::staged(dec_w, dec_h, 4)
                 .with_full_frame_resize(dec, dst, 3, p)
                 .with_exact_size_rotation(dec, dst, 3, orientation)
-        } else if dec == dst && streams_exact_jpeg(target, orientation) {
+        } else if dec == dst && stream_exact {
             // Rows go from the decoder to the encoder one band at a
             // time; no frame is staged.
             DecodeCost::streaming().with_streamed_output(dst_w, EXACT_BAND_ROWS.min(dst_h), 3)
@@ -462,7 +480,7 @@ pub(super) fn decode_resize<R: std::io::BufRead>(
     let row_bytes = dec_w * 3;
     let linear = p.linear_light && (dec_w, dec_h) != (dst_w, dst_h);
 
-    if (dec_w, dec_h) == (dst_w, dst_h) && streams_exact_jpeg(target, orientation) {
+    if (dec_w, dec_h) == (dst_w, dst_h) && stream_exact {
         // Decoded size is already the target size and the encoder is
         // JPEG with nothing to do between decode and encode (CMYK
         // returned above; rotation needs the whole frame): stream bands

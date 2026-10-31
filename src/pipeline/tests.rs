@@ -13,6 +13,17 @@ fn rbox(max_w: u32, max_h: u32) -> Resolved {
 
 /// Deterministic RGB test frame encoded to a real JPEG source.
 fn make_test_jpeg(w: usize, h: usize, gray: bool) -> Vec<u8> {
+    make_jpeg(w, h, gray, false)
+}
+
+/// [`make_test_jpeg`]'s pixels in a single scan: mozjpeg's defaults
+/// write progressive, which libjpeg decodes by buffering every
+/// coefficient first.
+fn make_baseline_jpeg(w: usize, h: usize, gray: bool) -> Vec<u8> {
+    make_jpeg(w, h, gray, true)
+}
+
+fn make_jpeg(w: usize, h: usize, gray: bool, baseline: bool) -> Vec<u8> {
     let ch = if gray { 1 } else { 3 };
     let mut seed = 0x9E3779B9u32;
     let mut px = Vec::with_capacity(w * h * ch);
@@ -30,6 +41,9 @@ fn make_test_jpeg(w: usize, h: usize, gray: bool) -> Vec<u8> {
     } else {
         ColorSpace::JCS_RGB
     });
+    if baseline {
+        comp.set_fastest_defaults();
+    }
     comp.set_size(w, h);
     comp.set_quality(90.0);
     let mut started = comp.start_compress(Vec::new()).unwrap();
@@ -1467,14 +1481,20 @@ fn decode_cost_prices_each_jpeg_arm() {
     let jpeg = make_test_jpeg(320, 240, false);
     let (src, dst) = (320 * 240, 200 * 150);
 
-    // Exact size to JPEG: one band of rows goes from the decoder to the
-    // encoder at a time.
-    let c = cost_of(&jpeg, sized(320, 240));
+    // Exact size to JPEG from a single scan: one band of rows goes from
+    // the decoder to the encoder at a time.
+    let c = cost_of(&make_baseline_jpeg(320, 240, false), sized(320, 240));
     assert_eq!(
         (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
         (0, 0, 320 * 16 * 3)
     );
-    // Exact size to anything else: libjpeg writes straight into `out8`.
+    // From a multi-scan source (this one), or to anything else, libjpeg
+    // writes straight into `out8`.
+    let c = cost_of(&jpeg, sized(320, 240));
+    assert_eq!(
+        (c.staged_bytes, c.resize_input_bytes, c.output_bytes),
+        (0, 0, src * 3)
+    );
     let png = Params {
         output: Some(ImageFormat::Png),
         ..sized(320, 240)
@@ -2079,8 +2099,8 @@ fn encoded(d: Decoded) -> Vec<u8> {
     }
 }
 
-/// Streaming the exact-size frame into the encoder writes the bytes
-/// the staged frame encodes to: every preset, sequential jpegli (100 x
+/// Streaming the exact-size frame of a single-scan source into the
+/// encoder writes the bytes the staged frame encodes to: every preset, sequential jpegli (100 x
 /// 100 is under the default 12k-pixel sequential ceiling) and
 /// progressive (799 x 601), a frame shorter than one band, RGB and
 /// grayscale sources, and a profile spanning two APP2 chunks written
@@ -2090,7 +2110,7 @@ fn exact_size_jpeg_streams_the_staged_bytes() {
     let icc: Vec<u8> = (0..70_000u32).map(|i| (i % 251) as u8).collect();
     for (w, h) in [(100, 100), (799, 601), (17, 1)] {
         for gray in [false, true] {
-            let jpeg = make_test_jpeg(w, h, gray);
+            let jpeg = make_baseline_jpeg(w, h, gray);
             for encoder in [Encoder::Jpegli, Encoder::MozFast, Encoder::MozSmall] {
                 for icc in [None, Some(&icc[..])] {
                     let (streamed, staged) = exact_jpeg_both_ways(
@@ -2123,7 +2143,7 @@ fn exact_size_jpeg_streams_the_staged_bytes() {
 fn exact_size_jpeg_streams_only_upright_rgb_frames() {
     let rotated = crate::meta::Orientation::from_rot_mirror(1, None);
     assert!(!rotated.is_upright());
-    let jpeg = make_test_jpeg(64, 48, false);
+    let jpeg = make_baseline_jpeg(64, 48, false);
     let (streamed, _) = exact_jpeg_both_ways(&jpeg, Encoder::Jpegli, rotated, None);
     assert!(matches!(
         streamed.unwrap(),
@@ -2172,6 +2192,37 @@ fn exact_size_jpeg_streams_only_upright_rgb_frames() {
     ));
 }
 
+/// A multi-scan (progressive) source keeps the staged frame for every
+/// encoder that holds whole-image state, which is all of them below
+/// OXIMG_JPEG_STREAMING_PIXELS: the decoder's coefficients would
+/// otherwise overlap the encoder's. Staged, the bytes are the ones the
+/// separate encode writes.
+#[test]
+fn exact_size_jpeg_stages_a_multi_scan_source() {
+    let jpeg = make_test_jpeg(320, 240, false);
+    let dec = Decompress::new_mem(&jpeg).unwrap();
+    assert!(dec.has_multiple_scans());
+    assert!(
+        !Decompress::new_mem(&make_baseline_jpeg(320, 240, false))
+            .unwrap()
+            .has_multiple_scans()
+    );
+    for encoder in [Encoder::Jpegli, Encoder::MozFast, Encoder::MozSmall] {
+        let (streamed, _) =
+            exact_jpeg_both_ways(&jpeg, encoder, crate::meta::Orientation::UPRIGHT, None);
+        assert!(
+            matches!(
+                streamed.unwrap(),
+                Decoded::Pixels {
+                    dst_w: 320,
+                    dst_h: 240
+                }
+            ),
+            "{encoder:?}"
+        );
+    }
+}
+
 /// A source cut mid-scan completes with libjpeg's fill data on both
 /// paths, to the same bytes; one whose bytes after the scan hold a
 /// malformed marker (read once the last row is decoded, so after the
@@ -2179,7 +2230,7 @@ fn exact_size_jpeg_streams_only_upright_rgb_frames() {
 /// libjpeg message, and the streamed JPEG is discarded.
 #[test]
 fn exact_size_jpeg_streaming_keeps_truncation_and_error_behavior() {
-    let jpeg = make_test_jpeg(799, 601, false);
+    let jpeg = make_baseline_jpeg(799, 601, false);
     let cut = &jpeg[..jpeg.len() * 3 / 5];
     let (streamed, staged) = exact_jpeg_both_ways(
         cut,
